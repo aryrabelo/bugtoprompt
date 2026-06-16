@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>snap-prompt standalone demo</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 640px;
+      margin: 4rem auto;
+      padding: 0 1.5rem;
+      line-height: 1.6;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    p  { color: #555; }
+    code { background: #f3f4f6; padding: 0.1em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>snap-prompt standalone demo</h1>
+  <p>
+    This page has <strong>no React</strong> and <strong>no Tailwind</strong>.
+    The floating bug-capture overlay in the bottom-right corner is injected
+    entirely by the single <code>&lt;script&gt;</code> tag below — styles
+    included.
+  </p>
+  <p>
+    Click <em>Snap</em> to open the panel, hit <em>Record</em>, click around,
+    then <em>Stop</em> and copy/download the AI-ready prompt.
+  </p>
+  <p>
+    Config via <code>data-*</code> attributes on the script tag:
+  </p>
+  <ul>
+    <li><code>data-base</code> — backend base URL (e.g. <code>http://localhost:3000</code>)</li>
+    <li><code>data-modes</code> — comma-separated: <code>clipboard,download,issue</code></li>
+    <li><code>data-project-id</code> — project to file issues against</li>
+    <li><code>data-screenshot-mode</code> — <code>onMark</code> | <code>perPage</code> | <code>off</code></li>
+    <li><code>data-default-mode</code> — primary action button</li>
+  </ul>
+
+  <!--
+    Drop-in usage: one script tag, no build step, no framework.
+    Adjust the src path to point at the hosted snap-prompt.global.js.
+  -->
+  <script
+    src="../dist/snap-prompt.global.js"
+    defer
+    data-modes="clipboard,download"
+  ></script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+{
+	"name": "snap-prompt",
+	"version": "0.10.0",
+	"description": "Snap Prompt — a portable bug-capture overlay that turns a bug into an AI-ready prompt",
+	"type": "module",
+	"license": "MIT",
+	"private": false,
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./schema": {
+			"types": "./dist/schema.d.ts",
+			"import": "./dist/schema.js"
+		},
+		"./render": {
+			"types": "./dist/render.d.ts",
+			"import": "./dist/render.js"
+		},
+		"./client": {
+			"types": "./dist/client.d.ts",
+			"import": "./dist/client.js"
+		},
+		"./standalone": "./dist/snap-prompt.global.js",
+		"./styles.css": "./dist/snap-prompt.css"
+	},
+	"scripts": {
+		"build:esm": "tsup",
+		"build:css": "tailwindcss -i src/standalone.css -o dist/snap-prompt.css --minify",
+		"build:standalone": "tsup --config tsup.standalone.config.ts",
+		"build": "pnpm build:esm && pnpm build:css && pnpm build:standalone",
+		"test": "vitest run",
+		"lint": "biome check .",
+		"typecheck": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"react": "^19",
+		"react-dom": "^19"
+	},
+	"dependencies": {
+		"lucide-react": "^0.546.0",
+		"zod": "^4.1.13"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.16",
+		"@tailwindcss/cli": "^4.3.1",
+		"@testing-library/dom": "^10",
+		"@testing-library/react": "^16",
+		"@types/node": "^22",
+		"@types/react": "^19",
+		"@types/react-dom": "^19",
+		"fake-indexeddb": "^6.2.5",
+		"jsdom": "^25",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7",
+		"tailwindcss": "^4.3.1",
+		"tsup": "^8",
+		"typescript": "^5.7.0",
+		"vitest": "^2"
+	}
+}

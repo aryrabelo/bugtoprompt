@@ -1,0 +1,367 @@
+/**
+ * Tests for the auto-configuration resolver:
+ * - resolveBaseUrl priority chain
+ * - fetchServerConfig ok / error paths
+ * - createLocalFallbackClient contract (saveArtifact never throws, etc.)
+ * - <SnapPrompt /> zero-config: FAB renders and session reaches reviewing without error
+ * - <SnapPrompt /> with config fetch: modes updated after effect
+ */
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CaptureArtifact } from "../schema";
+import {
+	createLocalFallbackClient,
+	fetchServerConfig,
+	resolveBaseUrl,
+} from "./autoConfig";
+import { SnapPrompt } from "./SnapPrompt";
+
+// ---------------------------------------------------------------------------
+// Shared audio / grabber mocks (same setup as modes.test.tsx)
+// ---------------------------------------------------------------------------
+
+const mockGrabber = vi.hoisted(() => ({
+	grab: vi.fn().mockResolvedValue(null),
+	stop: vi.fn(),
+}));
+
+let mockAudioStop: ReturnType<typeof vi.fn>;
+
+vi.mock("./audio/AudioCapture", () => ({
+	AudioCapture: vi.fn().mockImplementation(() => ({
+		streaming: false,
+		start: vi.fn().mockResolvedValue(undefined),
+		get stop() {
+			return mockAudioStop;
+		},
+		sampleRate: vi.fn().mockReturnValue(16000),
+	})),
+}));
+
+vi.mock("./audio/StreamingTranscriber", () => ({
+	StreamingTranscriber: vi.fn().mockImplementation(() => ({
+		errored: false,
+		start: vi.fn().mockResolvedValue(undefined),
+		stop: vi.fn(),
+		sendFrame: vi.fn(),
+	})),
+}));
+
+vi.mock("./snapshot/screenshot", () => ({
+	startScreenGrabber: vi.fn().mockResolvedValue(mockGrabber),
+}));
+
+vi.mock("../render", () => ({
+	renderPrompt: vi.fn().mockReturnValue("## mocked prompt"),
+	promptTitle: vi.fn().mockReturnValue("Test capture title"),
+}));
+
+// ---------------------------------------------------------------------------
+// Setup / teardown
+// ---------------------------------------------------------------------------
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	mockAudioStop = vi.fn().mockResolvedValue({
+		blob: new Blob([]),
+		mimeType: "audio/webm",
+		bytes: 0,
+	});
+	mockGrabber.grab.mockResolvedValue(null);
+	mockGrabber.stop.mockReset();
+});
+
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+	// Remove any meta tags added during tests.
+	for (const el of document.querySelectorAll('meta[name="snap-prompt-base"]')) {
+		el.remove();
+	}
+	// Remove window global if set.
+	delete (window as Window & { __SNAP_PROMPT__?: unknown }).__SNAP_PROMPT__;
+});
+
+// ---------------------------------------------------------------------------
+// resolveBaseUrl
+// ---------------------------------------------------------------------------
+
+describe("resolveBaseUrl", () => {
+	it("returns the explicit argument when provided", () => {
+		expect(resolveBaseUrl("https://explicit.host")).toBe(
+			"https://explicit.host",
+		);
+	});
+
+	it("window.__SNAP_PROMPT__.baseUrl wins over meta and default", () => {
+		(
+			window as Window & {
+				__SNAP_PROMPT__?: { baseUrl?: string };
+			}
+		).__SNAP_PROMPT__ = { baseUrl: "https://from-window" };
+		expect(resolveBaseUrl()).toBe("https://from-window");
+	});
+
+	it("meta tag content used when window global is absent", () => {
+		const meta = document.createElement("meta");
+		meta.setAttribute("name", "snap-prompt-base");
+		meta.setAttribute("content", "https://from-meta");
+		document.head.appendChild(meta);
+		expect(resolveBaseUrl()).toBe("https://from-meta");
+	});
+
+	it('returns "" when nothing is configured', () => {
+		expect(resolveBaseUrl()).toBe("");
+	});
+
+	it("explicit arg wins over window global", () => {
+		(
+			window as Window & {
+				__SNAP_PROMPT__?: { baseUrl?: string };
+			}
+		).__SNAP_PROMPT__ = { baseUrl: "https://from-window" };
+		expect(resolveBaseUrl("https://explicit")).toBe("https://explicit");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// fetchServerConfig
+// ---------------------------------------------------------------------------
+
+describe("fetchServerConfig", () => {
+	it("returns parsed JSON when response is ok", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				json: () => Promise.resolve({ modes: ["clipboard"], projectId: "p1" }),
+			}),
+		);
+		const cfg = await fetchServerConfig("https://api");
+		expect(cfg).toEqual({ modes: ["clipboard"], projectId: "p1" });
+		expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+			"https://api/snap-prompt/config",
+		);
+	});
+
+	it("returns null when response is not ok", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+		);
+		expect(await fetchServerConfig("https://api")).toBeNull();
+	});
+
+	it("returns null on network error (never throws)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockRejectedValue(new Error("net::ERR_CONNECTION_REFUSED")),
+		);
+		await expect(fetchServerConfig("https://api")).resolves.toBeNull();
+	});
+
+	it("appends /snap-prompt/config to base even when base is empty", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+		);
+		await fetchServerConfig("");
+		expect(vi.mocked(fetch)).toHaveBeenCalledWith("/snap-prompt/config");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// createLocalFallbackClient
+// ---------------------------------------------------------------------------
+
+describe("createLocalFallbackClient", () => {
+	it("saveArtifact resolves with the artifact sessionId (never throws)", async () => {
+		const client = createLocalFallbackClient();
+		// Cast via unknown — only `sessionId` is accessed by the fallback.
+		const artifact = { sessionId: "test-sid" } as unknown as CaptureArtifact;
+		await expect(
+			client.saveArtifact({ artifact, audioBase64: "", screenshotsBase64: [] }),
+		).resolves.toEqual({ dir: "", sessionId: "test-sid" });
+	});
+
+	it("transcribeBatch resolves with an empty transcript", async () => {
+		const client = createLocalFallbackClient();
+		await expect(client.transcribeBatch("sid")).resolves.toEqual({
+			transcript: [],
+		});
+	});
+
+	it("createIssue rejects with a helpful message", async () => {
+		const client = createLocalFallbackClient();
+		await expect(
+			client.createIssue({ projectId: "p", sessionId: "s", prompt: "x" }),
+		).rejects.toThrow("issue mode requires a backend");
+	});
+
+	it("listTargets resolves with an empty array", async () => {
+		const client = createLocalFallbackClient();
+		await expect(client.listTargets("proj")).resolves.toEqual([]);
+	});
+
+	it("mintStreamingToken rejects (triggers batch-fallback path in useSession)", async () => {
+		const client = createLocalFallbackClient();
+		await expect(client.mintStreamingToken()).rejects.toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// <SnapPrompt /> zero-config: no props
+// ---------------------------------------------------------------------------
+
+describe("<SnapPrompt /> zero-config (no props)", () => {
+	it("renders the FAB button when no props are passed", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockRejectedValue(new Error("no backend configured")),
+		);
+		render(<SnapPrompt />);
+		expect(screen.getByRole("button", { name: /snap/i })).toBeTruthy();
+	});
+
+	it("reaches reviewing phase via fallback client (saveArtifact resolves)", async () => {
+		// fetch always fails → keeps fallback client; saveArtifact resolves so
+		// the session completes without error.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockRejectedValue(new Error("no backend configured")),
+		);
+
+		render(
+			<SnapPrompt
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+
+		// Open overlay.
+		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+
+		// Start recording.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		});
+
+		// Stop recording → triggers saveArtifact on the fallback client.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		// Should reach reviewing (not error) because saveArtifact resolves.
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
+		);
+
+		// Clipboard and download actions visible (default zero-config modes).
+		expect(screen.queryByRole("button", { name: /copy/i })).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /download/i })).not.toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// <SnapPrompt /> zero-config: config fetch succeeds → modes upgraded
+// ---------------------------------------------------------------------------
+
+describe("<SnapPrompt /> auto-config from server", () => {
+	it("upgrades modes after effect resolves server config", async () => {
+		// URL-aware mock: only /snap-prompt/config and /artifact return valid JSON.
+		// All other endpoints (/streaming-token, /transcribe) reject so the session
+		// degrades gracefully to the batch path without crashing CaptionEditor.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation((url: unknown) => {
+				if (typeof url === "string" && url.endsWith("/snap-prompt/config")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								modes: ["issue", "clipboard"],
+								projectId: "p-srv",
+							}),
+					});
+				}
+				if (typeof url === "string" && url.endsWith("/artifact")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ dir: "", sessionId: "s1" }),
+					});
+				}
+				// /streaming-token → reject (live=false, batch path)
+				// /transcribe → reject (caught; transcript stays [])
+				return Promise.reject(new Error("no backend for this endpoint"));
+			}),
+		);
+
+		render(
+			<SnapPrompt
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+
+		// Open overlay and drive to reviewing.
+		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
+		);
+
+		// After config fetch the "issue" mode button must be present (even
+		// without projectId the button renders, just disabled).
+		expect(
+			screen.queryByRole("button", { name: /file issue/i }),
+		).not.toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Explicit client prop: existing contract unchanged
+// ---------------------------------------------------------------------------
+
+describe("<SnapPrompt client={...} /> existing contract", () => {
+	it("drives to reviewing and shows File Issue with explicit client (default modes)", async () => {
+		// createLocalFallbackClient: saveArtifact resolves, transcribeBatch resolves
+		// with [], so the session reaches reviewing without error.
+		const client = createLocalFallbackClient();
+		render(
+			<SnapPrompt
+				client={client}
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
+		);
+
+		// Default modes when client is explicit = ['issue'] → File Issue button visible.
+		expect(
+			screen.queryByRole("button", { name: /file issue/i }),
+		).not.toBeNull();
+	});
+});

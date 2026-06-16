@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* Scan overlay source so Tailwind generates only the utilities it uses. */
+@source "./**/*.{ts,tsx}";
+
+/*
+ * Map semantic color utility names to --sp-* prefixed CSS custom properties.
+ *
+ * Using `@theme inline` avoids emitting these to :root — the generated
+ * utilities reference var(--sp-*) directly, so values only apply inside
+ * [data-snap-prompt] ancestors (defined below). No host-page pollution.
+ */
+@theme inline {
+	--color-popover: var(--sp-popover);
+	--color-popover-foreground: var(--sp-popover-fg);
+	--color-primary: var(--sp-primary);
+	--color-primary-foreground: var(--sp-primary-fg);
+	--color-secondary: var(--sp-secondary);
+	--color-secondary-foreground: var(--sp-secondary-fg);
+	--color-muted: var(--sp-muted);
+	--color-muted-foreground: var(--sp-muted-fg);
+	--color-destructive: var(--sp-destructive);
+	--color-border: var(--sp-border);
+	--color-input: var(--sp-input);
+	--color-ring: var(--sp-ring);
+	--color-foreground: var(--sp-foreground);
+	--color-background: var(--sp-background);
+	--color-accent: var(--sp-accent);
+	--color-accent-foreground: var(--sp-accent-fg);
+}
+
+/*
+ * Scoped token values — cascade to all [data-snap-prompt] portal roots and
+ * their descendants. Dark default; light override via prefers-color-scheme.
+ * Values intentionally not on :root so they never clash with a host app's
+ * own --color-* / --popover / etc.
+ */
+:where([data-snap-prompt]) {
+	/* shadcn "new-york" dark palette */
+	--sp-background: oklch(18.3% 0.009 259.5);
+	--sp-foreground: oklch(94.4% 0.006 264.5);
+	--sp-popover: oklch(20.3% 0.01 259.1);
+	--sp-popover-fg: oklch(94.4% 0.006 264.5);
+	--sp-primary: oklch(96.2% 0.008 247.9);
+	--sp-primary-fg: oklch(18.3% 0.009 259.5);
+	--sp-secondary: oklch(28.0% 0.013 259.1);
+	--sp-secondary-fg: oklch(94.4% 0.006 264.5);
+	--sp-muted: oklch(28.0% 0.013 259.1);
+	--sp-muted-fg: oklch(70.0% 0.015 259.1);
+	--sp-accent: oklch(28.0% 0.013 259.1);
+	--sp-accent-fg: oklch(94.4% 0.006 264.5);
+	--sp-destructive: oklch(56.7% 0.21 27);
+	--sp-border: oklch(33.0% 0.012 259.1);
+	--sp-input: oklch(33.0% 0.012 259.1);
+	--sp-ring: oklch(80.0% 0.012 259.1);
+}
+
+@media (prefers-color-scheme: light) {
+	:where([data-snap-prompt]) {
+		--sp-background: oklch(100% 0 0);
+		--sp-foreground: oklch(18.3% 0.009 259.5);
+		--sp-popover: oklch(100% 0 0);
+		--sp-popover-fg: oklch(18.3% 0.009 259.5);
+		--sp-primary: oklch(18.3% 0.009 259.5);
+		--sp-primary-fg: oklch(100% 0 0);
+		--sp-secondary: oklch(96.1% 0.003 264.5);
+		--sp-secondary-fg: oklch(18.3% 0.009 259.5);
+		--sp-muted: oklch(96.1% 0.003 264.5);
+		--sp-muted-fg: oklch(56.4% 0.012 264.5);
+		--sp-accent: oklch(96.1% 0.003 264.5);
+		--sp-accent-fg: oklch(18.3% 0.009 259.5);
+		--sp-destructive: oklch(56.7% 0.21 27);
+		--sp-border: oklch(89.0% 0.006 264.5);
+		--sp-input: oklch(89.0% 0.006 264.5);
+		--sp-ring: oklch(18.3% 0.009 259.5);
+	}
+}
