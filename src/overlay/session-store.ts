@@ -167,17 +167,34 @@ export function removeSession(): void {
 
 const IDB_NAME = "snap-prompt";
 const IDB_STORE = "screenshots";
-const IDB_VERSION = 1;
 
-function openDb(): Promise<IDBDatabase> {
+function openDb(recovered = false): Promise<IDBDatabase> {
 	return new Promise<IDBDatabase>((resolve, reject) => {
-		const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+		const req = indexedDB.open(IDB_NAME);
 		req.onupgradeneeded = () => {
 			if (!req.result.objectStoreNames.contains(IDB_STORE)) {
 				req.result.createObjectStore(IDB_STORE);
 			}
 		};
-		req.onsuccess = () => resolve(req.result);
+		req.onsuccess = () => {
+			const db = req.result;
+			if (db.objectStoreNames.contains(IDB_STORE)) {
+				resolve(db);
+				return;
+			}
+			db.close();
+			if (recovered) {
+				reject(
+					new Error(`IndexedDB store "${IDB_STORE}" missing after recovery`),
+				);
+				return;
+			}
+			const del = indexedDB.deleteDatabase(IDB_NAME);
+			del.onsuccess = () => void openDb(true).then(resolve, reject);
+			del.onerror = () => reject(del.error);
+			del.onblocked = () =>
+				reject(new Error(`IndexedDB delete blocked for "${IDB_NAME}"`));
+		};
 		req.onerror = () => reject(req.error);
 	});
 }

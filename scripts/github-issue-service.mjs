@@ -1,0 +1,590 @@
+#!/usr/bin/env node
+/**
+ * Snap Prompt — local gh-backed issue service.
+ *
+ * A dependency-free Node ESM HTTP backend implementing the snap-prompt client
+ * contract (see src/client/index.ts), intended for local UAT of "Gerar Posts"
+ * and any other host. It speaks:
+ *
+ *   GET  /snap-prompt/config        → advertised modes + projectId + defaultMode
+ *   GET  /targets?projectId=...     → configured repos as Target[]
+ *   POST /artifact                  → persist artifact.json + audio + screenshots
+ *   POST /transcribe                → AssemblyAI batch transcript of saved audio
+ *   POST /streaming-token           → mint an AssemblyAI temp token (best-effort)
+ *   POST /issue                     → `gh issue create` against the chosen repo
+ *
+ * Issue creation is OFF by default; it is enabled only when `issueMode` is true
+ * in config or SNAP_PROMPT_ENABLE_ISSUES=1. No secrets are written to disk.
+ */
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { promisify } from "node:util";
+import { transcriptToSegments } from "./transcript-segments.mjs";
+
+const execFileAsync = promisify(execFile);
+
+const DEFAULT_PORT = 4127;
+const DEFAULT_BRANCH = "main";
+const CAPTURES_ROOT = resolve(process.cwd(), ".snap-prompt", "captures");
+const ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token";
+const ASSEMBLYAI_API_BASE = "https://api.assemblyai.com";
+const TRANSCRIBE_POLL_INTERVAL_MS = 3000;
+const TRANSCRIBE_TIMEOUT_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/** Load raw config: SNAP_PROMPT_CONFIG (inline JSON or path) → file → {}. */
+function loadRawConfig() {
+	const raw = process.env.SNAP_PROMPT_CONFIG;
+	if (raw?.trim()) {
+		const trimmed = raw.trim();
+		if (trimmed.startsWith("{")) {
+			return JSON.parse(trimmed);
+		}
+		return JSON.parse(readFileSync(resolve(trimmed), "utf8"));
+	}
+	const local = resolve(process.cwd(), ".snap-prompt.github.json");
+	if (existsSync(local)) {
+		return JSON.parse(readFileSync(local, "utf8"));
+	}
+	return {};
+}
+
+/** Normalize one repo entry (string `owner/repo[#branch]` or object) → target. */
+function normalizeRepo(entry) {
+	if (typeof entry === "string") {
+		const [repoPart, branchPart] = entry.split("#");
+		const repo = repoPart.trim();
+		if (!repo) return null;
+		return {
+			id: repo,
+			name: repo,
+			repo,
+			branch: (branchPart || "").trim() || DEFAULT_BRANCH,
+		};
+	}
+	if (entry && typeof entry === "object") {
+		const repo = (entry.repo || entry.id || "").trim();
+		if (!repo) return null;
+		return {
+			id: (entry.id || repo).trim(),
+			name: (entry.name || repo).trim(),
+			repo,
+			branch: (entry.branch || "").trim() || DEFAULT_BRANCH,
+		};
+	}
+	return null;
+}
+
+function buildConfig() {
+	const cfg = loadRawConfig();
+
+	const issueMode =
+		cfg.issueMode === true || process.env.SNAP_PROMPT_ENABLE_ISSUES === "1";
+
+	// Repos: config `repos` array first, then SNAP_PROMPT_REPOS comma list.
+	const entries = [];
+	if (Array.isArray(cfg.repos)) entries.push(...cfg.repos);
+	if (process.env.SNAP_PROMPT_REPOS) {
+		entries.push(
+			...process.env.SNAP_PROMPT_REPOS.split(",").map((s) => s.trim()),
+		);
+	}
+	const targets = [];
+	const byId = new Map();
+	for (const entry of entries) {
+		const t = normalizeRepo(entry);
+		if (t && !byId.has(t.id)) {
+			byId.set(t.id, t);
+			targets.push(t);
+		}
+	}
+
+	const projectId =
+		cfg.projectId || process.env.SNAP_PROMPT_PROJECT_ID || "snap-prompt";
+	const screenshotMode =
+		cfg.screenshotMode || process.env.SNAP_PROMPT_SCREENSHOT_MODE;
+	const env = cfg.env || process.env.SNAP_PROMPT_ENV;
+
+	const enabledModes = issueMode
+		? ["issue", "clipboard", "download"]
+		: ["clipboard", "download"];
+	const defaultMode = cfg.defaultMode || (issueMode ? "issue" : "clipboard");
+
+	return {
+		issueMode,
+		targets,
+		byId,
+		projectId,
+		screenshotMode,
+		env,
+		enabledModes,
+		defaultMode,
+		port: Number(process.env.SNAP_PROMPT_PORT) || DEFAULT_PORT,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helpers
+// ---------------------------------------------------------------------------
+
+const CORS_HEADERS = {
+	"Access-Control-Allow-Origin": "*",
+	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+	"Access-Control-Allow-Headers": "Content-Type, Authorization",
+	"Access-Control-Max-Age": "86400",
+};
+
+function sendJson(res, status, body) {
+	const payload = JSON.stringify(body);
+	res.writeHead(status, {
+		...CORS_HEADERS,
+		"Content-Type": "application/json",
+	});
+	res.end(payload);
+}
+
+function readJsonBody(req) {
+	return new Promise((resolvePromise, reject) => {
+		const chunks = [];
+		let size = 0;
+		req.on("data", (c) => {
+			size += c.length;
+			// 64 MB ceiling — screenshots/audio are base64 inline.
+			if (size > 64 * 1024 * 1024) {
+				reject(new Error("payload too large"));
+				req.destroy();
+				return;
+			}
+			chunks.push(c);
+		});
+		req.on("end", () => {
+			if (chunks.length === 0) {
+				resolvePromise({});
+				return;
+			}
+			try {
+				resolvePromise(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			} catch (err) {
+				reject(err);
+			}
+		});
+		req.on("error", reject);
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+function handleConfig(res, config) {
+	const body = {
+		modes: config.enabledModes,
+		defaultMode: config.defaultMode,
+		projectId: config.projectId,
+	};
+	if (config.screenshotMode) body.screenshotMode = config.screenshotMode;
+	if (config.env) body.env = config.env;
+	sendJson(res, 200, body);
+}
+
+function handleTargets(res, config) {
+	// Expose only the public Target shape; `repo` stays server-side.
+	sendJson(
+		res,
+		200,
+		config.targets.map((t) => ({ id: t.id, name: t.name, branch: t.branch })),
+	);
+}
+
+async function handleArtifact(req, res) {
+	const body = await readJsonBody(req);
+	const artifact = body.artifact;
+	if (!artifact || typeof artifact.sessionId !== "string") {
+		sendJson(res, 400, { error: "artifact.sessionId required" });
+		return;
+	}
+	const sessionId = artifact.sessionId;
+	const dir = join(CAPTURES_ROOT, sessionId);
+	mkdirSync(dir, { recursive: true });
+
+	writeFileSync(join(dir, "artifact.json"), JSON.stringify(artifact, null, 2));
+
+	if (typeof body.audioBase64 === "string" && body.audioBase64.length > 0) {
+		writeFileSync(
+			join(dir, "audio.webm"),
+			Buffer.from(body.audioBase64, "base64"),
+		);
+	}
+
+	if (Array.isArray(body.screenshotsBase64)) {
+		body.screenshotsBase64.forEach((b64, i) => {
+			if (typeof b64 === "string" && b64.length > 0) {
+				const name = `screenshot-${String(i + 1).padStart(3, "0")}.png`;
+				writeFileSync(join(dir, name), Buffer.from(b64, "base64"));
+			}
+		});
+	}
+
+	sendJson(res, 200, { dir, sessionId });
+}
+
+async function handleTranscribe(req, res) {
+	const body = await readJsonBody(req);
+	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+	if (!sessionId) {
+		sendJson(res, 400, { error: "sessionId required" });
+		return;
+	}
+	console.log(`[transcribe] start session=${sessionId}`);
+
+	const dir = join(CAPTURES_ROOT, sessionId);
+	const audioPath = join(dir, "audio.webm");
+	if (!existsSync(audioPath)) {
+		console.error(
+			`[transcribe] audio missing session=${sessionId} path=${audioPath}`,
+		);
+		sendJson(res, 400, { error: `audio not found for session ${sessionId}` });
+		return;
+	}
+
+	const key = process.env.ASSEMBLYAI_API_KEY;
+	if (!key) {
+		console.error("[transcribe] ASSEMBLYAI_API_KEY not configured");
+		sendJson(res, 501, { error: "ASSEMBLYAI_API_KEY not configured" });
+		return;
+	}
+
+	try {
+		const audio = readFileSync(audioPath);
+		console.log(
+			`[transcribe] uploading session=${sessionId} bytes=${audio.length}`,
+		);
+		const uploadRes = await fetch(`${ASSEMBLYAI_API_BASE}/v2/upload`, {
+			method: "POST",
+			headers: {
+				Authorization: key,
+				"Content-Type": "application/octet-stream",
+			},
+			body: audio,
+		});
+		if (!uploadRes.ok) {
+			const detail = await readUpstreamError(uploadRes);
+			console.error(
+				`[transcribe] upload failed session=${sessionId} status=${uploadRes.status} ${detail}`,
+			);
+			sendJson(res, 502, {
+				error: `AssemblyAI upload failed: ${uploadRes.status} ${detail}`,
+			});
+			return;
+		}
+		const uploaded = await uploadRes.json();
+		const uploadUrl = uploaded?.upload_url;
+		if (typeof uploadUrl !== "string" || !uploadUrl) {
+			console.error(
+				`[transcribe] upload response missing url session=${sessionId}`,
+			);
+			sendJson(res, 502, {
+				error: "AssemblyAI upload response missing upload_url",
+			});
+			return;
+		}
+		console.log(`[transcribe] upload ok session=${sessionId}`);
+
+		const submitRes = await fetch(`${ASSEMBLYAI_API_BASE}/v2/transcript`, {
+			method: "POST",
+			headers: { Authorization: key, "Content-Type": "application/json" },
+			body: JSON.stringify({
+				audio_url: uploadUrl,
+				speech_models: ["universal-3-pro", "universal-2"],
+				punctuate: true,
+				format_text: true,
+			}),
+		});
+		if (!submitRes.ok) {
+			const detail = await readUpstreamError(submitRes);
+			console.error(
+				`[transcribe] submit failed session=${sessionId} status=${submitRes.status} ${detail}`,
+			);
+			sendJson(res, 502, {
+				error: `AssemblyAI transcript submit failed: ${submitRes.status} ${detail}`,
+			});
+			return;
+		}
+		const submitted = await submitRes.json();
+		const transcriptId = submitted?.id;
+		if (typeof transcriptId !== "string" || !transcriptId) {
+			console.error(
+				`[transcribe] submit response missing id session=${sessionId}`,
+			);
+			sendJson(res, 502, {
+				error: "AssemblyAI transcript response missing id",
+			});
+			return;
+		}
+		console.log(
+			`[transcribe] submitted session=${sessionId} transcriptId=${transcriptId}`,
+		);
+
+		const deadline = Date.now() + TRANSCRIBE_TIMEOUT_MS;
+		let lastStatus = "";
+		let final = null;
+		while (Date.now() < deadline) {
+			const pollRes = await fetch(
+				`${ASSEMBLYAI_API_BASE}/v2/transcript/${transcriptId}`,
+				{ headers: { Authorization: key } },
+			);
+			if (!pollRes.ok) {
+				const detail = await readUpstreamError(pollRes);
+				console.error(
+					`[transcribe] poll failed session=${sessionId} transcriptId=${transcriptId} status=${pollRes.status} ${detail}`,
+				);
+				sendJson(res, 502, {
+					error: `AssemblyAI poll failed: ${pollRes.status} ${detail}`,
+				});
+				return;
+			}
+			const data = await pollRes.json();
+			if (data.status !== lastStatus) {
+				console.log(
+					`[transcribe] status session=${sessionId} transcriptId=${transcriptId} ${lastStatus || "(none)"} -> ${data.status}`,
+				);
+				lastStatus = data.status;
+			}
+			if (data.status === "completed") {
+				final = data;
+				break;
+			}
+			if (data.status === "error" || data.status === "failed") {
+				console.error(
+					`[transcribe] upstream failed session=${sessionId} transcriptId=${transcriptId} cause=${data.error || data.status}`,
+				);
+				sendJson(res, 502, {
+					error: `AssemblyAI transcription failed: ${data.error || data.status}`,
+				});
+				return;
+			}
+			await delay(TRANSCRIBE_POLL_INTERVAL_MS);
+		}
+		if (!final) {
+			console.error(
+				`[transcribe] timeout session=${sessionId} transcriptId=${transcriptId}`,
+			);
+			sendJson(res, 504, { error: "AssemblyAI transcription timed out" });
+			return;
+		}
+
+		const transcript = transcriptToSegments(final);
+		console.log(
+			`[transcribe] completed session=${sessionId} transcriptId=${transcriptId} segments=${transcript.length}`,
+		);
+		persistTranscript(sessionId, transcript);
+		sendJson(res, 200, { transcript });
+	} catch (err) {
+		console.error(`[transcribe] failed session=${sessionId} ${String(err)}`);
+		sendJson(res, 502, { error: `AssemblyAI request failed: ${String(err)}` });
+	}
+}
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Best-effort short body text from a failed upstream response. */
+async function readUpstreamError(res) {
+	try {
+		return (await res.text()).replace(/\s+/g, " ").trim().slice(0, 300);
+	} catch {
+		return "";
+	}
+}
+
+/** Persist the batch transcript back into the session's artifact.json. */
+function persistTranscript(sessionId, transcript) {
+	const file = join(CAPTURES_ROOT, sessionId, "artifact.json");
+	if (!existsSync(file)) return;
+	try {
+		const artifact = JSON.parse(readFileSync(file, "utf8"));
+		artifact.transcript = transcript;
+		artifact.transcriptionMode = "batch-fallback";
+		writeFileSync(file, JSON.stringify(artifact, null, 2));
+	} catch (err) {
+		console.error(
+			`[transcribe] persist failed session=${sessionId} ${String(err)}`,
+		);
+	}
+}
+
+async function handleStreamingToken(req, res) {
+	await readJsonBody(req);
+	const key = process.env.ASSEMBLYAI_API_KEY;
+	if (!key) {
+		sendJson(res, 501, { error: "ASSEMBLYAI_API_KEY not configured" });
+		return;
+	}
+	try {
+		const expiresInSeconds = 300;
+		const upstream = await fetch(
+			`${ASSEMBLYAI_TOKEN_URL}?expires_in_seconds=${expiresInSeconds}`,
+			{ headers: { Authorization: key } },
+		);
+		if (!upstream.ok) {
+			sendJson(res, 502, {
+				error: `AssemblyAI token mint failed: ${upstream.status}`,
+			});
+			return;
+		}
+		const data = await upstream.json();
+		if (!data || typeof data.token !== "string") {
+			sendJson(res, 502, { error: "AssemblyAI token response missing token" });
+			return;
+		}
+		sendJson(res, 200, {
+			token: data.token,
+			expiresAt: Date.now() + expiresInSeconds * 1000,
+		});
+	} catch (err) {
+		sendJson(res, 502, { error: `AssemblyAI request failed: ${String(err)}` });
+	}
+}
+
+/** Read a previously-saved artifact for a session, or null. */
+function readArtifact(sessionId) {
+	const file = join(CAPTURES_ROOT, sessionId, "artifact.json");
+	if (!existsSync(file)) return null;
+	try {
+		return JSON.parse(readFileSync(file, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+/** Derive an issue title from the saved artifact (transcript → page → session). */
+function deriveTitle(artifact, sessionId) {
+	if (artifact && Array.isArray(artifact.transcript)) {
+		const text = artifact.transcript
+			.map((s) => (s && typeof s.text === "string" ? s.text : ""))
+			.join(" ")
+			.replace(/\s+/g, " ")
+			.trim();
+		if (text) {
+			const clipped = text.length > 72 ? `${text.slice(0, 69)}...` : text;
+			return `Snap Prompt: ${clipped}`;
+		}
+	}
+	if (artifact && typeof artifact.pageUrl === "string" && artifact.pageUrl) {
+		return `Snap Prompt: ${artifact.pageUrl}`;
+	}
+	return `Snap Prompt capture ${sessionId}`;
+}
+
+async function handleIssue(req, res, config) {
+	if (!config.issueMode) {
+		sendJson(res, 403, { error: "issue mode disabled" });
+		return;
+	}
+	const body = await readJsonBody(req);
+	const sessionId = body.sessionId;
+	if (typeof sessionId !== "string" || !sessionId) {
+		sendJson(res, 400, { error: "sessionId required" });
+		return;
+	}
+
+	// Resolve the target repo: requested targetId, else the first configured.
+	const target =
+		(body.targetId && config.byId.get(body.targetId)) || config.targets[0];
+	if (!target) {
+		sendJson(res, 400, { error: "no repository configured" });
+		return;
+	}
+
+	const artifact = readArtifact(sessionId);
+	const title = deriveTitle(artifact, sessionId);
+	const issueBody =
+		typeof body.prompt === "string" && body.prompt
+			? body.prompt
+			: `Snap Prompt capture ${sessionId}`;
+
+	const bodyFile = join(tmpdir(), `snap-prompt-issue-${sessionId}.md`);
+	writeFileSync(bodyFile, issueBody);
+
+	try {
+		const { stdout } = await execFileAsync("gh", [
+			"issue",
+			"create",
+			"--repo",
+			target.repo,
+			"--title",
+			title,
+			"--body-file",
+			bodyFile,
+		]);
+		const url = stdout.trim().split(/\s+/).pop() || "";
+		const match = url.match(/\/issues\/(\d+)/);
+		const number = match ? Number(match[1]) : 0;
+		sendJson(res, 200, { created: true, number, url });
+	} catch (err) {
+		const detail = err?.stderr ? String(err.stderr).trim() : String(err);
+		sendJson(res, 502, { error: `gh issue create failed: ${detail}` });
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Server
+// ---------------------------------------------------------------------------
+
+const config = buildConfig();
+
+const server = createServer((req, res) => {
+	if (req.method === "OPTIONS") {
+		res.writeHead(204, CORS_HEADERS);
+		res.end();
+		return;
+	}
+
+	const url = new URL(req.url || "/", `http://localhost:${config.port}`);
+	const path = url.pathname;
+
+	const dispatch = async () => {
+		if (req.method === "GET" && path === "/snap-prompt/config") {
+			handleConfig(res, config);
+			return;
+		}
+		if (req.method === "GET" && path === "/targets") {
+			handleTargets(res, config);
+			return;
+		}
+		if (req.method === "POST" && path === "/artifact") {
+			await handleArtifact(req, res);
+			return;
+		}
+		if (req.method === "POST" && path === "/transcribe") {
+			await handleTranscribe(req, res);
+			return;
+		}
+		if (req.method === "POST" && path === "/streaming-token") {
+			await handleStreamingToken(req, res);
+			return;
+		}
+		if (req.method === "POST" && path === "/issue") {
+			await handleIssue(req, res, config);
+			return;
+		}
+		sendJson(res, 404, { error: "not found" });
+	};
+
+	dispatch().catch((err) => {
+		sendJson(res, 500, { error: String(err?.message ? err.message : err) });
+	});
+});
+
+server.listen(config.port, () => {
+	const state = config.issueMode ? "ENABLED" : "disabled";
+	console.log(
+		`snap-prompt issue service on http://localhost:${config.port} ` +
+			`(issue mode ${state}; ${config.targets.length} repo target(s))`,
+	);
+});

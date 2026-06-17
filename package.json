@@ -38,7 +38,8 @@
 		"build": "pnpm build:esm && pnpm build:css && pnpm build:standalone",
 		"test": "vitest run",
 		"lint": "biome check .",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"service:github": "node scripts/github-issue-service.mjs"
 	},
 	"peerDependencies": {
 		"react": "^19",

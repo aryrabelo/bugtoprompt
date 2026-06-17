@@ -75,7 +75,70 @@ describe("cssSelector", () => {
 		expect(cssSelector(el)).toBe("#go");
 	});
 
-	test("falls back to an nth-of-type path under the nearest id", () => {
+	test("prefers data-testid when present", () => {
+		document.body.innerHTML = `<div><button data-testid="submit-btn">Save</button></div>`;
+		const el = document.querySelector("button") as Element;
+		expect(cssSelector(el)).toBe('[data-testid="submit-btn"]');
+	});
+
+	test("a single stable attribute beats an nth-of-type path", () => {
+		document.body.innerHTML = `
+			<div>
+				<button data-slot="trigger">A</button>
+				<button data-slot="content">B</button>
+			</div>
+		`;
+		const trigger = document.querySelector("button") as Element;
+		expect(cssSelector(trigger)).toBe('button[data-slot="trigger"]');
+	});
+
+	test("a data-slot/data-variant combo beats nth-of-type when neither attr is unique alone", () => {
+		// Badge-style: same slot repeated, same variant repeated, but the pair
+		// uniquely identifies the element — must win over div > span:nth-of-type(1).
+		document.body.innerHTML = `
+			<div>
+				<span data-slot="badge" data-variant="info">A</span>
+				<span data-slot="badge" data-variant="warn">B</span>
+				<span data-slot="chip" data-variant="info">C</span>
+			</div>
+		`;
+		const badgeInfo = document.querySelector("span") as Element;
+		// Neither single attribute is unique in the document…
+		expect(document.querySelectorAll('[data-slot="badge"]').length).toBe(2);
+		expect(document.querySelectorAll('[data-variant="info"]').length).toBe(2);
+		// …so the combination is chosen, not nth-of-type.
+		expect(cssSelector(badgeInfo)).toBe(
+			'span[data-slot="badge"][data-variant="info"]',
+		);
+	});
+
+	test("uses a semantic class but ignores utility/Tailwind tokens", () => {
+		document.body.innerHTML = `
+			<div>
+				<button class="inline-flex items-center px-2 toolbar-save">A</button>
+				<button class="inline-flex items-center px-2">B</button>
+			</div>
+		`;
+		const save = document.querySelector("button") as Element;
+		expect(cssSelector(save)).toBe("button.toolbar-save");
+	});
+
+	test("anchors to the nearest stable (non-id) ancestor before nth-of-type", () => {
+		document.body.innerHTML = `
+			<section data-testid="panel">
+				<div><button>A</button><button>B</button></div>
+			</section>
+			<section><div><button>C</button></div></section>
+		`;
+		const second = document.querySelectorAll(
+			'[data-testid="panel"] button',
+		)[1] as Element;
+		expect(cssSelector(second)).toBe(
+			'[data-testid="panel"] > div > button:nth-of-type(2)',
+		);
+	});
+
+	test("falls back to an nth-of-type path under the nearest id (last resort)", () => {
 		document.body.innerHTML = `
 			<ul id="list"><li><button>A</button></li><li><button>B</button></li></ul>
 		`;
@@ -83,9 +146,14 @@ describe("cssSelector", () => {
 		expect(cssSelector(second)).toBe("#list > li:nth-of-type(2) > button");
 	});
 
-	test("prefers data-testid when present", () => {
-		document.body.innerHTML = `<div><button data-testid="submit-btn">Save</button></div>`;
-		const el = document.querySelector("button") as Element;
-		expect(cssSelector(el)).toBe('[data-testid="submit-btn"]');
+	test("falls back to nth-of-type when only utility classes are present", () => {
+		document.body.innerHTML = `
+			<div id="bar">
+				<button class="inline-flex px-2">A</button>
+				<button class="inline-flex px-2">B</button>
+			</div>
+		`;
+		const second = document.querySelectorAll("#bar button")[1] as Element;
+		expect(cssSelector(second)).toBe("#bar > button:nth-of-type(2)");
 	});
 });

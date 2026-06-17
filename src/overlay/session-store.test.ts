@@ -42,6 +42,26 @@ function makeSession(
 	};
 }
 
+async function seedCorruptScreenshotsDb(): Promise<void> {
+	await new Promise<void>((resolve, reject) => {
+		const del = indexedDB.deleteDatabase("snap-prompt");
+		del.onsuccess = () => resolve();
+		del.onerror = () => reject(del.error);
+		del.onblocked = () => reject(new Error("delete blocked"));
+	});
+	await new Promise<void>((resolve, reject) => {
+		const req = indexedDB.open("snap-prompt", 99);
+		req.onupgradeneeded = () => {
+			// Intentionally leave out the screenshots store to simulate a stale/corrupt DB.
+		};
+		req.onsuccess = () => {
+			req.result.close();
+			resolve();
+		};
+		req.onerror = () => reject(req.error);
+	});
+}
+
 // ---------------------------------------------------------------------------
 // localStorage — saveSession / loadSession
 // ---------------------------------------------------------------------------
@@ -122,6 +142,16 @@ describe("putShot / loadShots", () => {
 		// clone may return a non-jsdom Blob realm object in the test environment.
 		expect(shots[0]).not.toBeNull();
 		expect(shots[1]).not.toBeNull();
+	});
+
+	it("self-heals a DB missing the screenshots store", async () => {
+		await seedCorruptScreenshotsDb();
+		const empty = await loadShots(sessionId, 2);
+		expect(empty).toEqual([null, null]);
+
+		await putShot(sessionId, 0, new Blob(["aa"], { type: "image/png" }));
+		const repaired = await loadShots(sessionId, 1);
+		expect(repaired[0]).not.toBeNull();
 	});
 
 	it("returns null for missing slot indices", async () => {

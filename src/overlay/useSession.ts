@@ -337,10 +337,26 @@ export function useSession(
 			// degrades to record-only (batch transcription happens on stop).
 			try {
 				const token = await resolveStreamingToken(client, binding.workspaceId);
-				transcriberRef.current = await makeTranscriber(token);
-				live = true;
-				setNeedsKey(false);
-			} catch {
+				try {
+					transcriberRef.current = await makeTranscriber(token);
+					live = true;
+					setNeedsKey(false);
+				} catch (err) {
+					// Token minted but the streaming websocket failed to open.
+					console.warn(
+						"debug: streaming websocket failed to open; batch fallback",
+						err,
+					);
+					transcriberRef.current = undefined;
+					live = false;
+					setNeedsKey(true);
+				}
+			} catch (err) {
+				// No usable streaming token resolved (no key / mint failed).
+				console.warn(
+					"debug: streaming token unavailable; prompting for API key (batch fallback)",
+					err,
+				);
 				transcriberRef.current = undefined;
 				live = false;
 				setNeedsKey(true);
@@ -597,11 +613,18 @@ export function useSession(
 			snapshotsRef.current = [...session.snapshots];
 			finalsRef.current = [...session.transcript];
 
-			// Load screenshot blobs from IndexedDB.
-			const blobs = await loadShots(
-				session.sessionId,
-				session.snapshots.length,
-			);
+			// Load screenshot blobs from IndexedDB. If the store is missing/corrupt,
+			// continue with null placeholders so startup does not crash.
+			let blobs: Array<Blob | null>;
+			try {
+				blobs = await loadShots(session.sessionId, session.snapshots.length);
+			} catch (err) {
+				console.warn(
+					"debug: screenshot store unavailable during rehydrate; continuing without stored shots",
+					err,
+				);
+				blobs = Array.from({ length: session.snapshots.length }, () => null);
+			}
 			if (cancelled) return;
 			shotBlobsRef.current = blobs;
 
@@ -715,6 +738,7 @@ export function useSession(
 		elapsedMs,
 		streaming,
 		needsKey,
+		hasKey,
 		flashTick,
 		snapOnClick: snapOnClickState,
 		error,

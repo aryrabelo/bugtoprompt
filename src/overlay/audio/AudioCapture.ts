@@ -1,14 +1,21 @@
 /**
  * Microphone capture for a debug session. Two independent consumers of one mic
  * stream: a MediaRecorder that ALWAYS keeps the recording (the durable artifact,
- * so a websocket drop never loses audio), and an AudioWorklet that streams 16 kHz
- * PCM frames for live transcription. The worklet is best-effort — if it can't
- * load, recording still works and the session falls back to batch transcription.
+ * so a websocket drop never loses audio), and a live PCM tap that streams 16 kHz
+ * PCM16 frames for real-time transcription.
+ *
+ * The live tap is best-effort and prefers an AudioWorklet, but degrades through
+ * a ScriptProcessor fallback when AudioWorklet is unavailable (older Safari /
+ * WKWebView builds, or a worklet module that fails to load) so live captions
+ * keep flowing wherever any Web Audio path can downsample. Only when neither
+ * engine works does the session drop to batch transcription of the kept
+ * recording. Recording is never affected by live-tap failures.
  */
+import { createPcmDownsampler } from "./downsample";
 import { PCM_WORKLET_NAME, pcmWorkletUrl } from "./pcm-worklet";
 
 export interface AudioCaptureHandlers {
-	/** Called with each 16 kHz PCM16 frame from the worklet (when available). */
+	/** Called with each 16 kHz PCM16 frame from the live tap (when available). */
 	onPcmFrame?: (frame: ArrayBuffer) => void;
 }
 
@@ -18,17 +25,27 @@ export interface StoppedAudio {
 	bytes: number;
 }
 
+/** Which Web Audio engine is feeding live PCM frames (for diagnostics). */
+export type LiveEngine = "worklet" | "scriptprocessor" | "none";
+
 const PREFERRED_MIME = "audio/webm;codecs=opus";
+/** ScriptProcessor block size: a power of two balancing latency vs. overhead. */
+const SCRIPT_PROCESSOR_BUFFER = 4096;
+const TARGET_RATE = 16000;
 
 export class AudioCapture {
 	private stream?: MediaStream;
 	private recorder?: MediaRecorder;
 	private chunks: Blob[] = [];
 	private ctx?: AudioContext;
+	private source?: MediaStreamAudioSourceNode;
 	private node?: AudioWorkletNode;
+	private scriptNode?: ScriptProcessorNode;
 	private mimeType = PREFERRED_MIME;
-	/** True when the PCM worklet is live (streaming transcription is possible). */
+	/** True when a live PCM tap is running (streaming transcription is possible). */
 	streaming = false;
+	/** The engine currently feeding PCM frames — surfaced for diagnostics. */
+	liveEngine: LiveEngine = "none";
 
 	async start(handlers: AudioCaptureHandlers = {}): Promise<void> {
 		this.stream = await navigator.mediaDevices.getUserMedia({
@@ -49,10 +66,14 @@ export class AudioCapture {
 		this.recorder.start(1000);
 
 		if (handlers.onPcmFrame) {
-			await this.startWorklet(handlers.onPcmFrame).catch((err) => {
-				// worklet unavailable ⇒ no live captions; recording is unaffected.
-				console.warn("debug: PCM worklet unavailable, batch fallback", err);
+			await this.startLive(handlers.onPcmFrame).catch((err) => {
+				// No live engine available ⇒ no live captions; recording is unaffected.
+				console.warn(
+					"debug: live PCM tap unavailable (no Web Audio engine); batch fallback",
+					err,
+				);
 				this.streaming = false;
+				this.liveEngine = "none";
 			});
 		}
 	}
@@ -60,37 +81,76 @@ export class AudioCapture {
 	/**
 	 * Start live PCM streaming on the ALREADY-RUNNING mic stream. Used when the
 	 * user pastes an AssemblyAI key mid-recording: the recorder keeps going while
-	 * the worklet attaches on top. Idempotent — returns true if streaming is (or
-	 * becomes) live, false if the worklet could not load.
+	 * the live tap attaches on top. Idempotent — returns true if streaming is (or
+	 * becomes) live, false if no Web Audio engine could be brought up.
 	 */
 	async attachLiveTranscription(
 		onPcmFrame: (frame: ArrayBuffer) => void,
 	): Promise<boolean> {
 		if (this.streaming) return true;
 		try {
-			await this.startWorklet(onPcmFrame);
+			await this.startLive(onPcmFrame);
 		} catch (err) {
-			console.warn("debug: PCM worklet unavailable, batch fallback", err);
+			console.warn(
+				"debug: live PCM tap unavailable (no Web Audio engine); batch fallback",
+				err,
+			);
 			this.streaming = false;
+			this.liveEngine = "none";
 		}
 		return this.streaming;
 	}
 
-	private async startWorklet(
+	/**
+	 * Bring up a live PCM tap on the mic stream. Prefers an AudioWorklet; on any
+	 * worklet failure (unsupported API or a module that won't load) it degrades
+	 * to a ScriptProcessor-based downsampler so live captions survive on browsers
+	 * without AudioWorklet. Throws only when NEITHER engine can start.
+	 */
+	private async startLive(
 		onPcmFrame: (frame: ArrayBuffer) => void,
 	): Promise<void> {
 		if (!this.stream) return;
-		const ctx = new AudioContext();
+		const ctx = this.ctx ?? new AudioContext();
 		this.ctx = ctx;
+		const source = this.source ?? ctx.createMediaStreamSource(this.stream);
+		this.source = source;
+
+		try {
+			await this.startWorklet(ctx, source, onPcmFrame);
+			this.liveEngine = "worklet";
+			this.streaming = true;
+			console.info("debug: live transcription engine = AudioWorklet");
+			return;
+		} catch (err) {
+			console.warn(
+				"debug: AudioWorklet unavailable; trying ScriptProcessor fallback",
+				err,
+			);
+		}
+
+		// Fallback: ScriptProcessor decimation. Throws to the caller if even this
+		// is missing (no Web Audio at all) so the session knows to go batch-only.
+		this.startScriptProcessor(ctx, source, onPcmFrame);
+		this.liveEngine = "scriptprocessor";
+		this.streaming = true;
+		console.info("debug: live transcription engine = ScriptProcessor fallback");
+	}
+
+	private async startWorklet(
+		ctx: AudioContext,
+		source: MediaStreamAudioSourceNode,
+		onPcmFrame: (frame: ArrayBuffer) => void,
+	): Promise<void> {
+		if (!ctx.audioWorklet) throw new Error("AudioWorklet unsupported");
 		const url = pcmWorkletUrl();
 		try {
 			await ctx.audioWorklet.addModule(url);
 		} finally {
 			URL.revokeObjectURL(url);
 		}
-		const source = ctx.createMediaStreamSource(this.stream);
 		const node = new AudioWorkletNode(ctx, PCM_WORKLET_NAME, {
-			processorOptions: { targetRate: 16000 },
+			processorOptions: { targetRate: TARGET_RATE },
 		});
 		node.port.onmessage = (e) => onPcmFrame(e.data as ArrayBuffer);
 		// Route through a zero-gain sink so the engine keeps pulling the worklet
@@ -99,7 +159,29 @@ export class AudioCapture {
 		sink.gain.value = 0;
 		source.connect(node).connect(sink).connect(ctx.destination);
 		this.node = node;
-		this.streaming = true;
+	}
+
+	private startScriptProcessor(
+		ctx: AudioContext,
+		source: MediaStreamAudioSourceNode,
+		onPcmFrame: (frame: ArrayBuffer) => void,
+	): void {
+		if (typeof ctx.createScriptProcessor !== "function") {
+			throw new Error("ScriptProcessor unsupported");
+		}
+		const node = ctx.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER, 1, 1);
+		const downsample = createPcmDownsampler(ctx.sampleRate, TARGET_RATE);
+		node.onaudioprocess = (e) => {
+			const frame = downsample(e.inputBuffer.getChannelData(0));
+			if (frame) onPcmFrame(frame.slice().buffer);
+		};
+		// Same zero-gain sink trick: a ScriptProcessor only fires onaudioprocess
+		// while connected toward the destination.
+		const sink = ctx.createGain();
+		sink.gain.value = 0;
+		source.connect(node);
+		node.connect(sink).connect(ctx.destination);
+		this.scriptNode = node;
 	}
 
 	/** Native audio sample rate (for the streaming ws); 0 before start. */
@@ -129,8 +211,12 @@ export class AudioCapture {
 	private teardown(): void {
 		this.node?.port.close();
 		this.node?.disconnect();
+		if (this.scriptNode) this.scriptNode.onaudioprocess = null;
+		this.scriptNode?.disconnect();
+		this.source?.disconnect();
 		void this.ctx?.close().catch(() => undefined);
 		for (const track of this.stream?.getTracks() ?? []) track.stop();
 		this.streaming = false;
+		this.liveEngine = "none";
 	}
 }
