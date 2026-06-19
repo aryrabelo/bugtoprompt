@@ -15,9 +15,9 @@ import {
 } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient, Target } from "../client";
+import type { BugToPromptClient, Target } from "../client";
 import type { CaptureArtifact } from "../schema";
-import { SnapPrompt } from "./SnapPrompt";
+import { BugToPrompt } from "./BugToPrompt";
 import type { CaptureRecord, OutputMode } from "./session-store";
 import { addCapture, listCaptures } from "./session-store";
 
@@ -91,7 +91,7 @@ function makeRecord(id: string, title: string, prompt: string): CaptureRecord {
 	};
 }
 
-function makeFakeClient(): SnapPromptClient {
+function makeFakeClient(): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
 			.fn()
@@ -114,7 +114,7 @@ function makeFakeClient(): SnapPromptClient {
 async function driveToClipboardFinish(clipboardWriteText: Mock): Promise<void> {
 	const client = makeFakeClient();
 	render(
-		<SnapPrompt
+		<BugToPrompt
 			client={client}
 			projectId="proj-test"
 			modes={["clipboard"]}
@@ -175,10 +175,10 @@ afterEach(() => {
 // History panel rendering
 // ---------------------------------------------------------------------------
 
-describe("SnapPrompt history panel", () => {
+describe("BugToPrompt history panel", () => {
 	it("shows 'No captures yet.' when history is empty", () => {
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={makeFakeClient()}
 				modes={["clipboard"]}
 				clipboard={{ writeText: vi.fn() }}
@@ -193,7 +193,7 @@ describe("SnapPrompt history panel", () => {
 		addCapture(makeRecord("r2", "Second bug capture", "# Second"));
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={makeFakeClient()}
 				modes={["clipboard"]}
 				clipboard={{ writeText: vi.fn() }}
@@ -211,7 +211,7 @@ describe("SnapPrompt history panel", () => {
 
 		const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={makeFakeClient()}
 				modes={["clipboard"]}
 				clipboard={{ writeText: clipboardWriteText }}
@@ -236,7 +236,7 @@ describe("SnapPrompt history panel", () => {
 		addCapture(makeRecord("keep-me", "To keep", "# keep"));
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={makeFakeClient()}
 				modes={["clipboard"]}
 				clipboard={{ writeText: vi.fn() }}

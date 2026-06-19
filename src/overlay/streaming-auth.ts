@@ -4,14 +4,14 @@
  * Resolution order (first match wins; throws if nothing succeeds so that
  * useSession's existing try/catch can degrade gracefully to batch transcription):
  *
- *  1. window.__SNAP_PROMPT__.streamingToken          — pre-minted temp token (most reliable)
- *  2. window.__SNAP_PROMPT__.mintStreamingToken()    — host-provided minter (e.g. an
+ *  1. window.__BUGTOPROMPT__.streamingToken          — pre-minted temp token (most reliable)
+ *  2. window.__BUGTOPROMPT__.mintStreamingToken()    — host-provided minter (e.g. an
  *                                                       extension worker that bypasses page CORS)
- *  3. window.__SNAP_PROMPT__.assemblyAiKey / stored  — direct browser v3 mint (CORS-restricted)
+ *  3. window.__BUGTOPROMPT__.assemblyAiKey / stored  — direct browser v3 mint (CORS-restricted)
  *  4. client.mintStreamingToken()                    — server/dev path (default)
  */
 
-import type { SnapPromptClient } from "../client";
+import type { BugToPromptClient } from "../client";
 import { loadAssemblyKey } from "./key-store";
 
 const ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token";
@@ -23,11 +23,11 @@ const ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token";
  * SSR / jsdom-safe: `window` and `fetch` are guarded before use.
  */
 export async function resolveStreamingToken(
-	client: SnapPromptClient,
+	client: BugToPromptClient,
 	targetId?: string,
 ): Promise<string> {
 	if (typeof window !== "undefined") {
-		const hint = window.__SNAP_PROMPT__;
+		const hint = window.__BUGTOPROMPT__;
 
 		// 1. Pre-minted token — no round-trip, no CORS concern.
 		if (hint?.streamingToken) {

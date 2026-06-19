@@ -8,7 +8,7 @@
  *
  * Using `@theme inline` avoids emitting these to :root — the generated
  * utilities reference var(--sp-*) directly, so values only apply inside
- * [data-snap-prompt] ancestors (defined below). No host-page pollution.
+ * [data-bugtoprompt] ancestors (defined below). No host-page pollution.
  */
 @theme inline {
 	--color-popover: var(--sp-popover);
@@ -30,12 +30,12 @@
 }
 
 /*
- * Scoped token values — cascade to all [data-snap-prompt] portal roots and
+ * Scoped token values — cascade to all [data-bugtoprompt] portal roots and
  * their descendants. Dark default; light override via prefers-color-scheme.
  * Values intentionally not on :root so they never clash with a host app's
  * own --color-* / --popover / etc.
  */
-:where([data-snap-prompt]) {
+:where([data-bugtoprompt]) {
 	/* shadcn "new-york" dark palette */
 	--sp-background: oklch(18.3% 0.009 259.5);
 	--sp-foreground: oklch(94.4% 0.006 264.5);
@@ -56,7 +56,7 @@
 }
 
 @media (prefers-color-scheme: light) {
-	:where([data-snap-prompt]) {
+	:where([data-bugtoprompt]) {
 		--sp-background: oklch(100% 0 0);
 		--sp-foreground: oklch(18.3% 0.009 259.5);
 		--sp-popover: oklch(100% 0 0);

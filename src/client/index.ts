@@ -1,5 +1,5 @@
 /**
- * The SnapPromptClient seam — the only thing the overlay needs from its host.
+ * The BugToPromptClient seam — the only thing the overlay needs from its host.
  * The package ships a plain-fetch reference implementation; host applications
  * may substitute their own (tRPC, GraphQL, etc.) as long as it satisfies the
  * interface.
@@ -12,7 +12,7 @@ export interface Target {
 	branch: string;
 }
 
-export interface SnapPromptClient {
+export interface BugToPromptClient {
 	mintStreamingToken(
 		targetId?: string,
 	): Promise<{ token: string; expiresAt: number }>;
@@ -59,13 +59,13 @@ async function postJson<T>(
 }
 
 /**
- * A reference HTTP implementation over `fetch`. Maps each SnapPromptClient
+ * A reference HTTP implementation over `fetch`. Maps each BugToPromptClient
  * method to the documented REST contract at `baseUrl`.
  *
  * Paths: POST /streaming-token, POST /artifact, POST /transcribe,
  *        POST /issue, GET /targets?projectId=
  */
-export function createFetchClient(baseUrl: string): SnapPromptClient {
+export function createFetchClient(baseUrl: string): BugToPromptClient {
 	return {
 		mintStreamingToken(targetId?: string) {
 			const body: Record<string, unknown> = {};
@@ -110,5 +110,5 @@ export {
 	createLocalFallbackClient,
 	fetchServerConfig,
 	resolveBaseUrl,
-	type SnapPromptServerConfig,
+	type BugToPromptServerConfig,
 } from "../overlay/autoConfig";

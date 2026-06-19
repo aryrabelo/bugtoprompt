@@ -6,7 +6,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient, Target } from "../../client";
+import type { BugToPromptClient, Target } from "../../client";
 import { filterTargets, TargetPicker } from "./TargetPicker";
 
 afterEach(cleanup);
@@ -21,7 +21,7 @@ const TARGETS: Target[] = [
 	{ id: "3", name: "Admin Panel", branch: "hotfix/login" },
 ];
 
-function makeClient(targets: Target[] = TARGETS): SnapPromptClient {
+function makeClient(targets: Target[] = TARGETS): BugToPromptClient {
 	return {
 		mintStreamingToken: vi.fn().mockResolvedValue({ token: "t", expiresAt: 0 }),
 		saveArtifact: vi.fn().mockResolvedValue({ dir: "/tmp", sessionId: "s1" }),

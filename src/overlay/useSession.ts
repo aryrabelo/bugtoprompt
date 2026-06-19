@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { blobToBase64, type SnapPromptClient } from "../client";
+import { blobToBase64, type BugToPromptClient } from "../client";
 import { renderPrompt } from "../render";
 import type {
 	CaptureArtifact,
@@ -99,7 +99,7 @@ interface Pending {
 const newSessionId = (): string => `cap_${crypto.randomUUID()}`;
 
 export function useSession(
-	client: SnapPromptClient,
+	client: BugToPromptClient,
 	screenshotMode: ScreenshotMode = "onMark",
 ): UseSessionResult {
 	const [phase, setPhase] = useState<SessionPhase>("idle");
@@ -237,7 +237,7 @@ export function useSession(
 				if (!recordingRef.current) return;
 				if (!snapOnClickRef.current) return;
 				// Ignore clicks whose target is inside the overlay itself.
-				if ((e.target as Element).closest?.("[data-snap-prompt]")) return;
+				if ((e.target as Element).closest?.("[data-bugtoprompt]")) return;
 				throttledMark();
 			};
 			document.addEventListener("click", handleClick, { capture: true });
@@ -304,7 +304,7 @@ export function useSession(
 
 		setMarkCount(snapshotsRef.current.length);
 		// Flash signal: emitted AFTER grab() resolves and the snapshot is pushed.
-		// SnapPrompt renders <Shutter trigger={flashTick} /> which reacts to this.
+		// BugToPrompt renders <Shutter trigger={flashTick} /> which reacts to this.
 		setFlashTick((n) => n + 1);
 	}, [elapsed, schedulePersist]);
 

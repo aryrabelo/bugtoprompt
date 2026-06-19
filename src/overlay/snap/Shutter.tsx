@@ -21,7 +21,7 @@ import { createPortal } from "react-dom";
 const STYLE_ID = "snap-shutter-styles";
 
 /**
- * The shutter frame + the mark-counter pulse (referenced by SnapPrompt via the
+ * The shutter frame + the mark-counter pulse (referenced by BugToPrompt via the
  * `snap-count-pulse` class). Kept as injected CSS so the reduced-motion media
  * query can override them — an inline `style` animation cannot be.
  */
@@ -79,7 +79,7 @@ export interface ShutterProps {
 export function Shutter({ trigger }: ShutterProps): ReactElement | null {
 	const [visible, setVisible] = useState(false);
 
-	// Inject styles once on mount so SnapPrompt can reference snap-count-pulse.
+	// Inject styles once on mount so BugToPrompt can reference snap-count-pulse.
 	useEffect(() => {
 		ensureStyles();
 	}, []);

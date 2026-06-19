@@ -1,7 +1,7 @@
 /**
  * Target binding fallback: when the overlay can't infer the current target
  * from the app (nothing open, or a standalone host), the user picks one.
- * Backed by `client.listTargets` via the SnapPromptClient.
+ * Backed by `client.listTargets` via the BugToPromptClient.
  *
  * Renders a filterable combobox: typing narrows by name OR branch; keyboard
  * navigation (ArrowUp/Down, Enter, Escape); clear empty/no-results states;
@@ -11,7 +11,7 @@
 import { Check, ChevronDown, X } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useId, useRef, useState } from "react";
-import type { SnapPromptClient, Target } from "../../client";
+import type { BugToPromptClient, Target } from "../../client";
 
 function cn(...classes: (string | undefined | false | null)[]): string {
 	return classes.filter(Boolean).join(" ");
@@ -45,7 +45,7 @@ export function TargetPicker({
 	value,
 	onChange,
 }: {
-	client: SnapPromptClient;
+	client: BugToPromptClient;
 	projectId?: string;
 	value?: string;
 	onChange: (workspaceId: string | undefined, branch?: string) => void;

@@ -22,8 +22,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **In-overlay API-key prompt.** When no streaming token/key resolves, the
   overlay prompts for an AssemblyAI key ("Enable live transcription") instead of
   silently degrading. The key is persisted client-side
-  (`localStorage["snap-prompt:assemblyai-key"]`, also mirrored to
-  `window.__SNAP_PROMPT__.assemblyAiKey`) and applied immediately: because the
+  (`localStorage["bugtoprompt:assemblyai-key"]`, also mirrored to
+  `window.__BUGTOPROMPT__.assemblyAiKey`) and applied immediately: because the
   mic is already recording, `useSession.provideKey` attaches live transcription
   mid-capture via the new `AudioCapture.attachLiveTranscription`. `useSession`
   exposes `needsKey` + `provideKey`; the resolver also reads the stored key.
@@ -35,7 +35,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **Console prod key-unlock.** `resolveStreamingToken` resolves live-transcription
-  auth as `window.__SNAP_PROMPT__.streamingToken` → `assemblyAiKey` (mints a
+  auth as `window.__BUGTOPROMPT__.streamingToken` → `assemblyAiKey` (mints a
   short-lived AssemblyAI token client-side, per-tab) → `client.mintStreamingToken`
   (server/dev). Lets a developer enable live transcription in production from the
   console without any key endpoint. `docs/console.md` has the snippets.
@@ -44,9 +44,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Standalone `<script>` build.** `dist/snap-prompt.global.js` (IIFE bundling
-  React) self-mounts from `data-*` / `window.__SNAP_PROMPT__`; `dist/snap-prompt.css`
-  ships the overlay styles with tokens scoped to `:where([data-snap-prompt])` as
+- **Standalone `<script>` build.** `dist/bugtoprompt.global.js` (IIFE bundling
+  React) self-mounts from `data-*` / `window.__BUGTOPROMPT__`; `dist/bugtoprompt.css`
+  ships the overlay styles with tokens scoped to `:where([data-bugtoprompt])` as
   `--sp-*`, inlined into the bundle — renders styled on any page with no host
   Tailwind. New exports `./standalone` + `./styles.css`; `example/index.html`.
 
@@ -55,7 +55,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **Capture history.** Finished captures (clipboard/download/issue) are saved to a
-  local list (`snap-prompt:history`, cap 50; blobs in IndexedDB). The open panel
+  local list (`bugtoprompt:history`, cap 50; blobs in IndexedDB). The open panel
   lists them with per-item Copy / Download / Delete (+ File issue in issue mode);
   empty state "No captures yet."
 
@@ -72,43 +72,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The Windhover-style **target picker** now shows only in `issue` mode (it is
+- The **target picker** now shows only in `issue` mode (it is
   host-specific config), and renders nothing when there are no targets — no more
   empty "Select a target…" select on clipboard/download hosts.
-- Panel header now reads the brand **"Snap Prompt"** (was "Snap capture").
+- Panel header now reads the brand **"BugToPrompt"** (was "Snap capture").
 
 ## [0.5.0] - 2026-06-15
 
 ### Added
 
 - **Zero-config drop-in.** `client` is now optional and a new `baseUrl` prop was
-  added — `<SnapPrompt />` with no props "just works": it resolves config from
-  `baseUrl` → `window.__SNAP_PROMPT__` → `<meta name="snap-prompt-base">` →
-  `GET {base}/snap-prompt/config`, builds a `createFetchClient` when a backend
+  added — `<BugToPrompt />` with no props "just works": it resolves config from
+  `baseUrl` → `window.__BUGTOPROMPT__` → `<meta name="bugtoprompt-base">` →
+  `GET {base}/bugtoprompt/config`, builds a `createFetchClient` when a backend
   answers, else a local no-backend client (clipboard/download, no secrets).
-- `snap-prompt/client` now also exports `resolveBaseUrl`, `fetchServerConfig`,
-  `createLocalFallbackClient`, and `SnapPromptServerConfig` for host reuse.
+- `bugtoprompt/client` now also exports `resolveBaseUrl`, `fetchServerConfig`,
+  `createLocalFallbackClient`, and `BugToPromptServerConfig` for host reuse.
 
 ## [0.4.0] - 2026-06-15
 
-Reconciliation to the authoritative spec (`snap-prompt`, `<SnapPrompt />`).
+Reconciliation to the authoritative spec (`bugtoprompt`, `<BugToPrompt />`).
 
 ### Changed (breaking)
 
-- Renamed the public API: `DebugOverlay` → **`SnapPrompt`**, `DebugClient` →
-  **`SnapPromptClient`**, `TargetOption` → **`Target`**; the artifact contract
+- Renamed the public API: `DebugOverlay` → **`BugToPrompt`**, `DebugClient` →
+  **`BugToPromptClient`**, `TargetOption` → **`Target`**; the artifact contract
   drops the "Debug" prefix (`captureArtifactSchema` / `CaptureArtifact` /
-  `ARTIFACT_VERSION`). The overlay's data attribute is now `data-snap-prompt`.
-- `SnapPromptClient` method params use `targetId`; `createIssue` now takes the
+  `ARTIFACT_VERSION`). The overlay's data attribute is now `data-bugtoprompt`.
+- `BugToPromptClient` method params use `targetId`; `createIssue` now takes the
   rendered `prompt`. `createFetchClient` HTTP paths drop the `/debug` prefix
   (`/streaming-token`, `/artifact`, `/transcribe`, `/issue`, `/targets`).
 
 ### Added
 
-- **`snap-prompt/render`** subpath: `renderPrompt(artifact, opts?)` →
+- **`bugtoprompt/render`** subpath: `renderPrompt(artifact, opts?)` →
   issue-format markdown, `promptTitle(artifact)`, and `CAPTURE_MARKER_PREFIX`
   (self-contained, React-free, schema-only — usable from a backend).
-- **`snap-prompt/client`** subpath for the client seam.
+- **`bugtoprompt/client`** subpath for the client seam.
 - **Output modes**: `issue` (default) + `clipboard` + `download`, surfaced in
   the review panel; the default mode is the primary action. Clipboard/download
   are pure client-side (injectable for tests).
@@ -159,14 +159,14 @@ Reconciliation to the authoritative spec (`snap-prompt`, `<SnapPrompt />`).
 
 ### Added
 
-- Initial extraction from windhover-desktop as a standalone ESM package.
+- Initial extraction as a standalone ESM package.
 - `overlay/` — the host-agnostic `DebugOverlay` React widget + `useSession`
   capture state machine (audio, snapshot, timeline, caption, shortcut, picker),
   with a dependency-free local `Button` primitive.
 - `client/` — the `DebugClient` interface, a reference `createFetchClient`, and
   `blobToBase64`.
 - `schema/` — the zod artifact contract (`debugArtifactSchema` et al.) as the
-  single source of truth, exported from the `snap-prompt/schema` subpath.
+  single source of truth, exported from the `bugtoprompt/schema` subpath.
 - tsup build (ESM + `.d.ts`), vitest (jsdom) test suite.
 
 [0.9.0]: https://github.com/

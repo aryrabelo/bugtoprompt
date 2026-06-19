@@ -1,14 +1,14 @@
 /**
- * Global augmentations — window.__SNAP_PROMPT__ host configuration hint.
+ * Global augmentations — window.__BUGTOPROMPT__ host configuration hint.
  * Consumed by autoConfig.ts to resolve the backend base URL and initial modes
  * without requiring an explicit `baseUrl` prop.
  *
- * Also declares window.SnapPrompt for the standalone IIFE build.
+ * Also declares window.BugToPrompt for the standalone IIFE build.
  */
 declare global {
 	interface Window {
-		__SNAP_PROMPT__?: {
-			/** Base URL of the snap-prompt backend (e.g. "https://myapp.example.com"). */
+		__BUGTOPROMPT__?: {
+			/** Base URL of the bugtoprompt backend (e.g. "https://myapp.example.com"). */
 			baseUrl?: string;
 			/** Output modes to surface; overridden by server config when available. */
 			modes?: ("issue" | "clipboard" | "download")[];
@@ -27,11 +27,11 @@ declare global {
 			 *  screenshots only on explicit Mark (default); "off" DOM-only snapshots. */
 			screenshotMode?: "perPage" | "onMark" | "off";
 			/** When true, the standalone build will NOT auto-mount on load.
-			 *  Call window.SnapPrompt.mount() manually instead. */
+			 *  Call window.BugToPrompt.mount() manually instead. */
 			manual?: boolean;
 		};
-		/** Exposed by the standalone IIFE build (snap-prompt.global.js). */
-		SnapPrompt?: {
+		/** Exposed by the standalone IIFE build (bugtoprompt.global.js). */
+		BugToPrompt?: {
 			mount: (opts?: Record<string, unknown>) => () => void;
 			unmount: () => void;
 		};

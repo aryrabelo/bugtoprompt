@@ -1,4 +1,4 @@
-# snap-prompt — Phase 4 Design Review
+# bugtoprompt — Phase 4 Design Review
 
 Design-for-AI overlay audit + AI-tells sweep + polish pass over the five overlay
 surfaces, followed by an applied-fix pass. Reviewed at commit-time state of:

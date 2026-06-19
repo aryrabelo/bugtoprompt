@@ -5,21 +5,21 @@
  * Config priority (first truthy wins per field):
  *   1. data-* attrs on the <script> tag (data-base, data-modes, data-project-id,
  *      data-screenshot-mode, data-default-mode, data-assemblyai-key)
- *   2. window.__SNAP_PROMPT__
- *   3. SnapPrompt's own zero-config resolution (meta / server / fallback)
+ *   2. window.__BUGTOPROMPT__
+ *   3. BugToPrompt's own zero-config resolution (meta / server / fallback)
  *
- * `data-assemblyai-key` is not a SnapPromptProp — it is persisted to the
+ * `data-assemblyai-key` is not a BugToPromptProp — it is persisted to the
  * browser key-store at parse time so live transcription works without a backend.
  *
- * Auto-mounts on DOMContentLoaded unless window.__SNAP_PROMPT__.manual === true.
- * Always exposes window.SnapPrompt = { mount, unmount } for programmatic use.
+ * Auto-mounts on DOMContentLoaded unless window.__BUGTOPROMPT__.manual === true.
+ * Always exposes window.BugToPrompt = { mount, unmount } for programmatic use.
  */
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import css from "../dist/snap-prompt.css";
+import css from "../dist/bugtoprompt.css";
 import { saveAssemblyKey } from "./overlay/key-store";
-import type { OutputMode, SnapPromptProps } from "./overlay/SnapPrompt";
-import { SnapPrompt } from "./overlay/SnapPrompt";
+import type { OutputMode, BugToPromptProps } from "./overlay/BugToPrompt";
+import { BugToPrompt } from "./overlay/BugToPrompt";
 import type { ScreenshotMode } from "./overlay/useSession";
 
 // ---------------------------------------------------------------------------
@@ -34,9 +34,9 @@ let _root: Root | null = null;
 // ---------------------------------------------------------------------------
 
 function injectStyles(): void {
-	if (document.querySelector("[data-snap-prompt-style]")) return;
+	if (document.querySelector("[data-bugtoprompt-style]")) return;
 	const style = document.createElement("style");
-	style.setAttribute("data-snap-prompt-style", "");
+	style.setAttribute("data-bugtoprompt-style", "");
 	style.textContent = css;
 	document.head.appendChild(style);
 }
@@ -44,12 +44,12 @@ function injectStyles(): void {
 /** Read config from the <script data-*> element that loaded this file.
  *  `document.currentScript` is only available during synchronous evaluation,
  *  so this is called at parse time — not inside a deferred callback. */
-function readScriptConfig(): Partial<SnapPromptProps> {
+function readScriptConfig(): Partial<BugToPromptProps> {
 	const script = document.currentScript as HTMLScriptElement | null;
 	const ds = script?.dataset;
 	if (!ds) return {};
 
-	const cfg: Partial<SnapPromptProps> = {};
+	const cfg: Partial<BugToPromptProps> = {};
 	if (ds.base) cfg.baseUrl = ds.base;
 	if (ds.modes) {
 		cfg.modes = ds.modes.split(",").map((m) => m.trim()) as OutputMode[];
@@ -59,17 +59,17 @@ function readScriptConfig(): Partial<SnapPromptProps> {
 		cfg.screenshotMode = ds.screenshotMode as ScreenshotMode;
 	}
 	if (ds.defaultMode) cfg.defaultMode = ds.defaultMode as OutputMode;
-	// Not a SnapPromptProp: persist the key client-side so the streaming-token
+	// Not a BugToPromptProp: persist the key client-side so the streaming-token
 	// resolver can mint v3 tokens directly against AssemblyAI without a backend.
 	if (ds.assemblyaiKey) saveAssemblyKey(ds.assemblyaiKey);
 	return cfg;
 }
 
-/** Read supplemental config from window.__SNAP_PROMPT__. */
-function readGlobalConfig(): Partial<SnapPromptProps> {
-	const g = window.__SNAP_PROMPT__;
+/** Read supplemental config from window.__BUGTOPROMPT__. */
+function readGlobalConfig(): Partial<BugToPromptProps> {
+	const g = window.__BUGTOPROMPT__;
 	if (!g) return {};
-	const cfg: Partial<SnapPromptProps> = {};
+	const cfg: Partial<BugToPromptProps> = {};
 	if (g.baseUrl) cfg.baseUrl = g.baseUrl;
 	if (g.modes) cfg.modes = g.modes;
 	if (g.defaultMode) cfg.defaultMode = g.defaultMode;
@@ -79,7 +79,7 @@ function readGlobalConfig(): Partial<SnapPromptProps> {
 }
 
 // Snapshot the <script> dataset NOW — currentScript is null after synchronous parse.
-const _scriptConfig: Partial<SnapPromptProps> =
+const _scriptConfig: Partial<BugToPromptProps> =
 	typeof document !== "undefined" ? readScriptConfig() : {};
 
 // ---------------------------------------------------------------------------
@@ -87,16 +87,16 @@ const _scriptConfig: Partial<SnapPromptProps> =
 // ---------------------------------------------------------------------------
 
 /**
- * Mount the snap-prompt overlay. Idempotent — calling twice has no effect.
+ * Mount the bugtoprompt overlay. Idempotent — calling twice has no effect.
  * Returns an unmount function for convenience (same reference as `unmount`).
  */
-export function mount(opts?: Partial<SnapPromptProps>): () => void {
+export function mount(opts?: Partial<BugToPromptProps>): () => void {
 	if (typeof document === "undefined") return unmount;
 	if (_container) return unmount; // already mounted — no-op
 
 	injectStyles();
 
-	const props: SnapPromptProps = {
+	const props: BugToPromptProps = {
 		...readGlobalConfig(),
 		..._scriptConfig,
 		...opts,
@@ -105,7 +105,7 @@ export function mount(opts?: Partial<SnapPromptProps>): () => void {
 	_container = document.createElement("div");
 	document.body.appendChild(_container);
 	_root = createRoot(_container);
-	_root.render(<SnapPrompt {...props} />);
+	_root.render(<BugToPrompt {...props} />);
 
 	return unmount;
 }
@@ -124,10 +124,10 @@ export function unmount(): void {
 // ---------------------------------------------------------------------------
 
 if (typeof window !== "undefined") {
-	window.SnapPrompt = { mount, unmount };
+	window.BugToPrompt = { mount, unmount };
 }
 
-if (typeof document !== "undefined" && !window.__SNAP_PROMPT__?.manual) {
+if (typeof document !== "undefined" && !window.__BUGTOPROMPT__?.manual) {
 	if (document.readyState === "loading") {
 		document.addEventListener("DOMContentLoaded", () => {
 			mount();

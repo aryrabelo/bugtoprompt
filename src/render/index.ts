@@ -15,7 +15,7 @@ import type {
 } from "../schema";
 
 // ---------------------------------------------------------------------------
-// Secret redaction (ported from windhover packages/api/src/suggestions/redact.ts)
+// Secret redaction (in-package)
 // ---------------------------------------------------------------------------
 
 /** A token-bearing key (matches `GITHUB_TOKEN`, `apiKey`, `db_password`, …). */
@@ -155,7 +155,7 @@ function caption(artifact: CaptureArtifact): string {
 // ---------------------------------------------------------------------------
 
 /** The idempotency marker prefix embedded in the prompt body. */
-export const CAPTURE_MARKER_PREFIX = "snap-prompt-capture-id:";
+export const CAPTURE_MARKER_PREFIX = "bugtoprompt-capture-id:";
 
 export interface RenderOptions {
 	/** screenshotRef → public URL; when present a snapshot renders as an inline

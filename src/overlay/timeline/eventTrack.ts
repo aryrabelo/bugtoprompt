@@ -3,7 +3,7 @@
  * relative to record-start. Clicks resolve the nearest interactive ancestor and
  * record its selector (+ snapshot ref when the session can map it). Route changes
  * cover TanStack Router (which drives `history.pushState`) and the standalone
- * `history`/`popstate` path, so this works inside Windhover and on any page.
+ * `history`/`popstate` path, so this works inside any host application and on any page.
  */
 import type { CaptureEvent } from "../../schema";
 import {
@@ -33,7 +33,7 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 		const target = ev.target as Element | null;
 		if (target?.nodeType !== 1) return;
 		// Never record interactions with the overlay's own UI.
-		if (target.closest?.("[data-snap-prompt]")) return;
+		if (target.closest?.("[data-bugtoprompt]")) return;
 		const el = target.closest?.(INTERACTIVE) ?? target;
 		const ref = opts.resolveRef?.(el);
 		// Name + role captured at click time, so the issue caption can describe the

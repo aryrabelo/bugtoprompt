@@ -186,7 +186,7 @@ describe("renderPrompt", () => {
 // ---------------------------------------------------------------------------
 
 describe("CAPTURE_MARKER_PREFIX", () => {
-	it("is the generic snap-prompt marker", () => {
-		expect(CAPTURE_MARKER_PREFIX).toBe("snap-prompt-capture-id:");
+	it("is the generic bugtoprompt marker", () => {
+		expect(CAPTURE_MARKER_PREFIX).toBe("bugtoprompt-capture-id:");
 	});
 });

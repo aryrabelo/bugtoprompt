@@ -3,8 +3,8 @@
  * - resolveBaseUrl priority chain
  * - fetchServerConfig ok / error paths
  * - createLocalFallbackClient contract (saveArtifact never throws, etc.)
- * - <SnapPrompt /> zero-config: FAB renders and session reaches reviewing without error
- * - <SnapPrompt /> with config fetch: modes updated after effect
+ * - <BugToPrompt /> zero-config: FAB renders and session reaches reviewing without error
+ * - <BugToPrompt /> with config fetch: modes updated after effect
  */
 import {
 	act,
@@ -21,7 +21,7 @@ import {
 	fetchServerConfig,
 	resolveBaseUrl,
 } from "./autoConfig";
-import { SnapPrompt } from "./SnapPrompt";
+import { BugToPrompt } from "./BugToPrompt";
 
 // ---------------------------------------------------------------------------
 // Shared audio / grabber mocks (same setup as modes.test.tsx)
@@ -82,11 +82,11 @@ afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
 	// Remove any meta tags added during tests.
-	for (const el of document.querySelectorAll('meta[name="snap-prompt-base"]')) {
+	for (const el of document.querySelectorAll('meta[name="bugtoprompt-base"]')) {
 		el.remove();
 	}
 	// Remove window global if set.
-	delete (window as Window & { __SNAP_PROMPT__?: unknown }).__SNAP_PROMPT__;
+	delete (window as Window & { __BUGTOPROMPT__?: unknown }).__BUGTOPROMPT__;
 });
 
 // ---------------------------------------------------------------------------
@@ -100,18 +100,18 @@ describe("resolveBaseUrl", () => {
 		);
 	});
 
-	it("window.__SNAP_PROMPT__.baseUrl wins over meta and default", () => {
+	it("window.__BUGTOPROMPT__.baseUrl wins over meta and default", () => {
 		(
 			window as Window & {
-				__SNAP_PROMPT__?: { baseUrl?: string };
+				__BUGTOPROMPT__?: { baseUrl?: string };
 			}
-		).__SNAP_PROMPT__ = { baseUrl: "https://from-window" };
+		).__BUGTOPROMPT__ = { baseUrl: "https://from-window" };
 		expect(resolveBaseUrl()).toBe("https://from-window");
 	});
 
 	it("meta tag content used when window global is absent", () => {
 		const meta = document.createElement("meta");
-		meta.setAttribute("name", "snap-prompt-base");
+		meta.setAttribute("name", "bugtoprompt-base");
 		meta.setAttribute("content", "https://from-meta");
 		document.head.appendChild(meta);
 		expect(resolveBaseUrl()).toBe("https://from-meta");
@@ -124,9 +124,9 @@ describe("resolveBaseUrl", () => {
 	it("explicit arg wins over window global", () => {
 		(
 			window as Window & {
-				__SNAP_PROMPT__?: { baseUrl?: string };
+				__BUGTOPROMPT__?: { baseUrl?: string };
 			}
-		).__SNAP_PROMPT__ = { baseUrl: "https://from-window" };
+		).__BUGTOPROMPT__ = { baseUrl: "https://from-window" };
 		expect(resolveBaseUrl("https://explicit")).toBe("https://explicit");
 	});
 });
@@ -147,7 +147,7 @@ describe("fetchServerConfig", () => {
 		const cfg = await fetchServerConfig("https://api");
 		expect(cfg).toEqual({ modes: ["clipboard"], projectId: "p1" });
 		expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-			"https://api/snap-prompt/config",
+			"https://api/bugtoprompt/config",
 		);
 	});
 
@@ -167,13 +167,13 @@ describe("fetchServerConfig", () => {
 		await expect(fetchServerConfig("https://api")).resolves.toBeNull();
 	});
 
-	it("appends /snap-prompt/config to base even when base is empty", async () => {
+	it("appends /bugtoprompt/config to base even when base is empty", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockResolvedValue({ ok: false, status: 404 }),
 		);
 		await fetchServerConfig("");
-		expect(vi.mocked(fetch)).toHaveBeenCalledWith("/snap-prompt/config");
+		expect(vi.mocked(fetch)).toHaveBeenCalledWith("/bugtoprompt/config");
 	});
 });
 
@@ -217,16 +217,16 @@ describe("createLocalFallbackClient", () => {
 });
 
 // ---------------------------------------------------------------------------
-// <SnapPrompt /> zero-config: no props
+// <BugToPrompt /> zero-config: no props
 // ---------------------------------------------------------------------------
 
-describe("<SnapPrompt /> zero-config (no props)", () => {
+describe("<BugToPrompt /> zero-config (no props)", () => {
 	it("renders the FAB button when no props are passed", () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockRejectedValue(new Error("no backend configured")),
 		);
-		render(<SnapPrompt />);
+		render(<BugToPrompt />);
 		expect(screen.getByRole("button", { name: /snap/i })).toBeTruthy();
 	});
 
@@ -239,7 +239,7 @@ describe("<SnapPrompt /> zero-config (no props)", () => {
 		);
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
 			/>,
 		);
@@ -269,18 +269,18 @@ describe("<SnapPrompt /> zero-config (no props)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// <SnapPrompt /> zero-config: config fetch succeeds → modes upgraded
+// <BugToPrompt /> zero-config: config fetch succeeds → modes upgraded
 // ---------------------------------------------------------------------------
 
-describe("<SnapPrompt /> auto-config from server", () => {
+describe("<BugToPrompt /> auto-config from server", () => {
 	it("upgrades modes after effect resolves server config", async () => {
-		// URL-aware mock: only /snap-prompt/config and /artifact return valid JSON.
+		// URL-aware mock: only /bugtoprompt/config and /artifact return valid JSON.
 		// All other endpoints (/streaming-token, /transcribe) reject so the session
 		// degrades gracefully to the batch path without crashing CaptionEditor.
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockImplementation((url: unknown) => {
-				if (typeof url === "string" && url.endsWith("/snap-prompt/config")) {
+				if (typeof url === "string" && url.endsWith("/bugtoprompt/config")) {
 					return Promise.resolve({
 						ok: true,
 						json: () =>
@@ -303,7 +303,7 @@ describe("<SnapPrompt /> auto-config from server", () => {
 		);
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
 			/>,
 		);
@@ -334,13 +334,13 @@ describe("<SnapPrompt /> auto-config from server", () => {
 // Explicit client prop: existing contract unchanged
 // ---------------------------------------------------------------------------
 
-describe("<SnapPrompt client={...} /> existing contract", () => {
+describe("<BugToPrompt client={...} /> existing contract", () => {
 	it("drives to reviewing and shows File Issue with explicit client (default modes)", async () => {
 		// createLocalFallbackClient: saveArtifact resolves, transcribeBatch resolves
 		// with [], so the session reaches reviewing without error.
 		const client = createLocalFallbackClient();
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={client}
 				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
 			/>,

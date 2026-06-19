@@ -1,10 +1,10 @@
 /**
- * snap-prompt overlay — the floating, Loom-style recorder. Activate it on any
+ * bugtoprompt overlay — the floating, Loom-style recorder. Activate it on any
  * page; talk through a bug while clicking; press Mark to pin the element on
  * screen; stop, review the synced caption, and choose an output mode (file an
  * issue, copy the prompt, or download the artifact). Self-portals to <body>,
  * so it never disturbs app layout. Host-agnostic: it only talks to its
- * injected {@link SnapPromptClient}.
+ * injected {@link BugToPromptClient}.
  */
 import {
 	Bug,
@@ -23,7 +23,7 @@ import {
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createFetchClient, type SnapPromptClient } from "../client";
+import { type BugToPromptClient, createFetchClient } from "../client";
 import { promptTitle, renderPrompt } from "../render";
 import { Button } from "../ui/button";
 import {
@@ -129,12 +129,12 @@ function KeyPrompt({
 // OutputMode is defined in session-store; re-export here for backward compat.
 export type { OutputMode };
 
-export interface SnapPromptProps {
-	/** The SnapPromptClient implementation. Optional — when omitted the overlay
-	 *  auto-resolves a backend from `window.__SNAP_PROMPT__`, a meta tag, or
+export interface BugToPromptProps {
+	/** The BugToPromptClient implementation. Optional — when omitted the overlay
+	 *  auto-resolves a backend from `window.__BUGTOPROMPT__`, a meta tag, or
 	 *  falls back to clipboard/download-only mode without a backend. */
-	client?: SnapPromptClient;
-	/** Explicit base URL for the snap-prompt backend (overrides auto-detection).
+	client?: BugToPromptClient;
+	/** Explicit base URL for the bugtoprompt backend (overrides auto-detection).
 	 *  Only used when `client` is omitted. */
 	baseUrl?: string;
 	/** The currently-selected project (the issue's target repo is derived from it). */
@@ -160,7 +160,7 @@ export interface SnapPromptProps {
 	onDownload?: (md: Blob, artifactJson: Blob) => void;
 }
 
-export function SnapPrompt({
+export function BugToPrompt({
 	client: clientProp,
 	baseUrl,
 	projectId: projectIdProp,
@@ -171,7 +171,7 @@ export function SnapPrompt({
 	screenshotMode: screenshotModeProp,
 	clipboard,
 	onDownload,
-}: SnapPromptProps): ReactElement | null {
+}: BugToPromptProps): ReactElement | null {
 	// --- Zero-config: auto-resolve client and options when no explicit client ---
 	const [auto, setAuto] = useState(() => ({
 		client: createLocalFallbackClient(),
@@ -217,11 +217,11 @@ export function SnapPrompt({
 	const projectId =
 		projectIdProp ?? (clientProp !== undefined ? undefined : auto.projectId);
 
-	// screenshotMode priority: explicit prop > window.__SNAP_PROMPT__ > server
+	// screenshotMode priority: explicit prop > window.__BUGTOPROMPT__ > server
 	// config > default "onMark".
 	const globalScreenshotMode =
 		typeof window !== "undefined"
-			? (window.__SNAP_PROMPT__?.screenshotMode as ScreenshotMode | undefined)
+			? (window.__BUGTOPROMPT__?.screenshotMode as ScreenshotMode | undefined)
 			: undefined;
 	const screenshotMode: ScreenshotMode =
 		screenshotModeProp ??
@@ -258,7 +258,7 @@ export function SnapPrompt({
 	const effBranch = branch ?? pickedBranch;
 	const needsPicker = idle && !workspaceId;
 	// Only nag for an AssemblyAI key on standalone, no-backend, no-key installs.
-	// A host that injects an explicit `client` (e.g. windhover) is never asked.
+	// A host that injects an explicit `client` (e.g. the host application) is never asked.
 	const showIdleKeyPrompt =
 		idle && clientProp === undefined && !auto.backend && !hasConfiguredKey();
 
@@ -386,7 +386,7 @@ export function SnapPrompt({
 		return createPortal(
 			<button
 				type="button"
-				data-snap-prompt
+				data-bugtoprompt
 				onClick={() => setOpen(true)}
 				className="fixed right-4 bottom-4 z-[9999] flex items-center gap-1.5 rounded-full bg-foreground px-3 py-2 text-background text-xs shadow-lg transition-colors hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 			>
@@ -400,12 +400,12 @@ export function SnapPrompt({
 
 	const portal = createPortal(
 		<div
-			data-snap-prompt
+			data-bugtoprompt
 			className="fixed right-4 bottom-4 z-[9999] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-md border border-border bg-popover p-3 text-popover-foreground text-xs shadow-xl"
 		>
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-1.5 font-medium">
-					<Bug className="size-4" /> Snap Prompt
+					<Bug className="size-4" /> BugToPrompt
 				</div>
 				<button
 					type="button"

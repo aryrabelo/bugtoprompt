@@ -14,8 +14,8 @@ import {
 } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient, Target } from "../client";
-import { SnapPrompt } from "./SnapPrompt";
+import type { BugToPromptClient, Target } from "../client";
+import { BugToPrompt } from "./BugToPrompt";
 
 // ---------------------------------------------------------------------------
 // Mocks — keep the heavy capture machinery inert; these tests stay at idle.
@@ -54,9 +54,9 @@ vi.mock("../render", () => ({
 	promptTitle: vi.fn().mockReturnValue("Test capture title"),
 }));
 
-const STORAGE_KEY = "snap-prompt:assemblyai-key";
+const STORAGE_KEY = "bugtoprompt:assemblyai-key";
 
-function makeFakeClient(): SnapPromptClient {
+function makeFakeClient(): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
 			.fn()
@@ -84,8 +84,8 @@ function openPanel(): void {
 beforeEach(() => {
 	vi.clearAllMocks();
 	localStorage.clear();
-	delete (window as Window & { __SNAP_PROMPT__?: unknown }).__SNAP_PROMPT__;
-	// No backend: the zero-config /snap-prompt/config probe must fail so
+	delete (window as Window & { __BUGTOPROMPT__?: unknown }).__BUGTOPROMPT__;
+	// No backend: the zero-config /bugtoprompt/config probe must fail so
 	// `auto.backend` stays false and the key prompt surfaces.
 	vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no backend")));
 
@@ -109,10 +109,10 @@ afterEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("SnapPrompt AssemblyAI key prompt", () => {
+describe("BugToPrompt AssemblyAI key prompt", () => {
 	it("standalone no-backend no-key: shows the key prompt at idle and persists a saved key", async () => {
 		await act(async () => {
-			render(<SnapPrompt />);
+			render(<BugToPrompt />);
 		});
 		openPanel();
 
@@ -133,15 +133,15 @@ describe("SnapPrompt AssemblyAI key prompt", () => {
 		await waitFor(() => {
 			const stored =
 				localStorage.getItem(STORAGE_KEY) ??
-				(window as Window & { __SNAP_PROMPT__?: { assemblyAiKey?: string } })
-					.__SNAP_PROMPT__?.assemblyAiKey;
+				(window as Window & { __BUGTOPROMPT__?: { assemblyAiKey?: string } })
+					.__BUGTOPROMPT__?.assemblyAiKey;
 			expect(stored).toBe("my-secret-key");
 		});
 	});
 
 	it("does not show the key prompt when an explicit client is supplied", async () => {
 		await act(async () => {
-			render(<SnapPrompt client={makeFakeClient()} projectId="proj-test" />);
+			render(<BugToPrompt client={makeFakeClient()} projectId="proj-test" />);
 		});
 		openPanel();
 

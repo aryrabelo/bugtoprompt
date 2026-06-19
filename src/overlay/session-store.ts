@@ -1,9 +1,9 @@
 /**
  * SessionStore — lightweight persistence for cross-page capture sessions.
  *
- * localStorage (key `snap-prompt:session`) holds the compact session state:
+ * localStorage (key `bugtoprompt:session`) holds the compact session state:
  * IDs, timeline events, DOM snapshots (metadata), and transcript.
- * IndexedDB (db `snap-prompt`, store `screenshots`) holds the screenshot blobs
+ * IndexedDB (db `bugtoprompt`, store `screenshots`) holds the screenshot blobs
  * keyed by `${sessionId}:${index}` — localStorage's ~5 MB cap can't hold images.
  *
  * All browser storage accesses are guarded for SSR / jsdom environments where
@@ -57,13 +57,13 @@ export interface PersistedSession {
 // localStorage helpers
 // ---------------------------------------------------------------------------
 
-const LS_KEY = "snap-prompt:session";
+const LS_KEY = "bugtoprompt:session";
 
 // ---------------------------------------------------------------------------
 // localStorage — capture history
 // ---------------------------------------------------------------------------
 
-const LS_HISTORY_KEY = "snap-prompt:history";
+const LS_HISTORY_KEY = "bugtoprompt:history";
 const HISTORY_MAX = 50;
 
 /** Prepend a finished capture, deduping by id, capped at 50. */
@@ -165,7 +165,7 @@ export function removeSession(): void {
 // IndexedDB helpers
 // ---------------------------------------------------------------------------
 
-const IDB_NAME = "snap-prompt";
+const IDB_NAME = "bugtoprompt";
 const IDB_STORE = "screenshots";
 
 function openDb(recovered = false): Promise<IDBDatabase> {

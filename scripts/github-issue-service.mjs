@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Snap Prompt — local gh-backed issue service.
+ * BugToPrompt — local gh-backed issue service.
  *
- * A dependency-free Node ESM HTTP backend implementing the snap-prompt client
+ * A dependency-free Node ESM HTTP backend implementing the bugtoprompt client
  * contract (see src/client/index.ts), intended for local UAT of "Gerar Posts"
  * and any other host. It speaks:
  *
- *   GET  /snap-prompt/config        → advertised modes + projectId + defaultMode
+ *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode
  *   GET  /targets?projectId=...     → configured repos as Target[]
  *   POST /artifact                  → persist artifact.json + audio + screenshots
  *   POST /transcribe                → AssemblyAI batch transcript of saved audio
@@ -14,7 +14,7 @@
  *   POST /issue                     → `gh issue create` against the chosen repo
  *
  * Issue creation is OFF by default; it is enabled only when `issueMode` is true
- * in config or SNAP_PROMPT_ENABLE_ISSUES=1. No secrets are written to disk.
+ * in config or BUGTOPROMPT_ENABLE_ISSUES=1. No secrets are written to disk.
  */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -28,7 +28,7 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_PORT = 4127;
 const DEFAULT_BRANCH = "main";
-const CAPTURES_ROOT = resolve(process.cwd(), ".snap-prompt", "captures");
+const CAPTURES_ROOT = resolve(process.cwd(), ".bugtoprompt", "captures");
 const ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token";
 const ASSEMBLYAI_API_BASE = "https://api.assemblyai.com";
 const TRANSCRIBE_POLL_INTERVAL_MS = 3000;
@@ -38,9 +38,9 @@ const TRANSCRIBE_TIMEOUT_MS = 5 * 60 * 1000;
 // Config
 // ---------------------------------------------------------------------------
 
-/** Load raw config: SNAP_PROMPT_CONFIG (inline JSON or path) → file → {}. */
+/** Load raw config: BUGTOPROMPT_CONFIG (inline JSON or path) → file → {}. */
 function loadRawConfig() {
-	const raw = process.env.SNAP_PROMPT_CONFIG;
+	const raw = process.env.BUGTOPROMPT_CONFIG;
 	if (raw?.trim()) {
 		const trimmed = raw.trim();
 		if (trimmed.startsWith("{")) {
@@ -48,7 +48,7 @@ function loadRawConfig() {
 		}
 		return JSON.parse(readFileSync(resolve(trimmed), "utf8"));
 	}
-	const local = resolve(process.cwd(), ".snap-prompt.github.json");
+	const local = resolve(process.cwd(), ".bugtoprompt.github.json");
 	if (existsSync(local)) {
 		return JSON.parse(readFileSync(local, "utf8"));
 	}
@@ -85,14 +85,14 @@ function buildConfig() {
 	const cfg = loadRawConfig();
 
 	const issueMode =
-		cfg.issueMode === true || process.env.SNAP_PROMPT_ENABLE_ISSUES === "1";
+		cfg.issueMode === true || process.env.BUGTOPROMPT_ENABLE_ISSUES === "1";
 
-	// Repos: config `repos` array first, then SNAP_PROMPT_REPOS comma list.
+	// Repos: config `repos` array first, then BUGTOPROMPT_REPOS comma list.
 	const entries = [];
 	if (Array.isArray(cfg.repos)) entries.push(...cfg.repos);
-	if (process.env.SNAP_PROMPT_REPOS) {
+	if (process.env.BUGTOPROMPT_REPOS) {
 		entries.push(
-			...process.env.SNAP_PROMPT_REPOS.split(",").map((s) => s.trim()),
+			...process.env.BUGTOPROMPT_REPOS.split(",").map((s) => s.trim()),
 		);
 	}
 	const targets = [];
@@ -106,10 +106,10 @@ function buildConfig() {
 	}
 
 	const projectId =
-		cfg.projectId || process.env.SNAP_PROMPT_PROJECT_ID || "snap-prompt";
+		cfg.projectId || process.env.BUGTOPROMPT_PROJECT_ID || "bugtoprompt";
 	const screenshotMode =
-		cfg.screenshotMode || process.env.SNAP_PROMPT_SCREENSHOT_MODE;
-	const env = cfg.env || process.env.SNAP_PROMPT_ENV;
+		cfg.screenshotMode || process.env.BUGTOPROMPT_SCREENSHOT_MODE;
+	const env = cfg.env || process.env.BUGTOPROMPT_ENV;
 
 	const enabledModes = issueMode
 		? ["issue", "clipboard", "download"]
@@ -125,7 +125,7 @@ function buildConfig() {
 		env,
 		enabledModes,
 		defaultMode,
-		port: Number(process.env.SNAP_PROMPT_PORT) || DEFAULT_PORT,
+		port: Number(process.env.BUGTOPROMPT_PORT) || DEFAULT_PORT,
 	};
 }
 
@@ -472,13 +472,13 @@ function deriveTitle(artifact, sessionId) {
 			.trim();
 		if (text) {
 			const clipped = text.length > 72 ? `${text.slice(0, 69)}...` : text;
-			return `Snap Prompt: ${clipped}`;
+			return `BugToPrompt: ${clipped}`;
 		}
 	}
 	if (artifact && typeof artifact.pageUrl === "string" && artifact.pageUrl) {
-		return `Snap Prompt: ${artifact.pageUrl}`;
+		return `BugToPrompt: ${artifact.pageUrl}`;
 	}
-	return `Snap Prompt capture ${sessionId}`;
+	return `BugToPrompt capture ${sessionId}`;
 }
 
 async function handleIssue(req, res, config) {
@@ -506,9 +506,9 @@ async function handleIssue(req, res, config) {
 	const issueBody =
 		typeof body.prompt === "string" && body.prompt
 			? body.prompt
-			: `Snap Prompt capture ${sessionId}`;
+			: `BugToPrompt capture ${sessionId}`;
 
-	const bodyFile = join(tmpdir(), `snap-prompt-issue-${sessionId}.md`);
+	const bodyFile = join(tmpdir(), `bugtoprompt-issue-${sessionId}.md`);
 	writeFileSync(bodyFile, issueBody);
 
 	try {
@@ -549,7 +549,7 @@ const server = createServer((req, res) => {
 	const path = url.pathname;
 
 	const dispatch = async () => {
-		if (req.method === "GET" && path === "/snap-prompt/config") {
+		if (req.method === "GET" && path === "/bugtoprompt/config") {
 			handleConfig(res, config);
 			return;
 		}
@@ -584,7 +584,7 @@ const server = createServer((req, res) => {
 server.listen(config.port, () => {
 	const state = config.issueMode ? "ENABLED" : "disabled";
 	console.log(
-		`snap-prompt issue service on http://localhost:${config.port} ` +
+		`bugtoprompt issue service on http://localhost:${config.port} ` +
 			`(issue mode ${state}; ${config.targets.length} repo target(s))`,
 	);
 });

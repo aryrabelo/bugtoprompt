@@ -1,7 +1,7 @@
-# snap-prompt — PRD
+# bugtoprompt — PRD
 
 **Status:** Living product doc · 2026-06-15
-**Companion specs:** `docs/activation-persistence-security.md` (activation, persistence, key safety) · windhover extraction spec `2026-06-15-snap-prompt-extraction-design.md` (origin contract)
+**Companion specs:** `docs/activation-persistence-security.md` (activation, persistence, key safety)
 
 ## 1. What it is
 
@@ -13,14 +13,14 @@ pluggable (issue / clipboard / download / custom).
 
 ## 2. Product principle — "drop it in and it just works"
 
-A host adds snap-prompt one of four ways and it runs with no further wiring,
+A host adds bugtoprompt one of four ways and it runs with no further wiring,
 self-configuring from whatever context is available and degrading safely when a
 backend is absent.
 
 | Path | Summary |
 |---|---|
-| **React import** | `import { SnapPrompt } from "snap-prompt"` → `<SnapPrompt />`, no required props |
-| **Script tag** | `<script src="…/snap-prompt.global.js" defer>` self-mounts (bundles React, ships own CSS) |
+| **React import** | `import { BugToPrompt } from "bugtoprompt"` → `<BugToPrompt />`, no required props |
+| **Script tag** | `<script src="…/bugtoprompt.global.js" defer>` self-mounts (bundles React, ships own CSS) |
 | **Console** | Paste a snippet in DevTools — boots on any page, incl. old multi-page apps; unlocks prod (§5) |
 | **Chrome extension** *(planned)* | Config + key live in the extension; its content script injects the overlay on allowed origins (§6) |
 
@@ -49,7 +49,7 @@ selector. Every finished capture is saved locally (rendered prompt + artifact +
 title/time/page) and listed with per-item actions — **Copy**, **Download**,
 **Delete**, and **File issue** when issue mode is enabled — plus **Record** to
 start a new one. This is the open-source value: a personal, organized,
-client-side history of the bugs you captured. The Windhover-specific "Target"
+client-side history of the bugs you captured. The host-specific "Target"
 (worktree) picker is now **issue-mode-only config**, hidden by default (e.g. in
 gerarposts there is no target select). Backed by the §4 store.
 
@@ -69,7 +69,7 @@ Secret keys (AssemblyAI, GitHub) never reach the browser from a public endpoint.
 A first-class activation path whose purpose is to be the **home for the config
 and the key**. Configure once in the extension (base URL, modes,
 `screenshotMode`, prod key/token); its content script injects the **same**
-`snap-prompt.global.js` + CSS on the origins you allow. The key lives in
+`bugtoprompt.global.js` + CSS on the origins you allow. The key lives in
 extension storage — never in page source, a pasted console snippet, or a public
 server. It is the always-on, prod-safe form of the console unlock. This is
 packaging over the existing global bundle, not a fork. Build target scheduled
@@ -80,7 +80,7 @@ after the script/console paths land. Full design: `…security.md` §7.
 When a feature's right behavior depends on the host (screenshot strategy, enabled
 modes, live-transcription on/off, allowed origins, redaction), it is
 **configuration** — settable from any activation path (props, `data-*`,
-`window.__SNAP_PROMPT__`, server config, or the extension). The widget hard-codes
+`window.__BUGTOPROMPT__`, server config, or the extension). The widget hard-codes
 only safe defaults.
 
 ## 8. Roadmap (build order)

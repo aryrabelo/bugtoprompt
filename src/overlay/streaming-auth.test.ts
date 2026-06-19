@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient } from "../client";
+import type { BugToPromptClient } from "../client";
 import { clearAssemblyKey, saveAssemblyKey } from "./key-store";
 import { resolveStreamingToken } from "./streaming-auth";
 
@@ -8,8 +8,8 @@ import { resolveStreamingToken } from "./streaming-auth";
 // ---------------------------------------------------------------------------
 
 function makeFakeClient(
-	overrides: Partial<SnapPromptClient> = {},
-): SnapPromptClient {
+	overrides: Partial<BugToPromptClient> = {},
+): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
 			.fn()
@@ -30,7 +30,7 @@ function makeFakeClient(
 
 describe("resolveStreamingToken", () => {
 	beforeEach(async () => {
-		delete window.__SNAP_PROMPT__;
+		delete window.__BUGTOPROMPT__;
 		localStorage.clear();
 		vi.restoreAllMocks();
 		// Reset the module-level in-memory cache + IndexedDB CryptoKey.
@@ -38,7 +38,7 @@ describe("resolveStreamingToken", () => {
 	});
 
 	it("returns streamingToken directly when set — client.mintStreamingToken not called", async () => {
-		window.__SNAP_PROMPT__ = { streamingToken: "pre-minted-token" };
+		window.__BUGTOPROMPT__ = { streamingToken: "pre-minted-token" };
 		const client = makeFakeClient();
 
 		const result = await resolveStreamingToken(client);
@@ -48,7 +48,7 @@ describe("resolveStreamingToken", () => {
 	});
 
 	it("mints via assemblyAiKey: GETs the v3 token endpoint with Authorization header and returns token", async () => {
-		window.__SNAP_PROMPT__ = { assemblyAiKey: "test-key" };
+		window.__BUGTOPROMPT__ = { assemblyAiKey: "test-key" };
 		const client = makeFakeClient();
 
 		vi.stubGlobal(
@@ -73,7 +73,7 @@ describe("resolveStreamingToken", () => {
 		await saveAssemblyKey("stored");
 		// saveAssemblyKey also mirrors onto window; drop it so we exercise the
 		// localStorage fallback path explicitly.
-		delete window.__SNAP_PROMPT__;
+		delete window.__BUGTOPROMPT__;
 		const client = makeFakeClient();
 
 		vi.stubGlobal(
@@ -95,7 +95,7 @@ describe("resolveStreamingToken", () => {
 	});
 
 	it("falls through to client.mintStreamingToken when assemblyAiKey fetch rejects", async () => {
-		window.__SNAP_PROMPT__ = { assemblyAiKey: "bad-key" };
+		window.__BUGTOPROMPT__ = { assemblyAiKey: "bad-key" };
 		const client = makeFakeClient();
 
 		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("CORS")));

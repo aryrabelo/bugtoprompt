@@ -7,16 +7,16 @@ import {
 	saveAssemblyKey,
 } from "./key-store";
 
-const STORAGE_KEY_ENC = "snap-prompt:assemblyai-key:enc";
-const STORAGE_KEY_LEGACY = "snap-prompt:assemblyai-key";
+const STORAGE_KEY_ENC = "bugtoprompt:assemblyai-key:enc";
+const STORAGE_KEY_LEGACY = "bugtoprompt:assemblyai-key";
 
 beforeEach(async () => {
 	localStorage.clear();
-	delete window.__SNAP_PROMPT__;
+	delete window.__BUGTOPROMPT__;
 	// Reset the module-level in-memory cache + IndexedDB CryptoKey.
 	await clearAssemblyKey();
 	localStorage.clear();
-	delete window.__SNAP_PROMPT__;
+	delete window.__BUGTOPROMPT__;
 });
 
 describe("key-store", () => {
@@ -62,12 +62,12 @@ describe("key-store", () => {
 	});
 
 	it("hasStoredKey: true when window.assemblyAiKey is set", () => {
-		window.__SNAP_PROMPT__ = { assemblyAiKey: "w" };
+		window.__BUGTOPROMPT__ = { assemblyAiKey: "w" };
 		expect(hasStoredKey()).toBe(true);
 	});
 
 	it("hasStoredKey: true when window.streamingToken is set", () => {
-		window.__SNAP_PROMPT__ = { streamingToken: "t" };
+		window.__BUGTOPROMPT__ = { streamingToken: "t" };
 		expect(hasStoredKey()).toBe(true);
 	});
 

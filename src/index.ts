@@ -1,8 +1,8 @@
 export {
 	type OutputMode,
-	SnapPrompt,
-	type SnapPromptProps,
-} from "./overlay/SnapPrompt";
+	BugToPrompt,
+	type BugToPromptProps,
+} from "./overlay/BugToPrompt";
 export {
 	type SessionBinding,
 	type SessionPhase,

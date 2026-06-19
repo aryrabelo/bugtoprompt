@@ -1,6 +1,6 @@
 /**
  * Local Button primitive — a dependency-free native `<button>` wrapper.
- * Approximates the Windhover button variant/size classes; no CVA or base-ui.
+ * Approximates common button variant/size classes; no CVA or base-ui.
  */
 import type { ButtonHTMLAttributes, ReactElement } from "react";
 

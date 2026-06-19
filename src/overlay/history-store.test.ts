@@ -107,19 +107,19 @@ describe("addCapture / listCaptures", () => {
 	});
 
 	it("listCaptures returns [] for garbage JSON", () => {
-		localStorage.setItem("snap-prompt:history", "not-json{{");
+		localStorage.setItem("bugtoprompt:history", "not-json{{");
 		expect(listCaptures()).toEqual([]);
 	});
 
 	it("listCaptures returns [] when stored value is not an array", () => {
-		localStorage.setItem("snap-prompt:history", JSON.stringify({ v: 1 }));
+		localStorage.setItem("bugtoprompt:history", JSON.stringify({ v: 1 }));
 		expect(listCaptures()).toEqual([]);
 	});
 
 	it("listCaptures drops entries where v !== 1", () => {
 		const good = makeRecord("good");
 		const bad = { ...makeRecord("bad"), v: 2 };
-		localStorage.setItem("snap-prompt:history", JSON.stringify([good, bad]));
+		localStorage.setItem("bugtoprompt:history", JSON.stringify([good, bad]));
 		const list = listCaptures();
 		expect(list).toHaveLength(1);
 		expect(list[0].id).toBe("good");

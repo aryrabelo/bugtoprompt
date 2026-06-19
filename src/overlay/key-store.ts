@@ -22,10 +22,10 @@
  * the current tab keeps working.
  */
 
-const STORAGE_KEY_ENC = "snap-prompt:assemblyai-key:enc";
-const STORAGE_KEY_LEGACY = "snap-prompt:assemblyai-key";
+const STORAGE_KEY_ENC = "bugtoprompt:assemblyai-key:enc";
+const STORAGE_KEY_LEGACY = "bugtoprompt:assemblyai-key";
 
-const DB_NAME = "snap-prompt";
+const DB_NAME = "bugtoprompt";
 const STORE_NAME = "crypto-keys";
 const CRYPTO_KEY_ID = "assemblyai-aes-gcm-v1";
 const IV_BYTES = 12;
@@ -40,8 +40,8 @@ let memoryKey: string | undefined;
 /** Mirror the key onto the window config hint so the resolver picks it up. */
 function mirrorToWindow(key: string): void {
 	if (typeof window === "undefined") return;
-	window.__SNAP_PROMPT__ = {
-		...window.__SNAP_PROMPT__,
+	window.__BUGTOPROMPT__ = {
+		...window.__BUGTOPROMPT__,
 		assemblyAiKey: key,
 	};
 }
@@ -145,7 +145,7 @@ async function getOrCreateCryptoKey(): Promise<CryptoKey> {
 /**
  * Resolve the decrypted AssemblyAI key, or undefined when none / unavailable.
  *
- * Source order: (a) in-memory cache, (b) `window.__SNAP_PROMPT__.assemblyAiKey`,
+ * Source order: (a) in-memory cache, (b) `window.__BUGTOPROMPT__.assemblyAiKey`,
  * (c) the encrypted localStorage blob decrypted via the IndexedDB CryptoKey.
  * A legacy plaintext key is transparently migrated to the encrypted form.
  * Empty / whitespace values count as no key. The resolved key is cached in
@@ -158,7 +158,7 @@ export async function loadAssemblyKey(): Promise<string | undefined> {
 	if (typeof window === "undefined") return undefined;
 
 	// (b) Window mirror.
-	const winKey = window.__SNAP_PROMPT__?.assemblyAiKey?.trim();
+	const winKey = window.__BUGTOPROMPT__?.assemblyAiKey?.trim();
 	if (winKey) {
 		memoryKey = winKey;
 		return winKey;
@@ -222,7 +222,7 @@ export async function loadAssemblyKey(): Promise<string | undefined> {
 
 /**
  * Persist the AssemblyAI key (trimmed), encrypted at rest. Empty / whitespace
- * is NEVER stored. The in-memory cache and `window.__SNAP_PROMPT__.assemblyAiKey`
+ * is NEVER stored. The in-memory cache and `window.__BUGTOPROMPT__.assemblyAiKey`
  * are always set first so the current tab works even when crypto / IndexedDB /
  * localStorage are unavailable (graceful degrade).
  */
@@ -272,8 +272,8 @@ export async function clearAssemblyKey(): Promise<void> {
 	memoryKey = undefined;
 
 	if (typeof window !== "undefined") {
-		if (window.__SNAP_PROMPT__) {
-			delete window.__SNAP_PROMPT__.assemblyAiKey;
+		if (window.__BUGTOPROMPT__) {
+			delete window.__BUGTOPROMPT__.assemblyAiKey;
 		}
 		if (typeof localStorage !== "undefined") {
 			try {
@@ -303,7 +303,7 @@ export function hasStoredKey(): boolean {
 	if (memoryKey) return true;
 
 	if (typeof window !== "undefined") {
-		const hint = window.__SNAP_PROMPT__;
+		const hint = window.__BUGTOPROMPT__;
 		if (
 			(typeof hint?.streamingToken === "string" &&
 				hint.streamingToken !== "") ||

@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient, Target } from "../client";
+import type { BugToPromptClient, Target } from "../client";
 import { loadSession, putShot, saveSession } from "./session-store";
 import { useSession } from "./useSession";
 
@@ -54,12 +54,12 @@ vi.mock("../render", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Fake SnapPromptClient
+// Fake BugToPromptClient
 // ---------------------------------------------------------------------------
 
 function makeFakeClient(
-	overrides: Partial<SnapPromptClient> = {},
-): SnapPromptClient {
+	overrides: Partial<BugToPromptClient> = {},
+): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
 			.fn()
@@ -87,7 +87,7 @@ beforeEach(() => {
 	// Prevent a persisted session from a previous test from triggering rehydration.
 	localStorage.clear();
 	// Clear any window config hint leaked by a prior test (e.g. provideKey).
-	delete window.__SNAP_PROMPT__;
+	delete window.__BUGTOPROMPT__;
 
 	// Default audio mock: streaming=true only when onPcmFrame is provided (live path)
 	mockAudioInstance = {
@@ -313,7 +313,7 @@ describe("useSession — snap-on-click", () => {
 		expect(result.current.markCount).toBe(1);
 	});
 
-	it("(g) click inside [data-snap-prompt] does NOT snap", async () => {
+	it("(g) click inside [data-bugtoprompt] does NOT snap", async () => {
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client));
 
@@ -323,7 +323,7 @@ describe("useSession — snap-on-click", () => {
 
 		// Build a minimal overlay DOM element with an inner button.
 		const overlay = document.createElement("div");
-		overlay.setAttribute("data-snap-prompt", "");
+		overlay.setAttribute("data-bugtoprompt", "");
 		const inner = document.createElement("button");
 		overlay.appendChild(inner);
 		document.body.appendChild(overlay);

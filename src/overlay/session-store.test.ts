@@ -44,13 +44,13 @@ function makeSession(
 
 async function seedCorruptScreenshotsDb(): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
-		const del = indexedDB.deleteDatabase("snap-prompt");
+		const del = indexedDB.deleteDatabase("bugtoprompt");
 		del.onsuccess = () => resolve();
 		del.onerror = () => reject(del.error);
 		del.onblocked = () => reject(new Error("delete blocked"));
 	});
 	await new Promise<void>((resolve, reject) => {
-		const req = indexedDB.open("snap-prompt", 99);
+		const req = indexedDB.open("bugtoprompt", 99);
 		req.onupgradeneeded = () => {
 			// Intentionally leave out the screenshots store to simulate a stale/corrupt DB.
 		};
@@ -87,20 +87,20 @@ describe("saveSession / loadSession round-trip", () => {
 	});
 
 	it("returns null for garbage JSON", () => {
-		localStorage.setItem("snap-prompt:session", "not-json{{{");
+		localStorage.setItem("bugtoprompt:session", "not-json{{{");
 		expect(loadSession()).toBeNull();
 	});
 
 	it("returns null when stored object has v !== 1", () => {
 		localStorage.setItem(
-			"snap-prompt:session",
+			"bugtoprompt:session",
 			JSON.stringify({ v: 2, sessionId: "x" }),
 		);
 		expect(loadSession()).toBeNull();
 	});
 
 	it("returns null for an empty object (no v)", () => {
-		localStorage.setItem("snap-prompt:session", JSON.stringify({}));
+		localStorage.setItem("bugtoprompt:session", JSON.stringify({}));
 		expect(loadSession()).toBeNull();
 	});
 

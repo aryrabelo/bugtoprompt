@@ -1,14 +1,14 @@
 /**
- * Auto-configuration resolver for zero-config SnapPrompt usage.
+ * Auto-configuration resolver for zero-config BugToPrompt usage.
  * Resolves a backend base URL from environment hints, fetches server-side
  * config, and provides a local fallback client for clipboard/download-only
  * usage when no backend is configured.
  */
-import type { SnapPromptClient } from "../client";
-import type { OutputMode } from "./SnapPrompt";
+import type { BugToPromptClient } from "../client";
+import type { OutputMode } from "./BugToPrompt";
 import type { ScreenshotMode } from "./session-store";
 
-export interface SnapPromptServerConfig {
+export interface BugToPromptServerConfig {
 	modes?: OutputMode[];
 	defaultMode?: OutputMode;
 	projectId?: string;
@@ -17,12 +17,12 @@ export interface SnapPromptServerConfig {
 }
 
 /**
- * Resolve the base URL for the snap-prompt backend.
+ * Resolve the base URL for the bugtoprompt backend.
  *
  * Priority (first truthy wins):
  *   1. `explicit` argument
- *   2. `window.__SNAP_PROMPT__.baseUrl`
- *   3. `<meta name="snap-prompt-base">` content attribute
+ *   2. `window.__BUGTOPROMPT__.baseUrl`
+ *   3. `<meta name="bugtoprompt-base">` content attribute
  *   4. `""` (same-origin relative — works when the backend is co-hosted)
  *
  * All `window`/`document` accesses are guarded so the function is safe in SSR
@@ -31,13 +31,13 @@ export interface SnapPromptServerConfig {
 export function resolveBaseUrl(explicit?: string): string {
 	if (explicit) return explicit;
 
-	if (typeof window !== "undefined" && window.__SNAP_PROMPT__?.baseUrl) {
-		return window.__SNAP_PROMPT__.baseUrl;
+	if (typeof window !== "undefined" && window.__BUGTOPROMPT__?.baseUrl) {
+		return window.__BUGTOPROMPT__.baseUrl;
 	}
 
 	if (typeof document !== "undefined") {
 		const meta = document.querySelector<HTMLMetaElement>(
-			'meta[name="snap-prompt-base"]',
+			'meta[name="bugtoprompt-base"]',
 		);
 		if (meta?.content) return meta.content;
 	}
@@ -46,17 +46,17 @@ export function resolveBaseUrl(explicit?: string): string {
 }
 
 /**
- * Fetch server-side configuration from `GET ${base}/snap-prompt/config`.
+ * Fetch server-side configuration from `GET ${base}/bugtoprompt/config`.
  * Returns the parsed JSON on success, `null` on any error (non-ok response,
  * network failure, parse error). Never throws.
  */
 export async function fetchServerConfig(
 	base: string,
-): Promise<SnapPromptServerConfig | null> {
+): Promise<BugToPromptServerConfig | null> {
 	try {
-		const res = await fetch(`${base}/snap-prompt/config`);
+		const res = await fetch(`${base}/bugtoprompt/config`);
 		if (!res.ok) return null;
-		return (await res.json()) as SnapPromptServerConfig;
+		return (await res.json()) as BugToPromptServerConfig;
 	} catch {
 		return null;
 	}
@@ -72,7 +72,7 @@ export async function fetchServerConfig(
  * - `listTargets` resolves with an empty array.
  * - `createIssue` rejects — issue mode requires a real backend.
  */
-export function createLocalFallbackClient(): SnapPromptClient {
+export function createLocalFallbackClient(): BugToPromptClient {
 	return {
 		mintStreamingToken() {
 			return Promise.reject(new Error("streaming token requires a backend"));

@@ -1,4 +1,4 @@
-# snap-prompt
+# bugtoprompt
 
 A portable, host-agnostic **bug-capture overlay** — a floating, Loom-style
 recorder you drop onto any web app. It captures a bug (live voice transcription,
@@ -12,14 +12,14 @@ click timeline, interactive DOM snapshots, screenshots) and turns it into an
 The widget's product is **capturing a bug well and rendering it as a prompt**.
 With no backend it runs fully client-side (clipboard/download); a configured
 backend adds `issue` mode + live transcription. Config is resolved automatically
-(zero-config) or via an optional injected `SnapPromptClient`.
+(zero-config) or via an optional injected `BugToPromptClient`.
 
-> Extracted from windhover-desktop, which is now one consumer among others.
+> Extracted from an internal tool; now a standalone package.
 
 ## Install
 
 ```bash
-pnpm add snap-prompt        # peers: react >=19, react-dom >=19
+pnpm add bugtoprompt        # peers: react >=19, react-dom >=19
 ```
 
 ESM-only. `react` / `react-dom` are peer dependencies; `zod` and `lucide-react`
@@ -28,36 +28,36 @@ are dependencies.
 ## Quick start (zero-config)
 
 ```tsx
-import { SnapPrompt } from "snap-prompt";
+import { BugToPrompt } from "bugtoprompt";
 
 export function App() {
   return (
     <>
       {/* your app */}
-      <SnapPrompt /> {/* drop it in — it just works */}
+      <BugToPrompt /> {/* drop it in — it just works */}
     </>
   );
 }
 ```
 
-With nothing configured, `<SnapPrompt />` runs fully client-side (capture →
+With nothing configured, `<BugToPrompt />` runs fully client-side (capture →
 **copy**/**download** the prompt — no backend, no secrets). It self-portals to
 `<body>` so it never disturbs your layout, and resolves config automatically:
-`baseUrl` prop → `window.__SNAP_PROMPT__` → `<meta name="snap-prompt-base">` →
-a server `GET {base}/snap-prompt/config`. A reachable backend upgrades it
+`baseUrl` prop → `window.__BUGTOPROMPT__` → `<meta name="bugtoprompt-base">` →
+a server `GET {base}/bugtoprompt/config`. A reachable backend upgrades it
 (issue mode, live transcription).
 
 ### With a backend
 
 ```tsx
-import { SnapPrompt } from "snap-prompt";
-import { createFetchClient } from "snap-prompt/client";
+import { BugToPrompt } from "bugtoprompt";
+import { createFetchClient } from "bugtoprompt/client";
 
 // auto-detect modes/targets from the server:
-<SnapPrompt baseUrl="/api" />
+<BugToPrompt baseUrl="/api" />
 
 // or take full control with an explicit client:
-<SnapPrompt
+<BugToPrompt
   client={createFetchClient("/api")}
   projectId={repoId}
   modes={["issue", "clipboard", "download"]}
@@ -65,7 +65,7 @@ import { createFetchClient } from "snap-prompt/client";
 />
 ```
 
-The Windhover-style **target picker** shows only in `issue` mode (and only when
+The **target picker** shows only in `issue` mode (and only when
 the backend returns targets); clipboard/download hosts see just **Record**.
 
 ### Recommended: gate the mount on an env flag
@@ -75,7 +75,7 @@ pattern is for the host to mount it only when a flag is present, and let each
 developer decide:
 
 ```tsx
-{import.meta.env.VITE_SNAP_PROMPT && <SnapPrompt client={client} /* … */ />}
+{import.meta.env.VITE_BUGTOPROMPT && <BugToPrompt client={client} /* … */ />}
 ```
 
 ### Styling
@@ -86,7 +86,7 @@ app's theme (the shadcn/ui token set is the reference). Add the package to
 Tailwind's content scan so its classes are generated:
 
 ```js
-content: ["./src/**/*.{ts,tsx}", "./node_modules/snap-prompt/dist/**/*.js"]
+content: ["./src/**/*.{ts,tsx}", "./node_modules/bugtoprompt/dist/**/*.js"]
 ```
 
 ### Script tag (any page)
@@ -96,7 +96,7 @@ fully-styled widget on any page — including server-rendered / old multi-page a
 
 ```html
 <script
-  src="https://unpkg.com/snap-prompt/dist/snap-prompt.global.js"
+  src="https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js"
   defer
   data-modes="clipboard,download"
 ></script>
@@ -114,19 +114,19 @@ Config via `data-*` attributes:
 **Console one-liner** (inject into any page you can inspect):
 ```js
 var s = document.createElement('script');
-s.src = 'https://unpkg.com/snap-prompt/dist/snap-prompt.global.js';
+s.src = 'https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js';
 document.body.appendChild(s);
 // optional: pass config programmatically after the script loads
-s.addEventListener('load', () => window.SnapPrompt.mount({ modes: ['clipboard'] }));
+s.addEventListener('load', () => window.BugToPrompt.mount({ modes: ['clipboard'] }));
 ```
 
 **Programmatic control** — suppress auto-mount and call manually:
 ```js
-window.__SNAP_PROMPT__ = { manual: true };
+window.__BUGTOPROMPT__ = { manual: true };
 // … load the script, then:
-window.SnapPrompt.mount({ baseUrl: 'https://myapp.example.com' });
+window.BugToPrompt.mount({ baseUrl: 'https://myapp.example.com' });
 // later:
-window.SnapPrompt.unmount();
+window.BugToPrompt.unmount();
 ```
 
 For live-transcription unlock snippets (assemblyAiKey / streamingToken) and the full CORS note, see [docs/console.md](docs/console.md).
@@ -134,25 +134,25 @@ For live-transcription unlock snippets (assemblyAiKey / streamingToken) and the 
 ## Exports
 
 ```ts
-import { SnapPrompt, useSession } from "snap-prompt";                 // the overlay
-import { captureArtifactSchema, type CaptureArtifact } from "snap-prompt/schema";
-import { renderPrompt, promptTitle } from "snap-prompt/render";       // artifact -> markdown
-import { createFetchClient, type SnapPromptClient } from "snap-prompt/client";
+import { BugToPrompt, useSession } from "bugtoprompt";                 // the overlay
+import { captureArtifactSchema, type CaptureArtifact } from "bugtoprompt/schema";
+import { renderPrompt, promptTitle } from "bugtoprompt/render";       // artifact -> markdown
+import { createFetchClient, type BugToPromptClient } from "bugtoprompt/client";
 ```
 
-- `snap-prompt/render` and `snap-prompt/schema` are **React-free** — safe to
+- `bugtoprompt/render` and `bugtoprompt/schema` are **React-free** — safe to
   import in a backend (Node/Bun) that validates artifacts or renders the prompt.
 
-## The `SnapPromptClient` seam
+## The `BugToPromptClient` seam
 
-The overlay needs exactly one thing from its host: a `SnapPromptClient`. Use the
+The overlay needs exactly one thing from its host: a `BugToPromptClient`. Use the
 bundled `createFetchClient(baseUrl)` (HTTP) or implement the interface directly
 over your own transport:
 
 ```ts
-import type { SnapPromptClient } from "snap-prompt/client";
+import type { BugToPromptClient } from "bugtoprompt/client";
 
-interface SnapPromptClient {
+interface BugToPromptClient {
   mintStreamingToken(targetId?: string): Promise<{ token: string; expiresAt: number }>;
   saveArtifact(input: {
     artifact: CaptureArtifact;
@@ -183,8 +183,8 @@ All POSTs send `Content-Type: application/json`; non-2xx throws.
 ## The artifact schema & prompt renderer
 
 ```ts
-import { captureArtifactSchema, ARTIFACT_VERSION, type CaptureArtifact } from "snap-prompt/schema";
-import { renderPrompt, promptTitle, CAPTURE_MARKER_PREFIX } from "snap-prompt/render";
+import { captureArtifactSchema, ARTIFACT_VERSION, type CaptureArtifact } from "bugtoprompt/schema";
+import { renderPrompt, promptTitle, CAPTURE_MARKER_PREFIX } from "bugtoprompt/render";
 
 const artifact = captureArtifactSchema.parse(raw);   // validate (backend)
 const body = renderPrompt(artifact, { artifactDir }); // issue-format markdown

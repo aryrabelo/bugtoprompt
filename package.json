@@ -1,7 +1,22 @@
 {
-	"name": "snap-prompt",
+	"name": "bugtoprompt",
 	"version": "0.10.0",
-	"description": "Snap Prompt — a portable bug-capture overlay that turns a bug into an AI-ready prompt",
+	"description": "BugToPrompt — a portable bug-capture overlay that turns a bug into an AI-ready prompt",
+	"keywords": [
+		"react",
+		"bug-report",
+		"screenshot",
+		"ai",
+		"prompt",
+		"overlay",
+		"devtools"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/aryrabelo/bugtoprompt.git"
+	},
+	"homepage": "https://github.com/aryrabelo/bugtoprompt#readme",
+	"bugs": "https://github.com/aryrabelo/bugtoprompt/issues",
 	"type": "module",
 	"license": "MIT",
 	"private": false,
@@ -28,14 +43,15 @@
 			"types": "./dist/client.d.ts",
 			"import": "./dist/client.js"
 		},
-		"./standalone": "./dist/snap-prompt.global.js",
-		"./styles.css": "./dist/snap-prompt.css"
+		"./standalone": "./dist/bugtoprompt.global.js",
+		"./styles.css": "./dist/bugtoprompt.css"
 	},
 	"scripts": {
 		"build:esm": "tsup",
-		"build:css": "tailwindcss -i src/standalone.css -o dist/snap-prompt.css --minify",
+		"build:css": "tailwindcss -i src/standalone.css -o dist/bugtoprompt.css --minify",
 		"build:standalone": "tsup --config tsup.standalone.config.ts",
 		"build": "pnpm build:esm && pnpm build:css && pnpm build:standalone",
+		"prepare": "pnpm build",
 		"test": "vitest run",
 		"lint": "biome check .",
 		"typecheck": "tsc --noEmit",

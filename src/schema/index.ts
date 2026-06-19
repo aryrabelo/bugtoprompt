@@ -1,5 +1,5 @@
 /**
- * CaptureArtifact schema — the single shared contract for snap-prompt (voice-
+ * CaptureArtifact schema — the single shared contract for bugtoprompt (voice-
  * annotated bug capture). Used by both the in-page overlay that records voice +
  * clicks + interactive DOM snapshots and any backend that renders it. Pure zod +
  * inferred types, ZERO runtime deps beyond zod.

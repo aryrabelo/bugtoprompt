@@ -1,6 +1,6 @@
 /**
  * Output modes: clipboard + download in the review panel.
- * Drives SnapPrompt to the reviewing phase via a fake client, then exercises
+ * Drives BugToPrompt to the reviewing phase via a fake client, then exercises
  * the injected clipboard and download sinks.
  */
 import {
@@ -13,8 +13,8 @@ import {
 } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SnapPromptClient, Target } from "../client";
-import { SnapPrompt } from "./SnapPrompt";
+import type { BugToPromptClient, Target } from "../client";
+import { BugToPrompt } from "./BugToPrompt";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -58,7 +58,7 @@ vi.mock("../render", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeFakeClient(): SnapPromptClient {
+function makeFakeClient(): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
 			.fn()
@@ -79,11 +79,11 @@ function makeFakeClient(): SnapPromptClient {
  * Returns control when the session is in the "reviewing" phase.
  */
 async function driveToReview(
-	client: SnapPromptClient,
+	client: BugToPromptClient,
 	modes: Array<"issue" | "clipboard" | "download">,
 ) {
 	render(
-		<SnapPrompt
+		<BugToPrompt
 			client={client}
 			projectId="proj-test"
 			modes={modes}
@@ -140,7 +140,7 @@ afterEach(cleanup);
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("SnapPrompt output modes", () => {
+describe("BugToPrompt output modes", () => {
 	it("issue mode: 'File issue' button is visible in review phase", async () => {
 		const client = makeFakeClient();
 		await driveToReview(client, ["issue"]);
@@ -152,7 +152,7 @@ describe("SnapPrompt output modes", () => {
 		const client = makeFakeClient();
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={client}
 				projectId="proj-test"
 				modes={["clipboard"]}
@@ -186,7 +186,7 @@ describe("SnapPrompt output modes", () => {
 		const client = makeFakeClient();
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={client}
 				projectId="proj-test"
 				modes={["clipboard"]}
@@ -216,7 +216,7 @@ describe("SnapPrompt output modes", () => {
 		const client = makeFakeClient();
 
 		render(
-			<SnapPrompt
+			<BugToPrompt
 				client={client}
 				projectId="proj-test"
 				modes={["download"]}
