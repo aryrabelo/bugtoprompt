@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-06-23-bugtoprompt-wave1-design.md
+  s_df13bc1ecbfbef::t_7d10874204480e 2-6,10-18,22-24,57-60,76-77,124-125,135-136,159-160
+  s_df13bc1ecbfbef::t_794789f793c97a 1,7-9,19-21,25-56,61-75,78-123,126-134,137-158,161-167
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "046b819c94f2a3d05202a77654d0110999747ba6",
+  "prompts": {},
+  "sessions": {
+    "s_df13bc1ecbfbef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "861ab4d4-add6-4138-849f-728ad5200c20",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
