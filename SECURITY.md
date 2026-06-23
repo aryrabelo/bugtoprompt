@@ -55,6 +55,6 @@ tab-scoped secret. Prefer a host-minted `streamingToken` /
 
 ### The reference backend
 
-`scripts/github-issue-service.mjs` is a **local dev tool**, not a hardened
+`server/github-issue-service.mjs` is a **local dev tool**, not a hardened
 service. Run it only on a trusted machine, bound to `127.0.0.1`, and set
 `BUGTOPROMPT_ALLOWED_ORIGINS` and `BUGTOPROMPT_TOKEN` as documented.

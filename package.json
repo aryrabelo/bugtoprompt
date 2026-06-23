@@ -58,7 +58,7 @@
 		"test": "vitest run",
 		"lint": "biome check .",
 		"typecheck": "tsc --noEmit",
-		"service:github": "node scripts/github-issue-service.mjs"
+		"service:github": "node server/github-issue-service.mjs"
 	},
 	"peerDependencies": {
 		"react": "^19",
