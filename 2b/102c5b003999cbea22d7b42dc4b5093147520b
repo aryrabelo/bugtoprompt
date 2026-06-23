@@ -1,0 +1,32 @@
+.gitignore
+  s_df13bc1ecbfbef::t_a39d545596f2d8 4-7
+src/overlay/audio/AudioCapture.ts
+  s_957b783e84a530::t_50d4241d32b2a8 74-102
+  s_957b783e84a530::t_59d7a8904e62b3 35-57
+src/overlay/useSession.ts
+  s_957b783e84a530::t_d290af54a7ceb9 380-391,393-397,399-405
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "2b102c5b003999cbea22d7b42dc4b5093147520b",
+  "prompts": {},
+  "sessions": {
+    "s_957b783e84a530": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "eb9350b4-7885-4d3e-b5dd-65f5e654d7c9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    },
+    "s_df13bc1ecbfbef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "861ab4d4-add6-4138-849f-728ad5200c20",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
