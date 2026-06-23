@@ -17,9 +17,9 @@
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import css from "../dist/bugtoprompt.css";
-import { saveAssemblyKey } from "./overlay/key-store";
-import type { OutputMode, BugToPromptProps } from "./overlay/BugToPrompt";
+import type { BugToPromptProps, OutputMode } from "./overlay/BugToPrompt";
 import { BugToPrompt } from "./overlay/BugToPrompt";
+import { saveAssemblyKey } from "./overlay/key-store";
 import type { ScreenshotMode } from "./overlay/useSession";
 
 // ---------------------------------------------------------------------------

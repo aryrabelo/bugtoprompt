@@ -19,6 +19,9 @@
 	"bugs": "https://github.com/aryrabelo/bugtoprompt/issues",
 	"type": "module",
 	"license": "MIT",
+	"engines": {
+		"node": ">=18"
+	},
 	"private": false,
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
@@ -50,8 +53,8 @@
 		"build:esm": "tsup",
 		"build:css": "tailwindcss -i src/standalone.css -o dist/bugtoprompt.css --minify",
 		"build:standalone": "tsup --config tsup.standalone.config.ts",
-		"build": "pnpm build:esm && pnpm build:css && pnpm build:standalone",
-		"prepare": "pnpm build",
+		"build": "npm run build:esm && npm run build:css && npm run build:standalone",
+		"prepare": "npm run build",
 		"test": "vitest run",
 		"lint": "biome check .",
 		"typecheck": "tsc --noEmit",

@@ -1,3 +1,7 @@
 node_modules
 dist
 .bugtoprompt/
+
+# Local agent / harness state — never publish
+.claude/
+.harness-mem/

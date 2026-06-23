@@ -1,7 +1,7 @@
 export {
-	type OutputMode,
 	BugToPrompt,
 	type BugToPromptProps,
+	type OutputMode,
 } from "./overlay/BugToPrompt";
 export {
 	type SessionBinding,

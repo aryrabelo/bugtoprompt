@@ -107,8 +107,8 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 }
 
 export {
+	type BugToPromptServerConfig,
 	createLocalFallbackClient,
 	fetchServerConfig,
 	resolveBaseUrl,
-	type BugToPromptServerConfig,
 } from "../overlay/autoConfig";

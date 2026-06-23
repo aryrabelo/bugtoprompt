@@ -1,0 +1,32 @@
+name: Ultrathink
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  ultrathink:
+    name: audit · health · package report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Dependency security audit
+        run: pnpm audit --audit-level=high || true # report advisories without hard-failing the run
+      - name: Typecheck and test
+        run: |
+          pnpm typecheck
+          pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Published package size + contents report
+        run: npm pack --dry-run

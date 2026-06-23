@@ -21,7 +21,7 @@ Replace `YOUR_HOST` with wherever you serve `bugtoprompt.global.js` (e.g.
 
 ## Production live-transcription unlock
 
-### Option A — raw AssemblyAI key (default, per-developer)
+### Option A — raw AssemblyAI key (proxy-only; last resort)
 
 Set `window.__BUGTOPROMPT__` before injecting the script:
 
@@ -40,9 +40,11 @@ Then inject the script (see snippet above, or the `<script>` tag approach).
   persisted anywhere by bugtoprompt.
 - Each developer supplies their own key through `prompt()` (or hardcodes it in
   their local DevTools snippet — it stays on their machine).
-- The v3 streaming **token endpoint is CORS-enabled**, so this mint works
-  directly from the browser. If a corporate proxy still blocks it, use
-  Option B (pre-minted token) instead.
+- AssemblyAI's v3 **token endpoint does NOT allow browser CORS** (preflight
+  returns 405). A raw in-browser `assemblyAiKey` mint therefore only succeeds
+  behind a CORS-permitting proxy; otherwise it fails and the resolver falls
+  through. For a reliable client-side unlock prefer Option B (pre-minted token)
+  or a host-provided `mintStreamingToken` (e.g. an extension or desktop worker).
 
 ### Option B — hardened unlock (pre-minted token)
 
@@ -65,12 +67,17 @@ directly — you minted the token already.
 bugtoprompt tries each source in order and uses the first one that works:
 
 1. **`streamingToken`** — returned immediately (most reliable; no extra request).
-2. **`assemblyAiKey`** (from `window.__BUGTOPROMPT__` **or** the key the overlay
-   persisted in `localStorage["bugtoprompt:assemblyai-key"]`) — mints a
-   short-lived token with `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=300`
-   (`Authorization: <key>`) from the browser. This endpoint is CORS-enabled.
-   Falls through on any error.
-3. **`client.mintStreamingToken()`** — your backend mints the token
+2. **`mintStreamingToken`** (from `window.__BUGTOPROMPT__` or your `client`) — a
+   host-provided async minter (extension/desktop worker, or a native Tauri
+   command) that mints the token where browser CORS does not apply. Preferred
+   for a live client-side unlock.
+3. **`assemblyAiKey`** (from `window.__BUGTOPROMPT__` **or** the key the overlay
+   persisted in `localStorage["bugtoprompt:assemblyai-key"]`) — attempts a direct
+   `GET https://streaming.assemblyai.com/v3/token?expires_in_seconds=300`
+   (`Authorization: <key>`) from the browser. AssemblyAI's endpoint does **not**
+   permit browser CORS (405 preflight), so this only works behind a proxy and
+   falls through on any error.
+4. **`client.mintStreamingToken()`** — your backend mints the token
    (the default developer-backend path). Requires a configured `baseUrl`.
 
 If none of the three paths succeeds, the overlay **prompts you for an AssemblyAI
@@ -96,8 +103,12 @@ before mounting, so a page can enable live transcription with no console step:
 
 ## CORS note
 
-When using `assemblyAiKey`, the browser calls
-`https://streaming.assemblyai.com/v3/token` directly. That endpoint is
-CORS-enabled for browser token generation, so it works from `localhost` and
-production origins alike. If a network policy still blocks it, pre-mint a token
-(Option B) and paste it as `streamingToken`.
+AssemblyAI's v3 token endpoint (`https://streaming.assemblyai.com/v3/token`)
+does **not** permit browser CORS — a direct `fetch` from a page triggers a
+preflight that returns 405. So the raw-`assemblyAiKey` mint only works behind a
+CORS-permitting proxy. To unlock live transcription reliably, mint the token
+out-of-band and hand it back: pass a pre-minted `streamingToken` (Option B), or
+provide `window.__BUGTOPROMPT__.mintStreamingToken` (an extension/desktop worker,
+or a Tauri command that mints in native code where CORS does not apply). The
+streaming **WebSocket** itself is not subject to CORS, so once you have a token
+the live session connects normally.

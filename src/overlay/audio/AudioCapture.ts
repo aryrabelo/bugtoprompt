@@ -32,6 +32,29 @@ const PREFERRED_MIME = "audio/webm;codecs=opus";
 /** ScriptProcessor block size: a power of two balancing latency vs. overhead. */
 const SCRIPT_PROCESSOR_BUFFER = 4096;
 const TARGET_RATE = 16000;
+/** How long to wait for a getUserMedia permission before declaring it hung. */
+const GET_USER_MEDIA_TIMEOUT_MS = 15000;
+
+/** Reject with `message` if `promise` hasn't settled within `ms`. */
+function withTimeout<T>(
+	promise: Promise<T>,
+	ms: number,
+	message: string,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(message)), ms);
+		promise.then(
+			(v) => {
+				clearTimeout(timer);
+				resolve(v);
+			},
+			(err) => {
+				clearTimeout(timer);
+				reject(err);
+			},
+		);
+	});
+}
 
 export class AudioCapture {
 	private stream?: MediaStream;
@@ -48,13 +71,35 @@ export class AudioCapture {
 	liveEngine: LiveEngine = "none";
 
 	async start(handlers: AudioCaptureHandlers = {}): Promise<void> {
-		this.stream = await navigator.mediaDevices.getUserMedia({
-			audio: {
-				channelCount: 1,
-				echoCancellation: true,
-				noiseSuppression: true,
-			},
-		});
+		// Fail loudly when the host webview lacks the media APIs entirely (e.g. a
+		// WKWebView without the microphone entitlement) instead of throwing an
+		// opaque "undefined is not an object" further down.
+		if (!navigator.mediaDevices?.getUserMedia) {
+			throw new Error(
+				"getUserMedia is unavailable in this webview. The host app must grant microphone access (on macOS/Tauri: add NSMicrophoneUsageDescription and the audio-input entitlement).",
+			);
+		}
+		if (typeof MediaRecorder === "undefined") {
+			throw new Error(
+				"MediaRecorder is unavailable in this webview, so audio cannot be recorded.",
+			);
+		}
+
+		// A missing OS permission can leave getUserMedia pending forever (no
+		// prompt, no rejection). Race it against a timeout so a hung permission
+		// surfaces as a real error the overlay can show, rather than a record
+		// button that silently does nothing.
+		this.stream = await withTimeout(
+			navigator.mediaDevices.getUserMedia({
+				audio: {
+					channelCount: 1,
+					echoCancellation: true,
+					noiseSuppression: true,
+				},
+			}),
+			GET_USER_MEDIA_TIMEOUT_MS,
+			"Microphone access timed out. The host app likely lacks microphone permission (on macOS/Tauri: add NSMicrophoneUsageDescription and the audio-input entitlement).",
+		);
 
 		this.mimeType = MediaRecorder.isTypeSupported(PREFERRED_MIME)
 			? PREFERRED_MIME

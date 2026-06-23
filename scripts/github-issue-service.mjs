@@ -22,6 +22,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import {
+	isOriginAllowed,
+	isValidSessionId,
+	parseAllowedOrigins,
+} from "./service-security.mjs";
 import { transcriptToSegments } from "./transcript-segments.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -133,17 +138,25 @@ function buildConfig() {
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-const CORS_HEADERS = {
-	"Access-Control-Allow-Origin": "*",
-	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-	"Access-Control-Allow-Headers": "Content-Type, Authorization",
-	"Access-Control-Max-Age": "86400",
-};
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env);
+
+function corsHeaders(origin) {
+	const headers = {
+		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+		"Access-Control-Allow-Headers": "Content-Type, Authorization",
+		"Access-Control-Max-Age": "86400",
+	};
+	if (origin && isOriginAllowed(origin, ALLOWED_ORIGINS)) {
+		headers["Access-Control-Allow-Origin"] = origin;
+		headers.Vary = "Origin";
+	}
+	return headers;
+}
 
 function sendJson(res, status, body) {
 	const payload = JSON.stringify(body);
 	res.writeHead(status, {
-		...CORS_HEADERS,
+		...(res.bugCors || {}),
 		"Content-Type": "application/json",
 	});
 	res.end(payload);
@@ -210,6 +223,10 @@ async function handleArtifact(req, res) {
 		return;
 	}
 	const sessionId = artifact.sessionId;
+	if (!isValidSessionId(sessionId)) {
+		sendJson(res, 400, { error: "invalid sessionId" });
+		return;
+	}
 	const dir = join(CAPTURES_ROOT, sessionId);
 	mkdirSync(dir, { recursive: true });
 
@@ -239,6 +256,10 @@ async function handleTranscribe(req, res) {
 	const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
 	if (!sessionId) {
 		sendJson(res, 400, { error: "sessionId required" });
+		return;
+	}
+	if (!isValidSessionId(sessionId)) {
+		sendJson(res, 400, { error: "invalid sessionId" });
 		return;
 	}
 	console.log(`[transcribe] start session=${sessionId}`);
@@ -404,6 +425,7 @@ async function readUpstreamError(res) {
 
 /** Persist the batch transcript back into the session's artifact.json. */
 function persistTranscript(sessionId, transcript) {
+	if (!isValidSessionId(sessionId)) return;
 	const file = join(CAPTURES_ROOT, sessionId, "artifact.json");
 	if (!existsSync(file)) return;
 	try {
@@ -454,6 +476,7 @@ async function handleStreamingToken(req, res) {
 /** Read a previously-saved artifact for a session, or null. */
 function readArtifact(sessionId) {
 	const file = join(CAPTURES_ROOT, sessionId, "artifact.json");
+	if (!isValidSessionId(sessionId)) return null;
 	if (!existsSync(file)) return null;
 	try {
 		return JSON.parse(readFileSync(file, "utf8"));
@@ -490,6 +513,10 @@ async function handleIssue(req, res, config) {
 	const sessionId = body.sessionId;
 	if (typeof sessionId !== "string" || !sessionId) {
 		sendJson(res, 400, { error: "sessionId required" });
+		return;
+	}
+	if (!isValidSessionId(sessionId)) {
+		sendJson(res, 400, { error: "invalid sessionId" });
 		return;
 	}
 
@@ -539,8 +566,30 @@ async function handleIssue(req, res, config) {
 const config = buildConfig();
 
 const server = createServer((req, res) => {
+	const origin = req.headers.origin;
+	res.bugCors = corsHeaders(origin);
+	// CSRF guard: a browser request from a disallowed Origin is rejected outright
+	// (a forged cross-site POST still executes server-side even if CORS hides the
+	// response, so we must refuse it, not just omit the ACAO header).
+	if (origin && !isOriginAllowed(origin, ALLOWED_ORIGINS)) {
+		sendJson(res, 403, { error: "origin not allowed" });
+		return;
+	}
+	// Optional shared-secret auth: when BUGTOPROMPT_TOKEN is set, every non-OPTIONS
+	// request must present it.
+	const token = process.env.BUGTOPROMPT_TOKEN;
+	if (token && req.method !== "OPTIONS") {
+		const auth = req.headers.authorization || "";
+		const presented = auth.startsWith("Bearer ")
+			? auth.slice(7)
+			: req.headers["x-bugtoprompt-token"];
+		if (presented !== token) {
+			sendJson(res, 401, { error: "unauthorized" });
+			return;
+		}
+	}
 	if (req.method === "OPTIONS") {
-		res.writeHead(204, CORS_HEADERS);
+		res.writeHead(204, res.bugCors);
 		res.end();
 		return;
 	}
@@ -581,7 +630,7 @@ const server = createServer((req, res) => {
 	});
 });
 
-server.listen(config.port, () => {
+server.listen(config.port, "127.0.0.1", () => {
 	const state = config.issueMode ? "ENABLED" : "disabled";
 	console.log(
 		`bugtoprompt issue service on http://localhost:${config.port} ` +

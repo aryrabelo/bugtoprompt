@@ -11,7 +11,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
 	entry: {
 		// tsup appends ".global.js" for IIFE format, so "bugtoprompt" → "bugtoprompt.global.js"
-		"bugtoprompt": "src/standalone.tsx",
+		bugtoprompt: "src/standalone.tsx",
 	},
 	format: ["iife"],
 	globalName: "BugToPromptStandalone",

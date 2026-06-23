@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { blobToBase64, type BugToPromptClient } from "../client";
+import { type BugToPromptClient, blobToBase64 } from "../client";
 import { renderPrompt } from "../render";
 import type {
 	CaptureArtifact,
@@ -377,22 +377,32 @@ export function useSession(
 			}
 			setStreaming(live && audio.streaming);
 
-			// Acquire the screen grabber unless screenshots are disabled.
-			if (screenshotModeRef.current !== "off") {
-				grabberRef.current = await startScreenGrabber();
-			} else {
-				grabberRef.current = undefined;
+			// Everything past the mic is wrapped so an unexpected failure (e.g. the
+			// screen grabber throwing) surfaces as a visible error instead of a
+			// rejected promise swallowed by the record button's fire-and-forget call.
+			try {
+				// Acquire the screen grabber unless screenshots are disabled.
+				if (screenshotModeRef.current !== "off") {
+					grabberRef.current = await startScreenGrabber();
+				} else {
+					grabberRef.current = undefined;
+				}
+				refreshSnapshotEls();
+				recordingRef.current = true;
+
+				// ONE shared throttle for both click and route-change triggers so
+				// bursts (e.g. a click that also triggers a pushState) coalesce into
+				// one snap.
+				const throttledMark = createThrottle(() => void mark(), 600);
+				installListeners(throttledMark);
+
+				timerRef.current = setInterval(() => setElapsedMs(elapsed()), 250);
+				setPhase("recording");
+			} catch (err) {
+				audio.stop().catch(() => {});
+				setError(`Could not start recording: ${(err as Error).message}`);
+				setPhase("error");
 			}
-			refreshSnapshotEls();
-			recordingRef.current = true;
-
-			// ONE shared throttle for both click and route-change triggers so bursts
-			// (e.g. a click that also triggers a pushState) coalesce into one snap.
-			const throttledMark = createThrottle(() => void mark(), 600);
-			installListeners(throttledMark);
-
-			timerRef.current = setInterval(() => setElapsedMs(elapsed()), 250);
-			setPhase("recording");
 		},
 		[
 			client,
@@ -407,6 +417,7 @@ export function useSession(
 	const provideKey = useCallback(
 		async (key: string): Promise<boolean> => {
 			saveAssemblyKey(key);
+			setHasKey(true);
 			const audio = audioRef.current;
 			if (recordingRef.current && !transcriberRef.current && audio) {
 				try {
