@@ -72,6 +72,29 @@ import { createFetchClient } from "bugtoprompt/client";
 The **target picker** shows only in `issue` mode (and only when
 the backend returns targets); clipboard/download hosts see just **Record**.
 
+### Local transcription broker (self-hosted)
+
+Live voice transcription needs a backend to mint short-lived AssemblyAI tokens —
+the API key stays server-side and never reaches the browser. Run the bundled
+broker with no install:
+
+```bash
+ASSEMBLYAI_API_KEY=<your-key> bunx bugtoprompt-server   # http://localhost:4127
+```
+
+Point the overlay at it (Vite example):
+
+```
+VITE_BUGTOPROMPT_BASE_URL=http://localhost:4127
+```
+
+The overlay calls `GET /bugtoprompt/config` (this `200` activates backend mode)
+and `POST /streaming-token` (mints the token); the browser then opens AssemblyAI's
+WebSocket directly. Serve your app over **http** in dev so it can reach the http
+broker without mixed-content blocking. The broker also serves `/transcribe`,
+`/artifact`, `/targets`, and `/issue` (issue mode needs `BUGTOPROMPT_ENABLE_ISSUES=1`
+plus the `gh` CLI).
+
 ### Recommended: gate the mount on an env flag
 
 The widget **does not self-gate** — it has no env checks inside. The recommended
