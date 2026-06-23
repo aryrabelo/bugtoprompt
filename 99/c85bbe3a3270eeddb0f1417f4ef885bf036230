@@ -1,0 +1,19 @@
+docs/superpowers/plans/2026-06-23-bugtoprompt-wave1-local-broker.md
+  s_df13bc1ecbfbef::t_8f9ca5ccf167d7 1-333
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "99c85bbe3a3270eeddb0f1417f4ef885bf036230",
+  "prompts": {},
+  "sessions": {
+    "s_df13bc1ecbfbef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "861ab4d4-add6-4138-849f-728ad5200c20",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
