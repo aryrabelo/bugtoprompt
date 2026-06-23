@@ -1,0 +1,23 @@
+package.json
+  s_df13bc1ecbfbef::t_0f291f8b3822bf 61
+SECURITY.md
+  s_df13bc1ecbfbef::t_445c3e62a9f0e5 58
+server/package.json
+  s_df13bc1ecbfbef::t_cabc8fe99a1830 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "3dd252db718876d9b07ee909bc2ab83f88b4d332",
+  "prompts": {},
+  "sessions": {
+    "s_df13bc1ecbfbef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "861ab4d4-add6-4138-849f-728ad5200c20",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
