@@ -153,6 +153,9 @@ export interface BugToPromptProps {
 	 *  "perPage" re-prompts on each navigation; "onMark" only on explicit Mark
 	 *  (default); "off" captures DOM-only snapshots without screen share. */
 	screenshotMode?: ScreenshotMode;
+	/** Automatically enable voice narration (mic) when recording starts.
+	 *  Default: false — voice is opt-in via the checkbox. */
+	autoVoice?: boolean;
 	// --- injection points for testability ---
 	/** Override the clipboard implementation (default: navigator.clipboard). */
 	clipboard?: Pick<Clipboard, "writeText">;
@@ -170,6 +173,7 @@ export function BugToPrompt({
 	modes: modesProp,
 	defaultMode,
 	screenshotMode: screenshotModeProp,
+	autoVoice = false,
 	clipboard,
 	onDownload,
 }: BugToPromptProps): ReactElement | null {
@@ -539,7 +543,9 @@ export function BugToPrompt({
 						size="sm"
 						onClick={() => {
 							setFrozen(binding);
-							void session.start(binding);
+							void session.start(binding).then(() => {
+								if (autoVoice) void session.enableVoice();
+							});
 						}}
 					>
 						<CircleDot className="size-4" /> Record
