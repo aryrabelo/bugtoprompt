@@ -201,7 +201,7 @@ describe("useSession", () => {
 		]);
 	});
 
-	it("(d) mic-unavailable: AudioCapture.start rejects → phase error", async () => {
+	it("(d) mic-unavailable: enableVoice rejects → voiceEnabled stays false, phase stays recording", async () => {
 		const client = makeFakeClient();
 		mockAudioInstance.start = vi
 			.fn()
@@ -212,9 +212,15 @@ describe("useSession", () => {
 		await act(async () => {
 			await result.current.start({});
 		});
+		expect(result.current.phase).toBe("recording");
 
-		expect(result.current.phase).toBe("error");
-		expect(result.current.error).toMatch(/Microphone unavailable/);
+		await act(async () => {
+			await result.current.enableVoice();
+		});
+
+		// Voice failed but recording continues without mic
+		expect(result.current.phase).toBe("recording");
+		expect(result.current.voiceEnabled).toBe(false);
 	});
 
 	it("(e) save-failure: saveArtifact rejects → phase error", async () => {
@@ -234,7 +240,7 @@ describe("useSession", () => {
 		expect(result.current.error).toMatch(/Failed to save/);
 	});
 
-	it("(f) failing token resolution sets needsKey while phase stays recording", async () => {
+	it("(f) failing token resolution sets needsKey after enableVoice, phase stays recording", async () => {
 		const client = makeFakeClient({
 			mintStreamingToken: vi.fn().mockRejectedValue(new Error("no token")),
 		});
@@ -243,15 +249,21 @@ describe("useSession", () => {
 		await act(async () => {
 			await result.current.start({});
 		});
+		expect(result.current.phase).toBe("recording");
+		expect(result.current.needsKey).toBe(false);
+
+		await act(async () => {
+			await result.current.enableVoice();
+		});
 
 		expect(result.current.phase).toBe("recording");
 		expect(result.current.needsKey).toBe(true);
 		expect(result.current.streaming).toBe(false);
 	});
 
-	it("(g) provideKey goes live mid-recording: streaming true, needsKey false", async () => {
+	it("(g) provideKey goes live mid-recording after enableVoice: streaming true, needsKey false", async () => {
 		const client = makeFakeClient({
-			// First call (start) rejects → needsKey; second call (provideKey's
+			// First call (enableVoice) rejects → needsKey; second call (provideKey's
 			// resolveStreamingToken fall-through) resolves → live transcription.
 			mintStreamingToken: vi
 				.fn()
@@ -265,6 +277,13 @@ describe("useSession", () => {
 
 		await act(async () => {
 			await result.current.start({});
+		});
+		// needsKey is false after start (no mic requested yet)
+		expect(result.current.needsKey).toBe(false);
+
+		// Enable voice → fails token → needsKey
+		await act(async () => {
+			await result.current.enableVoice();
 		});
 		expect(result.current.needsKey).toBe(true);
 

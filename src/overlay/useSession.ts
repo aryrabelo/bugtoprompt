@@ -25,7 +25,7 @@ import type {
 	TranscriptSegment,
 } from "../schema";
 import { assembleArtifact } from "./artifact/assemble";
-import { AudioCapture } from "./audio/AudioCapture";
+import { AudioCapture, type StoppedAudio } from "./audio/AudioCapture";
 import { StreamingTranscriber } from "./audio/StreamingTranscriber";
 import { hasStoredKey, saveAssemblyKey } from "./key-store";
 import {
@@ -89,6 +89,8 @@ export interface UseSessionResult {
 	 *  while idle). */
 	provideKey(key: string): Promise<boolean>;
 	setSnapOnClick(v: boolean): void;
+	voiceEnabled: boolean;
+	enableVoice(): Promise<void>;
 }
 
 interface Pending {
@@ -115,6 +117,7 @@ export function useSession(
 	const [hasKey, setHasKey] = useState<boolean>(() => hasStoredKey());
 	const [flashTick, setFlashTick] = useState(0);
 	const [snapOnClickState, setSnapOnClickState] = useState(true);
+	const [voiceEnabled, setVoiceEnabled] = useState(false);
 	const [error, setError] = useState<string>();
 	const [issueUrl, setIssueUrl] = useState<string>();
 
@@ -329,55 +332,9 @@ export function useSession(
 			startPerfRef.current =
 				typeof performance !== "undefined" ? performance.now() : 0;
 
-			const audio = new AudioCapture();
-			audioRef.current = audio;
-			let live = false;
+			setStreaming(false);
 
-			// Best-effort live transcription: mint a token, open the ws. Any failure
-			// degrades to record-only (batch transcription happens on stop).
-			try {
-				const token = await resolveStreamingToken(client, binding.workspaceId);
-				try {
-					transcriberRef.current = await makeTranscriber(token);
-					live = true;
-					setNeedsKey(false);
-				} catch (err) {
-					// Token minted but the streaming websocket failed to open.
-					console.warn(
-						"debug: streaming websocket failed to open; batch fallback",
-						err,
-					);
-					transcriberRef.current = undefined;
-					live = false;
-					setNeedsKey(true);
-				}
-			} catch (err) {
-				// No usable streaming token resolved (no key / mint failed).
-				console.warn(
-					"debug: streaming token unavailable; prompting for API key (batch fallback)",
-					err,
-				);
-				transcriberRef.current = undefined;
-				live = false;
-				setNeedsKey(true);
-			}
-
-			try {
-				await audio.start(
-					live
-						? { onPcmFrame: (f) => transcriberRef.current?.sendFrame(f) }
-						: {},
-				);
-			} catch (err) {
-				setError(
-					`Microphone unavailable: ${(err as Error).message}. On macOS the Tauri app needs the microphone entitlement.`,
-				);
-				setPhase("error");
-				return;
-			}
-			setStreaming(live && audio.streaming);
-
-			// Everything past the mic is wrapped so an unexpected failure (e.g. the
+			// Everything past here is wrapped so an unexpected failure (e.g. the
 			// screen grabber throwing) surfaces as a visible error instead of a
 			// rejected promise swallowed by the record button's fire-and-forget call.
 			try {
@@ -399,20 +356,63 @@ export function useSession(
 				timerRef.current = setInterval(() => setElapsedMs(elapsed()), 250);
 				setPhase("recording");
 			} catch (err) {
-				audio.stop().catch(() => {});
 				setError(`Could not start recording: ${(err as Error).message}`);
 				setPhase("error");
 			}
 		},
-		[
-			client,
-			elapsed,
-			installListeners,
-			makeTranscriber,
-			mark,
-			refreshSnapshotEls,
-		],
+		[elapsed, installListeners, mark, refreshSnapshotEls],
 	);
+
+	const enableVoice = useCallback(async (): Promise<void> => {
+		if (audioRef.current) return; // already enabled
+		const audio = new AudioCapture();
+		audioRef.current = audio;
+		let live = false;
+
+		try {
+			const token = await resolveStreamingToken(
+				client,
+				bindingRef.current.workspaceId,
+			);
+			try {
+				transcriberRef.current = await makeTranscriber(token);
+				live = true;
+				setNeedsKey(false);
+			} catch (err) {
+				console.warn(
+					"debug: streaming websocket failed to open; batch fallback",
+					err,
+				);
+				transcriberRef.current = undefined;
+				live = false;
+				setNeedsKey(true);
+			}
+		} catch (err) {
+			console.warn(
+				"debug: streaming token unavailable; prompting for API key (batch fallback)",
+				err,
+			);
+			transcriberRef.current = undefined;
+			live = false;
+			setNeedsKey(true);
+		}
+
+		try {
+			await audio.start(
+				live ? { onPcmFrame: (f) => transcriberRef.current?.sendFrame(f) } : {},
+			);
+		} catch (err) {
+			setError(
+				`Microphone unavailable: ${(err as Error).message}. On macOS the Tauri app needs the microphone entitlement.`,
+			);
+			// Don't set phase to error — recording can continue without audio
+			audioRef.current = undefined;
+			setVoiceEnabled(false);
+			return;
+		}
+		setVoiceEnabled(true);
+		setStreaming(live && audio.streaming);
+	}, [client, makeTranscriber]);
 
 	const provideKey = useCallback(
 		async (key: string): Promise<boolean> => {
@@ -454,15 +454,14 @@ export function useSession(
 		grabberRef.current?.stop();
 
 		const audio = audioRef.current;
-		if (!audio) {
-			setPhase("error");
-			setError("no active recording");
-			return;
+		let stopped: StoppedAudio | undefined;
+		let live = false;
+		if (audio) {
+			stopped = await audio.stop();
+			live = audio.streaming && !transcriberRef.current?.errored;
 		}
-		const stopped = await audio.stop();
-		const live = audio.streaming && !transcriberRef.current?.errored;
 
-		const audioBase64 = await blobToBase64(stopped.blob);
+		const audioBase64 = stopped ? await blobToBase64(stopped.blob) : "";
 		const screenshotsBase64 = await Promise.all(
 			shotBlobsRef.current.map((b) =>
 				b ? blobToBase64(b) : Promise.resolve(""),
@@ -475,15 +474,21 @@ export function useSession(
 			pageUrl: window.location.href,
 			startedAt: startEpochRef.current,
 			durationMs: elapsed(),
-			audio: {
-				ref: "audio.webm",
-				mimeType: stopped.mimeType,
-				bytes: stopped.bytes,
-			},
+			audio: stopped
+				? {
+						ref: "audio.webm",
+						mimeType: stopped.mimeType,
+						bytes: stopped.bytes,
+					}
+				: { ref: "", mimeType: "", bytes: 0 },
 			transcript: finalsRef.current,
 			events: eventsRef.current,
 			snapshots: snapshotsRef.current,
-			transcriptionMode: live ? "streaming" : "batch-fallback",
+			transcriptionMode: !stopped
+				? "batch-fallback"
+				: live
+					? "streaming"
+					: "batch-fallback",
 		});
 		artifactRef.current = assembled;
 		setArtifact(assembled);
@@ -675,33 +680,7 @@ export function useSession(
 			setElapsedMs(Date.now() - session.startedAt);
 			recordingRef.current = true;
 
-			// Re-acquire audio / live-transcription best-effort.
-			// MediaStream cannot survive a hard reload — each page opens its own.
-			// On failure, continue silent (the event / snapshot timeline still works).
-			const audio = new AudioCapture();
-			audioRef.current = audio;
-			let live = false;
-			try {
-				const { token } = await client.mintStreamingToken(
-					session.binding.workspaceId,
-				);
-				if (!cancelled) {
-					transcriberRef.current = await makeTranscriber(token);
-					live = true;
-				}
-			} catch {
-				live = false;
-			}
-			try {
-				await audio.start(
-					live
-						? { onPcmFrame: (f) => transcriberRef.current?.sendFrame(f) }
-						: {},
-				);
-			} catch {
-				// Continue without audio — do not set phase to error on rehydrate.
-			}
-			if (!cancelled) setStreaming(live && audio.streaming);
+			setStreaming(false);
 
 			// Screen grabber acquisition depends on mode.
 			// "perPage"  → re-prompt immediately so marks on this page screenshot.
@@ -762,5 +741,7 @@ export function useSession(
 		reset,
 		provideKey,
 		setSnapOnClick,
+		voiceEnabled,
+		enableVoice,
 	};
 }

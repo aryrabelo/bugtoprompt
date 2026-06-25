@@ -15,6 +15,7 @@ import {
 	Download,
 	ExternalLink,
 	Loader2,
+	Mic,
 	MousePointer2,
 	Square,
 	Trash2,
@@ -544,7 +545,8 @@ export function BugToPrompt({
 						<CircleDot className="size-4" /> Record
 					</Button>
 					<p className="text-muted-foreground">
-						Talk through the bug; click around or press Mark to capture.
+						Click around or press Mark to capture. Enable voice narration after
+						starting to record.
 					</p>
 				</>
 			) : null}
@@ -605,6 +607,19 @@ export function BugToPrompt({
 							<Square className="size-4" /> Stop
 						</Button>
 					</div>
+					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
+						<input
+							type="checkbox"
+							checked={session.voiceEnabled}
+							onChange={() => {
+								if (!session.voiceEnabled) void session.enableVoice();
+							}}
+							disabled={session.voiceEnabled}
+							className="size-3 cursor-pointer accent-primary"
+						/>
+						<Mic className="size-3" />
+						Voice narration
+					</label>
 					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
 						<input
 							type="checkbox"
