@@ -23,6 +23,11 @@ const STREAMING_WS = "wss://streaming.assemblyai.com/v3/ws";
 /** Universal-3 Pro real-time model — selected via the v3 socket query param. */
 const SPEECH_MODEL = "u3-rt-pro";
 
+/** AssemblyAI v3 streaming accepts only 50–1000 ms of audio per message
+ *  (error 3007 otherwise). Aggregate frames to ~100 ms before sending. */
+const SEND_WINDOW_MS = 100;
+const MIN_WINDOW_MS = 50;
+
 export class StreamingTranscriber {
 	private ws?: WebSocket;
 	private open = false;
@@ -31,6 +36,11 @@ export class StreamingTranscriber {
 	errored = false;
 	private startedAt = 0;
 	private lastFinalMs = 0;
+	/** Negotiated sample rate (Hz); set in start(). Drives the send-window math. */
+	private rate = 16000;
+	/** PCM16 frames buffered until they span SEND_WINDOW_MS, then flushed as one. */
+	private pending: Uint8Array[] = [];
+	private pendingBytes = 0;
 
 	/** Open the streaming ws. Resolves once connected (or rejects on failure). */
 	start(
@@ -40,6 +50,7 @@ export class StreamingTranscriber {
 	): Promise<void> {
 		this.startedAt = typeof performance !== "undefined" ? performance.now() : 0;
 		const rate = Math.round(sampleRate) || 16000;
+		this.rate = rate;
 		const url = `${STREAMING_WS}?sample_rate=${rate}&speech_model=${SPEECH_MODEL}&token=${encodeURIComponent(token)}`;
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		let settled = false;
@@ -63,6 +74,8 @@ export class StreamingTranscriber {
 		};
 		ws.onclose = (e) => {
 			this.open = false;
+			this.pending = [];
+			this.pendingBytes = 0;
 			debug("transcriber ws closed", { code: e.code, reason: e.reason });
 		};
 		ws.onmessage = (ev) => this.onMessage(ev, handlers);
@@ -104,7 +117,15 @@ export class StreamingTranscriber {
 		}
 	}
 
-	/** Forward one PCM16 frame; no-op when the ws isn't open. */
+	/**
+	 * Buffer one PCM16 frame and flush to the ws in ~100 ms batches.
+	 *
+	 * AssemblyAI's v3 streaming API rejects any audio message outside a
+	 * 50–1000 ms window (error 3007). The AudioWorklet tap emits ~2.7 ms render
+	 * quanta, so forwarding each one verbatim trips that limit and the socket
+	 * closes before a single word is transcribed. Aggregating to ~100 ms keeps
+	 * every message inside the window. No-op while the ws isn't open.
+	 */
 	sendFrame(frame: ArrayBuffer): void {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			if (!this.warnedClosed) {
@@ -115,8 +136,34 @@ export class StreamingTranscriber {
 			}
 			return;
 		}
+		this.pending.push(new Uint8Array(frame));
+		this.pendingBytes += frame.byteLength;
+		if (this.pendingBytes >= this.windowBytes(SEND_WINDOW_MS)) this.flush();
+	}
+
+	/** Bytes of mono PCM16 at the negotiated rate spanning `ms` of audio. */
+	private windowBytes(ms: number): number {
+		return Math.round((this.rate * 2 * ms) / 1000);
+	}
+
+	/** Concatenate buffered frames into one ws message; clears the buffer. */
+	private flush(): void {
+		if (this.pendingBytes === 0) return;
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			this.pending = [];
+			this.pendingBytes = 0;
+			return;
+		}
+		const merged = new Uint8Array(this.pendingBytes);
+		let offset = 0;
+		for (const chunk of this.pending) {
+			merged.set(chunk, offset);
+			offset += chunk.length;
+		}
+		this.pending = [];
+		this.pendingBytes = 0;
 		try {
-			this.ws.send(frame);
+			this.ws.send(merged.buffer);
 		} catch {
 			this.errored = true;
 		}
@@ -124,6 +171,11 @@ export class StreamingTranscriber {
 
 	/** Politely terminate the session and close the socket. */
 	stop(): void {
+		// Flush a trailing partial batch only if it clears the 50 ms floor; a
+		// shorter tail would itself be rejected (error 3007), so drop it.
+		if (this.pendingBytes >= this.windowBytes(MIN_WINDOW_MS)) this.flush();
+		this.pending = [];
+		this.pendingBytes = 0;
 		try {
 			if (this.ws && this.open) {
 				this.ws.send(JSON.stringify({ type: "Terminate" }));

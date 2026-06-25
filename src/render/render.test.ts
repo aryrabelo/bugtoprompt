@@ -111,6 +111,23 @@ describe("renderPrompt", () => {
 		expect(body).toContain('🗣 "It does nothing when clicked"');
 	});
 
+	it("renders a select event as a highlighted-text caption row", () => {
+		const art: CaptureArtifact = {
+			...BASE_ARTIFACT,
+			events: [
+				...BASE_ARTIFACT.events,
+				{
+					tMs: 1200,
+					kind: "select",
+					selectedText: "essa parte aqui",
+					selector: "h1.landing-headline",
+				},
+			],
+		};
+		const body = renderPrompt(art);
+		expect(body).toContain('✂️ selected "essa parte aqui"');
+	});
+
 	it("body contains the clicked-elements machine JSON", () => {
 		const body = renderPrompt(BASE_ARTIFACT);
 		expect(body).toContain("<details>");

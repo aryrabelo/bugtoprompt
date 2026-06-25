@@ -134,6 +134,9 @@ function eventRow(ev: CaptureEvent, labels: Map<string, string>): TimelineRow {
 	if (ev.kind === "route") {
 		return { tMs: ev.tMs, line: `🧭 route ${ev.url ?? ""}`.trimEnd() };
 	}
+	if (ev.kind === "select") {
+		return { tMs: ev.tMs, line: `✂️ selected "${ev.selectedText ?? ""}"` };
+	}
 	return { tMs: ev.tMs, line: "🚩 mark" };
 }
 

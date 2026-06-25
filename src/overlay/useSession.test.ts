@@ -22,6 +22,14 @@ interface MockTranscriberInstance {
 	start: Mock;
 	stop: Mock;
 	sendFrame: Mock;
+	handlers?: {
+		onPartial?: (t: string) => void;
+		onFinal?: (turn: {
+			text: string;
+			tStartMs: number;
+			tEndMs: number;
+		}) => void;
+	};
 }
 
 let mockAudioInstance: MockAudioInstance;
@@ -109,7 +117,10 @@ beforeEach(() => {
 	// Default transcriber: not errored
 	mockTranscriberInstance = {
 		errored: false,
-		start: vi.fn().mockResolvedValue(undefined),
+		start: vi.fn().mockImplementation((_t, _r, handlers) => {
+			mockTranscriberInstance.handlers = handlers;
+			return Promise.resolve();
+		}),
 		stop: vi.fn(),
 		sendFrame: vi.fn(),
 	};
@@ -298,6 +309,98 @@ describe("useSession", () => {
 		expect(mockTranscriberInstance.start).toHaveBeenCalled();
 		expect(mockAudioInstance.attachLiveTranscription).toHaveBeenCalledOnce();
 
+		vi.unstubAllGlobals();
+	});
+
+	it("(h) commits a trailing partial transcript on stop (no end-of-turn)", async () => {
+		// jsdom v3-mint path fails → resolveStreamingToken falls back to the client.
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no fetch")));
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await result.current.start({});
+		});
+		await act(async () => {
+			await result.current.enableVoice();
+		});
+		// Live path engaged, so the transcriber handlers are wired.
+		expect(result.current.streaming).toBe(true);
+		// A live partial arrives but the turn never finalizes (Stop pressed
+		// mid-utterance ⇒ AssemblyAI sends no end_of_turn=true).
+		act(() => {
+			mockTranscriberInstance.handlers?.onPartial?.("o botao de salvar trava");
+		});
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.transcript.map((s) => s.text)).toContain(
+			"o botao de salvar trava",
+		);
+		vi.unstubAllGlobals();
+	});
+
+	it("(i) keeps live captions on stop and never lets an empty batch overwrite them", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no fetch")));
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await result.current.start({});
+		});
+		await act(async () => {
+			await result.current.enableVoice();
+		});
+		// A final turn is captured live during recording.
+		act(() => {
+			mockTranscriberInstance.handlers?.onFinal?.({
+				text: "o salvar nao funciona",
+				tStartMs: 0,
+				tEndMs: 1500,
+			});
+		});
+		// The socket later errors — the path that previously forced the empty
+		// batch fallback to clobber the live transcript.
+		mockTranscriberInstance.errored = true;
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.transcript.map((s) => s.text)).toContain(
+			"o salvar nao funciona",
+		);
+		// With a live transcript present, batch transcription must not run.
+		expect(client.transcribeBatch).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+
+	it("(j) anchors a segment at the turn's first-partial time, not 0:00", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no fetch")));
+		let nowMs = 0;
+		const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => nowMs);
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await result.current.start({}); // startPerfRef = 0
+		});
+		await act(async () => {
+			await result.current.enableVoice();
+		});
+		// 4 s of silence, then the turn's first partial.
+		nowMs = 4000;
+		act(() => {
+			mockTranscriberInstance.handlers?.onPartial?.("Esse daqui");
+		});
+		// Turn ends at 6 s.
+		nowMs = 6000;
+		act(() => {
+			mockTranscriberInstance.handlers?.onFinal?.({
+				text: "Esse daqui",
+				tStartMs: 0,
+				tEndMs: 999,
+			});
+		});
+		const seg = result.current.transcript[0];
+		expect(seg.tStartMs).toBe(4000); // first-partial time, not 0
+		expect(seg.tEndMs).toBe(6000);
+		nowSpy.mockRestore();
 		vi.unstubAllGlobals();
 	});
 });

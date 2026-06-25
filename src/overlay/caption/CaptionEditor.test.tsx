@@ -185,3 +185,50 @@ describe("editable mode", () => {
 		expect(screen.queryAllByRole("textbox")).toHaveLength(0);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Events interleaved into the timeline (review screen)
+// ---------------------------------------------------------------------------
+
+describe("events timeline", () => {
+	it("interleaves selections and clicks with speech", () => {
+		render(
+			<CaptionEditor
+				transcript={[seg1, seg2]}
+				events={[
+					{ tMs: 1000, kind: "select", selectedText: "essa parte aqui" },
+					{ tMs: 3000, kind: "click", elementName: "Save" },
+					{ tMs: 5000, kind: "mark" },
+				]}
+			/>,
+		);
+		expect(screen.getAllByTestId("timeline-event")).toHaveLength(3);
+		expect(screen.getByText(/essa parte aqui/)).toBeTruthy();
+		expect(screen.getByText(/🖱 Save/)).toBeTruthy();
+	});
+
+	it("keeps transcript segments editable with the right index when events are present", () => {
+		const onEdit = vi.fn();
+		render(
+			<CaptionEditor
+				transcript={[seg1, seg2]}
+				events={[{ tMs: 1500, kind: "click", elementName: "Btn" }]}
+				editable
+				onEdit={onEdit}
+			/>,
+		);
+		fireEvent.change(screen.getByDisplayValue("Hello world"), {
+			target: { value: "edited" },
+		});
+		expect(onEdit).toHaveBeenCalledWith(0, "edited");
+	});
+
+	it("shows 'No transcript yet' only with no segments, events, or partial", () => {
+		const { rerender } = render(<CaptionEditor transcript={[]} events={[]} />);
+		expect(screen.getByText(/No transcript yet/)).toBeTruthy();
+		rerender(
+			<CaptionEditor transcript={[]} events={[{ tMs: 100, kind: "mark" }]} />,
+		);
+		expect(screen.queryByText(/No transcript yet/)).toBeNull();
+	});
+});

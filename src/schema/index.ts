@@ -59,11 +59,12 @@ export const transcriptSegmentSchema = z.object({
 });
 export type TranscriptSegment = z.infer<typeof transcriptSegmentSchema>;
 
-/** One timeline event. `click` carries the element it hit; `route` a url; `mark`
- *  is the user's manual shortcut beat. */
+/** One timeline event. `click` carries the element it hit; `select` the text the
+ *  user highlighted (anchored at mouse-down); `route` a url; `mark` is the
+ *  user's manual shortcut beat. */
 export const captureEventSchema = z.object({
 	tMs: z.number(),
-	kind: z.enum(["click", "route", "mark"]),
+	kind: z.enum(["click", "route", "mark", "select"]),
 	/** Snapshot ref of the hit element, when it was in the latest snapshot. */
 	elementRef: z.string().optional(),
 	/** Accessible name of the clicked element, captured at click time. */
@@ -72,6 +73,8 @@ export const captureEventSchema = z.object({
 	elementRole: z.string().optional(),
 	selector: z.string().optional(),
 	url: z.string().optional(),
+	/** Text the user highlighted (kind: "select"), captured on mouse-up. */
+	selectedText: z.string().optional(),
 });
 export type CaptureEvent = z.infer<typeof captureEventSchema>;
 

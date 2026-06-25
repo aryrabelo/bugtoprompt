@@ -29,26 +29,64 @@ export interface EventTrackOptions {
 export function installEventTrack(opts: EventTrackOptions): () => void {
 	const win = opts.win ?? window;
 
-	const onClick = (ev: Event): void => {
-		const target = ev.target as Element | null;
-		if (target?.nodeType !== 1) return;
+	/** Max selected-text length kept per event — bounds a giant highlight. */
+	const MAX_SELECTED = 500;
+	// The mouse-down "placeholder": where/when an interaction began. Resolved on
+	// mouse-up into a `click` or (if text was highlighted) a `select` event,
+	// anchored at the down time so it aligns with what the user was narrating.
+	let downMs = 0;
+	let downTarget: Element | null = null;
+
+	const emit = (
+		target: Element,
+		tMs: number,
+		kind: "click" | "select",
+		selectedText?: string,
+	): void => {
 		// Never record interactions with the overlay's own UI.
 		if (target.closest?.("[data-bugtoprompt]")) return;
 		const el = target.closest?.(INTERACTIVE) ?? target;
 		const ref = opts.resolveRef?.(el);
-		// Name + role captured at click time, so the issue caption can describe the
-		// element without shipping full DOM snapshots.
 		const name = accessibleName(el);
 		const role = interactiveRole(el);
 		opts.onEvent({
-			tMs: opts.elapsedMs(),
-			kind: "click",
+			tMs,
+			kind,
 			selector: cssSelector(el),
 			...(name ? { elementName: name } : {}),
 			...(role ? { elementRole: role } : {}),
 			...(ref ? { elementRef: ref } : {}),
+			...(selectedText ? { selectedText } : {}),
 		});
 	};
+
+	const onMouseDown = (ev: Event): void => {
+		const target = ev.target as Element | null;
+		if (target?.nodeType !== 1) return;
+		downMs = opts.elapsedMs();
+		downTarget = target;
+	};
+
+	const onMouseUp = (ev: Event): void => {
+		const target = (ev.target as Element | null) ?? downTarget;
+		// Anchor at the placeholder (down) time when we have it.
+		const tMs = downTarget ? downMs : opts.elapsedMs();
+		downTarget = null;
+		if (target?.nodeType !== 1) return;
+		const selected = (win.getSelection?.()?.toString() ?? "").trim();
+		if (selected) emit(target, tMs, "select", selected.slice(0, MAX_SELECTED));
+		else emit(target, tMs, "click");
+	};
+	// `mousedown`/`mouseup` cover mouse clicks AND drag-selections; a bare
+	// keyboard activation fires `click` with detail 0 and no mouse events.
+	const onClick = (ev: Event): void => {
+		if ((ev as MouseEvent).detail !== 0) return; // mouse handled by mouseup
+		const target = ev.target as Element | null;
+		if (target?.nodeType !== 1) return;
+		emit(target, opts.elapsedMs(), "click");
+	};
+	win.document.addEventListener("mousedown", onMouseDown, true);
+	win.document.addEventListener("mouseup", onMouseUp, true);
 	win.document.addEventListener("click", onClick, true);
 
 	const onRoute = (): void => {
@@ -67,6 +105,8 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 	};
 
 	return () => {
+		win.document.removeEventListener("mousedown", onMouseDown, true);
+		win.document.removeEventListener("mouseup", onMouseUp, true);
 		win.document.removeEventListener("click", onClick, true);
 		win.removeEventListener("popstate", onRoute);
 		win.history.pushState = originalPush;

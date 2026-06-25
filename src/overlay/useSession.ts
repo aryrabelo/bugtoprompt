@@ -130,6 +130,11 @@ export function useSession(
 	const snapshotsRef = useRef<CaptureSnapshot[]>([]);
 	const shotBlobsRef = useRef<Array<Blob | null>>([]);
 	const finalsRef = useRef<TranscriptSegment[]>([]);
+	const partialRef = useRef("");
+	// elapsed() at the first partial of the current turn — the true speech start,
+	// so a segment isn't anchored at t=0 after an initial silence, and transcript
+	// times share the recording clock with click/select events.
+	const turnStartRef = useRef<number | null>(null);
 	const latestEls = useRef<InteractiveElement[]>([]);
 	const sessionIdRef = useRef<string>("");
 	const bindingRef = useRef<SessionBinding>({});
@@ -214,21 +219,28 @@ export function useSession(
 		async (token: string): Promise<StreamingTranscriber> => {
 			const transcriber = new StreamingTranscriber();
 			await transcriber.start(token, 16000, {
-				onPartial: (t) => setPartial(t),
+				onPartial: (t) => {
+					if (turnStartRef.current === null) turnStartRef.current = elapsed();
+					setPartial(t);
+					partialRef.current = t;
+				},
 				onFinal: (turn) => {
 					setPartial("");
+					partialRef.current = "";
 					finalsRef.current.push({
-						tStartMs: turn.tStartMs,
-						tEndMs: turn.tEndMs,
+						tStartMs:
+							turnStartRef.current ?? finalsRef.current.at(-1)?.tEndMs ?? 0,
+						tEndMs: elapsed(),
 						text: turn.text,
 					});
+					turnStartRef.current = null;
 					setTranscript([...finalsRef.current]);
 					schedulePersist();
 				},
 			});
 			return transcriber;
 		},
-		[schedulePersist],
+		[elapsed, schedulePersist],
 	);
 
 	/**
@@ -317,6 +329,8 @@ export function useSession(
 			setError(undefined);
 			setIssueUrl(undefined);
 			setPartial("");
+			partialRef.current = "";
+			turnStartRef.current = null;
 			setTranscript([]);
 			setArtifact(undefined);
 			setMarkCount(0);
@@ -454,10 +468,24 @@ export function useSession(
 
 		const audio = audioRef.current;
 		let stopped: StoppedAudio | undefined;
-		let live = false;
 		if (audio) {
 			stopped = await audio.stop();
-			live = audio.streaming && !transcriberRef.current?.errored;
+		}
+
+		// AssemblyAI finalizes a turn only on end-of-turn (a silence gap); a
+		// recording stopped mid-utterance leaves the last words in `partial`,
+		// never flushed to finalsRef. Commit that trailing partial so the spoken
+		// text survives into the artifact and the review screen.
+		const tail = partialRef.current.trim();
+		if (tail) {
+			finalsRef.current.push({
+				tStartMs: turnStartRef.current ?? finalsRef.current.at(-1)?.tEndMs ?? 0,
+				tEndMs: elapsed(),
+				text: tail,
+			});
+			partialRef.current = "";
+			turnStartRef.current = null;
+			setPartial("");
 		}
 
 		const audioBase64 = stopped ? await blobToBase64(stopped.blob) : "";
@@ -483,11 +511,8 @@ export function useSession(
 			transcript: finalsRef.current,
 			events: eventsRef.current,
 			snapshots: snapshotsRef.current,
-			transcriptionMode: !stopped
-				? "batch-fallback"
-				: live
-					? "streaming"
-					: "batch-fallback",
+			transcriptionMode:
+				finalsRef.current.length > 0 ? "streaming" : "batch-fallback",
 		});
 		artifactRef.current = assembled;
 		setArtifact(assembled);
@@ -505,24 +530,28 @@ export function useSession(
 			return;
 		}
 
-		if (!live) {
-			// Reconstruct the transcript from the kept recording. Non-fatal: a
-			// capture without transcription (e.g. no ASSEMBLYAI_API_KEY) still has
-			// the audio, clicks, and snapshots.
+		// Batch fallback runs ONLY when live transcription produced nothing — it
+		// must never overwrite captions already captured (the trailing partial was
+		// committed above, so finalsRef holds everything the live stream gave us).
+		// A backend batch stub that returns [] must not wipe a good transcript, so
+		// adopt batch results only when they actually contain text.
+		if (finalsRef.current.length === 0) {
 			try {
 				const { transcript: batch } = await client.transcribeBatch(
 					assembled.sessionId,
 					bindingRef.current.workspaceId,
 				);
-				finalsRef.current = batch;
-				const withBatch: CaptureArtifact = {
-					...assembled,
-					transcript: batch,
-					transcriptionMode: "batch-fallback",
-				};
-				artifactRef.current = withBatch;
-				setArtifact(withBatch);
-				setTranscript(batch);
+				if (batch.length > 0) {
+					finalsRef.current = batch;
+					const withBatch: CaptureArtifact = {
+						...assembled,
+						transcript: batch,
+						transcriptionMode: "batch-fallback",
+					};
+					artifactRef.current = withBatch;
+					setArtifact(withBatch);
+				}
+				setTranscript(finalsRef.current);
 			} catch {
 				setTranscript(finalsRef.current);
 			}
@@ -598,6 +627,8 @@ export function useSession(
 	const reset = useCallback((): void => {
 		setPhase("idle");
 		setPartial("");
+		partialRef.current = "";
+		turnStartRef.current = null;
 		setTranscript([]);
 		setArtifact(undefined);
 		setMarkCount(0);

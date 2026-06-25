@@ -1,4 +1,9 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+const { version } = JSON.parse(
+	readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 /**
  * Standalone IIFE build — produces dist/bugtoprompt.global.js.
@@ -26,4 +31,5 @@ export default defineConfig({
 	// Do NOT clean — ESM outputs and bugtoprompt.css must survive.
 	clean: false,
 	outDir: "dist",
+	define: { __BTP_VERSION__: JSON.stringify(version) },
 });

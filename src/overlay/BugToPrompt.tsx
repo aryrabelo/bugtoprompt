@@ -45,6 +45,7 @@ import {
 import { Shutter } from "./snap/Shutter";
 import type { ScreenshotMode, SessionBinding } from "./useSession";
 import { useSession } from "./useSession";
+import { VERSION } from "./version";
 
 function clock(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
@@ -411,6 +412,7 @@ export function BugToPrompt({
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-1.5 font-medium">
 					<Bug className="size-4" /> BugToPrompt
+					<span className="font-normal text-muted-foreground">v{VERSION}</span>
 				</div>
 				<button
 					type="button"
@@ -663,6 +665,7 @@ export function BugToPrompt({
 					<div className="max-h-40 overflow-y-auto">
 						<CaptionEditor
 							transcript={session.transcript}
+							events={session.artifact?.events}
 							editable
 							onEdit={session.editSegment}
 						/>
