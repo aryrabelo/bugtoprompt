@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.8] - 2026-06-25
+
+### Added
+
+- **Pre-record voice opt-in.** The microphone is no longer requested on Record.
+  A "Voice narration" toggle in the idle panel opts in before recording, so
+  `getUserMedia` fires only when voice is enabled. New `voiceEnabled` state +
+  `enableVoice()` on `useSession`; the `autoVoice` prop seeds the toggle.
+- **Text-selection capture.** Mouse-down leaves a placeholder; mouse-up resolves
+  it into a `select` event carrying the highlighted text (or a `click`), anchored
+  at the mouse-down time and rendered as `selected "…"` in the timeline. New
+  `select` kind + `selectedText` on the event schema.
+- **Build-version stamp.** The overlay header shows `BugToPrompt v<version>`,
+  injected at build time, so a host can confirm which build it is serving.
+- **Review timeline.** The review caption interleaves clicks, selections, and
+  marks (read-only) with the editable transcript, time-sorted.
+
+### Fixed
+
+- **Live transcription closed on contact (AssemblyAI error 3007).** PCM frames
+  were sent one AudioWorklet quantum at a time (~2.7 ms), below the API's
+  50–1000 ms-per-message window, so the socket closed before any word. Frames
+  are now aggregated to ~100 ms.
+- **Transcript lost on stop.** A turn ended mid-utterance (no `end_of_turn`) left
+  its words only in the live partial; that trailing partial is now committed on
+  stop.
+- **Empty batch fallback wiped live captions.** When the socket flagged an error
+  at stop, the batch fallback overwrote a good transcript with an empty result.
+  It now runs only when no live transcript exists and never adopts an empty one.
+- **Transcript timing.** Segments ran on a separate clock starting at 0:00; they
+  now use the recording clock and the turn's first-partial time, so an initial
+  silence is reflected and speech aligns with click/select events.
+
 ## [0.10.0] - 2026-06-16
 
 ### Fixed
@@ -169,6 +202,7 @@ Reconciliation to the authoritative spec (`bugtoprompt`, `<BugToPrompt />`).
   single source of truth, exported from the `bugtoprompt/schema` subpath.
 - tsup build (ESM + `.d.ts`), vitest (jsdom) test suite.
 
+[0.12.8]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.12.8
 [0.9.0]: https://github.com/
 [0.8.0]: https://github.com/
 [0.7.0]: https://github.com/
