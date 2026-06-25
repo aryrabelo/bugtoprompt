@@ -11,6 +11,8 @@
  * engine works does the session drop to batch transcription of the kept
  * recording. Recording is never affected by live-tap failures.
  */
+
+import { debug } from "../debug";
 import { createPcmDownsampler } from "./downsample";
 import { PCM_WORKLET_NAME, pcmWorkletUrl } from "./pcm-worklet";
 
@@ -89,6 +91,7 @@ export class AudioCapture {
 		// prompt, no rejection). Race it against a timeout so a hung permission
 		// surfaces as a real error the overlay can show, rather than a record
 		// button that silently does nothing.
+		debug("audio.start: requesting getUserMedia");
 		this.stream = await withTimeout(
 			navigator.mediaDevices.getUserMedia({
 				audio: {
@@ -109,6 +112,7 @@ export class AudioCapture {
 			if (e.data.size > 0) this.chunks.push(e.data);
 		};
 		this.recorder.start(1000);
+		debug("audio.start: mic granted", { mime: this.mimeType });
 
 		if (handlers.onPcmFrame) {
 			await this.startLive(handlers.onPcmFrame).catch((err) => {
@@ -117,10 +121,12 @@ export class AudioCapture {
 					"debug: live PCM tap unavailable (no Web Audio engine); batch fallback",
 					err,
 				);
+				debug("audio.start: live tap unavailable", err);
 				this.streaming = false;
 				this.liveEngine = "none";
 			});
 		}
+		debug("audio.start: live engine", this.liveEngine);
 	}
 
 	/**

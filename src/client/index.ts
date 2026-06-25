@@ -4,6 +4,8 @@
  * may substitute their own (tRPC, GraphQL, etc.) as long as it satisfies the
  * interface.
  */
+
+import { debug } from "../overlay/debug";
 import type { CaptureArtifact } from "../schema";
 
 export interface Target {
@@ -54,7 +56,14 @@ async function postJson<T>(
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
 	});
-	if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+	if (!res.ok) {
+		debug("POST failed", {
+			url,
+			status: res.status,
+			statusText: res.statusText,
+		});
+		throw new Error(`${res.status} ${res.statusText}`);
+	}
 	return res.json() as Promise<T>;
 }
 

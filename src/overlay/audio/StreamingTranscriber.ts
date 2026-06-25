@@ -5,6 +5,7 @@
  * session knows to fall back to batch transcription of the kept recording. The
  * token is minted server-side — the long-lived key never reaches this code.
  */
+import { debug } from "../debug";
 
 export interface FinalTurn {
 	text: string;
@@ -25,6 +26,7 @@ const SPEECH_MODEL = "u3-rt-pro";
 export class StreamingTranscriber {
 	private ws?: WebSocket;
 	private open = false;
+	private warnedClosed = false;
 	/** Set on any ws error — the session reads it to decide on batch fallback. */
 	errored = false;
 	private startedAt = 0;
@@ -46,19 +48,22 @@ export class StreamingTranscriber {
 		this.ws = ws;
 		ws.onopen = () => {
 			this.open = true;
+			debug("transcriber ws open");
 			settled = true;
 			resolve();
 		};
 		ws.onerror = (e) => {
 			this.errored = true;
+			debug("transcriber ws error", e);
 			handlers.onError?.(e);
 			if (!settled) {
 				settled = true;
 				reject(new Error("streaming websocket failed to open"));
 			}
 		};
-		ws.onclose = () => {
+		ws.onclose = (e) => {
 			this.open = false;
+			debug("transcriber ws closed", { code: e.code, reason: e.reason });
 		};
 		ws.onmessage = (ev) => this.onMessage(ev, handlers);
 		return promise;
@@ -101,7 +106,15 @@ export class StreamingTranscriber {
 
 	/** Forward one PCM16 frame; no-op when the ws isn't open. */
 	sendFrame(frame: ArrayBuffer): void {
-		if (!this.ws || !this.open) return;
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			if (!this.warnedClosed) {
+				this.warnedClosed = true;
+				debug("sendFrame: socket not OPEN, dropping frames", {
+					readyState: this.ws?.readyState,
+				});
+			}
+			return;
+		}
 		try {
 			this.ws.send(frame);
 		} catch {

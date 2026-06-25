@@ -153,8 +153,7 @@ export interface BugToPromptProps {
 	 *  "perPage" re-prompts on each navigation; "onMark" only on explicit Mark
 	 *  (default); "off" captures DOM-only snapshots without screen share. */
 	screenshotMode?: ScreenshotMode;
-	/** Automatically enable voice narration (mic) when recording starts.
-	 *  Default: false — voice is opt-in via the checkbox. */
+	/** Default state of the pre-record Voice narration toggle (the user can still change it before recording). Default: false — voice is opt-in. */
 	autoVoice?: boolean;
 	// --- injection points for testability ---
 	/** Override the clipboard implementation (default: navigator.clipboard). */
@@ -254,6 +253,7 @@ export function BugToPrompt({
 		id: string;
 		url: string;
 	} | null>(null);
+	const [wantVoice, setWantVoice] = useState(autoVoice);
 	// Dedup guard so the issue-done effect only records once per session.
 	const lastRecordedRef = useRef<string>("");
 
@@ -539,12 +539,25 @@ export function BugToPrompt({
 						</ul>
 					)}
 					{/* --- Record action --- */}
+					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
+						<input
+							type="checkbox"
+							checked={wantVoice}
+							onChange={(e) => setWantVoice(e.currentTarget.checked)}
+							className="size-3 cursor-pointer accent-primary"
+						/>
+						<Mic className="size-3" />
+						Voice narration
+					</label>
+					<p className="text-[10px] text-muted-foreground">
+						Narrate the bug aloud — uses your microphone (optional).
+					</p>
 					<Button
 						size="sm"
 						onClick={() => {
 							setFrozen(binding);
 							void session.start(binding).then(() => {
-								if (autoVoice) void session.enableVoice();
+								if (wantVoice) void session.enableVoice();
 							});
 						}}
 					>

@@ -27,6 +27,7 @@ import type {
 import { assembleArtifact } from "./artifact/assemble";
 import { AudioCapture, type StoppedAudio } from "./audio/AudioCapture";
 import { StreamingTranscriber } from "./audio/StreamingTranscriber";
+import { debug } from "./debug";
 import { hasStoredKey, saveAssemblyKey } from "./key-store";
 import {
 	loadSession,
@@ -377,27 +378,23 @@ export function useSession(
 			try {
 				transcriberRef.current = await makeTranscriber(token);
 				live = true;
+				debug("enableVoice: live transcription", { live });
 				setNeedsKey(false);
 			} catch (err) {
-				console.warn(
-					"debug: streaming websocket failed to open; batch fallback",
-					err,
-				);
+				debug("enableVoice: streaming ws failed; batch fallback", err);
 				transcriberRef.current = undefined;
 				live = false;
 				setNeedsKey(true);
 			}
 		} catch (err) {
-			console.warn(
-				"debug: streaming token unavailable; prompting for API key (batch fallback)",
-				err,
-			);
+			debug("enableVoice: streaming token unavailable; batch fallback", err);
 			transcriberRef.current = undefined;
 			live = false;
 			setNeedsKey(true);
 		}
 
 		try {
+			debug("enableVoice: requesting mic");
 			await audio.start(
 				live ? { onPcmFrame: (f) => transcriberRef.current?.sendFrame(f) } : {},
 			);
@@ -408,10 +405,12 @@ export function useSession(
 			// Don't set phase to error — recording can continue without audio
 			audioRef.current = undefined;
 			setVoiceEnabled(false);
+			debug("enableVoice: mic unavailable", err);
 			return;
 		}
 		setVoiceEnabled(true);
 		setStreaming(live && audio.streaming);
+		debug("enableVoice: enabled", { streaming: audio.streaming });
 	}, [client, makeTranscriber]);
 
 	const provideKey = useCallback(
