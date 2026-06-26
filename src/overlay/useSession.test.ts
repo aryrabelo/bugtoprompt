@@ -3,6 +3,7 @@ import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BugToPromptClient, Target } from "../client";
 import { loadSession, putShot, saveSession } from "./session-store";
+import { startScreenGrabber } from "./snapshot/screenshot";
 import { useSession } from "./useSession";
 
 // ---------------------------------------------------------------------------
@@ -232,6 +233,31 @@ describe("useSession", () => {
 		// Voice failed but recording continues without mic
 		expect(result.current.phase).toBe("recording");
 		expect(result.current.voiceEnabled).toBe(false);
+	});
+
+	it("(d2) mic-unavailable: transcriber websocket is stopped when audio.start() throws (FIX codex M2)", async () => {
+		const client = makeFakeClient();
+		// Transcriber starts OK; mic permission is denied.
+		mockAudioInstance.start = vi
+			.fn()
+			.mockRejectedValue(new Error("Permission denied"));
+
+		const { result } = renderHook(() => useSession(client));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+		expect(result.current.phase).toBe("recording");
+
+		await act(async () => {
+			await result.current.enableVoice();
+		});
+
+		// Voice disabled, recording intact.
+		expect(result.current.voiceEnabled).toBe(false);
+		expect(result.current.phase).toBe("recording");
+		// The transcriber ws that opened before audio.start() threw must be stopped.
+		expect(mockTranscriberInstance.stop).toHaveBeenCalled();
 	});
 
 	it("(e) save-failure: saveArtifact rejects → phase error", async () => {
@@ -648,6 +674,32 @@ describe("useSession — screenshotMode", () => {
 		expect(mockGrabber.grab).not.toHaveBeenCalled();
 		// A DOM snapshot was still pushed — markCount reflects it.
 		expect(result.current.markCount).toBe(1);
+	});
+
+	it("(n2) screenshotMode 'onMark' → start() does NOT prompt for screen share (FIX codex m3)", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onMark"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+
+		// The screen-share permission prompt must not have fired on start().
+		expect(startScreenGrabber).not.toHaveBeenCalled();
+		expect(result.current.phase).toBe("recording");
+	});
+
+	it("(n3) screenshotMode 'perPage' → start() acquires grabber eagerly", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "perPage"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+
+		// Exactly one grabber acquisition on start() for perPage mode.
+		expect(startScreenGrabber).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("recording");
 	});
 });
 

@@ -6,6 +6,7 @@
  * token is minted server-side — the long-lived key never reaches this code.
  */
 import { debug } from "../debug";
+import { deferred } from "../util/deferred";
 
 export interface FinalTurn {
 	text: string;
@@ -52,7 +53,7 @@ export class StreamingTranscriber {
 		const rate = Math.round(sampleRate) || 16000;
 		this.rate = rate;
 		const url = `${STREAMING_WS}?sample_rate=${rate}&speech_model=${SPEECH_MODEL}&token=${encodeURIComponent(token)}`;
-		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		const { promise, resolve, reject } = deferred<void>();
 		let settled = false;
 		const ws = new WebSocket(url);
 		ws.binaryType = "arraybuffer";

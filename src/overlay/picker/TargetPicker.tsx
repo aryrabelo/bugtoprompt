@@ -36,32 +36,17 @@ export function filterTargets(options: Target[], query: string): Target[] {
 }
 
 // ---------------------------------------------------------------------------
-// Component
+// Hook: data fetching
 // ---------------------------------------------------------------------------
 
-export function TargetPicker({
-	client,
-	projectId,
-	value,
-	onChange,
-}: {
-	client: BugToPromptClient;
-	projectId?: string;
-	value?: string;
-	onChange: (workspaceId: string | undefined, branch?: string) => void;
-}): ReactElement | null {
+function useTargetOptions(
+	client: BugToPromptClient,
+	projectId: string | undefined,
+): { options: Target[]; loading: boolean; failed: boolean } {
 	const [options, setOptions] = useState<Target[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [failed, setFailed] = useState(false);
-	const [query, setQuery] = useState("");
-	const [open, setOpen] = useState(false);
-	const [highlighted, setHighlighted] = useState(0);
 
-	const inputRef = useRef<HTMLInputElement>(null);
-	const baseId = useId();
-	const listboxId = `${baseId}-listbox`;
-
-	// Fetch targets whenever projectId or client changes.
 	useEffect(() => {
 		if (!projectId) {
 			setOptions([]);
@@ -90,6 +75,92 @@ export function TargetPicker({
 		};
 	}, [client, projectId]);
 
+	return { options, loading, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Hook: keyboard navigation
+// ---------------------------------------------------------------------------
+
+function useKeyboardNav({
+	open,
+	filtered,
+	highlighted,
+	openList,
+	closeList,
+	pick,
+	setHighlighted,
+	setQuery,
+}: {
+	open: boolean;
+	filtered: Target[];
+	highlighted: number;
+	openList: () => void;
+	closeList: () => void;
+	pick: (opt: Target) => void;
+	setHighlighted: React.Dispatch<React.SetStateAction<number>>;
+	setQuery: React.Dispatch<React.SetStateAction<string>>;
+}): (e: React.KeyboardEvent<HTMLInputElement>) => void {
+	const actions: Record<
+		string,
+		(e: React.KeyboardEvent<HTMLInputElement>) => void
+	> = {
+		ArrowDown: (e) => {
+			e.preventDefault();
+			if (!open) {
+				openList();
+			} else {
+				setHighlighted((h) => Math.min(h + 1, filtered.length - 1));
+			}
+		},
+		ArrowUp: (e) => {
+			e.preventDefault();
+			setHighlighted((h) => Math.max(h - 1, 0));
+		},
+		Enter: (e) => {
+			e.preventDefault();
+			if (open && filtered.length > 0) {
+				pick(filtered[highlighted]);
+			} else if (!open) {
+				openList();
+			}
+		},
+		Escape: (e) => {
+			e.preventDefault();
+			setQuery("");
+			closeList();
+		},
+	};
+
+	return (e: React.KeyboardEvent<HTMLInputElement>) => {
+		actions[e.key]?.(e);
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export function TargetPicker({
+	client,
+	projectId,
+	value,
+	onChange,
+}: {
+	client: BugToPromptClient;
+	projectId?: string;
+	value?: string;
+	onChange: (workspaceId: string | undefined, branch?: string) => void;
+}): ReactElement | null {
+	const { options, loading, failed } = useTargetOptions(client, projectId);
+	const [query, setQuery] = useState("");
+	const [open, setOpen] = useState(false);
+	const [highlighted, setHighlighted] = useState(0);
+
+	const inputRef = useRef<HTMLInputElement>(null);
+	const baseId = useId();
+	const listboxId = `${baseId}-listbox`;
+
 	const filtered = filterTargets(options, query);
 	const selected = options.find((o) => o.id === value);
 
@@ -113,35 +184,16 @@ export function TargetPicker({
 		closeList();
 	};
 
-	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-		switch (e.key) {
-			case "ArrowDown":
-				e.preventDefault();
-				if (!open) {
-					openList();
-				} else {
-					setHighlighted((h) => Math.min(h + 1, filtered.length - 1));
-				}
-				break;
-			case "ArrowUp":
-				e.preventDefault();
-				setHighlighted((h) => Math.max(h - 1, 0));
-				break;
-			case "Enter":
-				e.preventDefault();
-				if (open && filtered.length > 0) {
-					pick(filtered[highlighted]);
-				} else if (!open) {
-					openList();
-				}
-				break;
-			case "Escape":
-				e.preventDefault();
-				setQuery("");
-				closeList();
-				break;
-		}
-	};
+	const handleKeyDown = useKeyboardNav({
+		open,
+		filtered,
+		highlighted,
+		openList,
+		closeList,
+		pick,
+		setHighlighted,
+		setQuery,
+	});
 
 	// Nothing to pick and no error/loading → render nothing rather than an empty
 	// "No targets" select (e.g. a host with no target list configured).

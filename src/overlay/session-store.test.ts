@@ -44,13 +44,13 @@ function makeSession(
 
 async function seedCorruptScreenshotsDb(): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
-		const del = indexedDB.deleteDatabase("bugtoprompt");
+		const del = indexedDB.deleteDatabase("bugtoprompt-sessions");
 		del.onsuccess = () => resolve();
 		del.onerror = () => reject(del.error);
 		del.onblocked = () => reject(new Error("delete blocked"));
 	});
 	await new Promise<void>((resolve, reject) => {
-		const req = indexedDB.open("bugtoprompt", 99);
+		const req = indexedDB.open("bugtoprompt-sessions", 99);
 		req.onupgradeneeded = () => {
 			// Intentionally leave out the screenshots store to simulate a stale/corrupt DB.
 		};

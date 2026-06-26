@@ -18,33 +18,20 @@
  * Every window / localStorage / indexedDB / crypto.subtle access is guarded for
  * SSR / jsdom and wrapped in try/catch, so importing this module never throws
  * and these functions never throw in a non-browser environment. On any
- * storage / crypto failure they degrade to an in-memory + window-mirror copy so
- * the current tab keeps working.
+ * storage / crypto failure they degrade to an in-memory cache so the current
+ * tab keeps working.
  */
 
 const STORAGE_KEY_ENC = "bugtoprompt:assemblyai-key:enc";
 const STORAGE_KEY_LEGACY = "bugtoprompt:assemblyai-key";
 
-const DB_NAME = "bugtoprompt";
+const DB_NAME = "bugtoprompt-keys";
 const STORE_NAME = "crypto-keys";
 const CRYPTO_KEY_ID = "assemblyai-aes-gcm-v1";
 const IV_BYTES = 12;
 
 /** In-memory copy of the decrypted key for this tab (survives storage failure). */
 let memoryKey: string | undefined;
-
-// ---------------------------------------------------------------------------
-// Environment guards
-// ---------------------------------------------------------------------------
-
-/** Mirror the key onto the window config hint so the resolver picks it up. */
-function mirrorToWindow(key: string): void {
-	if (typeof window === "undefined") return;
-	window.__BUGTOPROMPT__ = {
-		...window.__BUGTOPROMPT__,
-		assemblyAiKey: key,
-	};
-}
 
 // ---------------------------------------------------------------------------
 // base64 <-> bytes
@@ -139,59 +126,46 @@ async function getOrCreateCryptoKey(): Promise<CryptoKey> {
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// loadAssemblyKey helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the decrypted AssemblyAI key, or undefined when none / unavailable.
- *
- * Source order: (a) in-memory cache, (b) `window.__BUGTOPROMPT__.assemblyAiKey`,
- * (c) the encrypted localStorage blob decrypted via the IndexedDB CryptoKey.
- * A legacy plaintext key is transparently migrated to the encrypted form.
- * Empty / whitespace values count as no key. The resolved key is cached in
- * memory and mirrored onto the window hint.
+ * If a legacy plaintext key exists in localStorage, migrate it to the
+ * encrypted form and remove the plaintext entry. Returns the migrated key
+ * string, or null when there is nothing to migrate.
  */
-export async function loadAssemblyKey(): Promise<string | undefined> {
-	// (a) In-memory cache (already trimmed when set).
-	if (memoryKey) return memoryKey;
-
-	if (typeof window === "undefined") return undefined;
-
-	// (b) Window mirror.
-	const winKey = window.__BUGTOPROMPT__?.assemblyAiKey?.trim();
-	if (winKey) {
-		memoryKey = winKey;
-		return winKey;
-	}
-
-	if (typeof localStorage === "undefined") return undefined;
-
-	// Migration: a legacy plaintext key is upgraded to the encrypted form.
+async function migrateLegacyKey(): Promise<string | null> {
 	try {
 		const legacy = localStorage.getItem(STORAGE_KEY_LEGACY);
-		if (legacy !== null) {
-			const trimmed = legacy.trim();
-			if (trimmed) {
-				await saveAssemblyKey(trimmed);
-				try {
-					localStorage.removeItem(STORAGE_KEY_LEGACY);
-				} catch {
-					// ignore — best-effort cleanup.
-				}
-				return trimmed;
-			}
-			// Empty legacy value — discard it.
+		if (legacy === null) return null;
+		const trimmed = legacy.trim();
+		if (trimmed) {
+			await saveAssemblyKey(trimmed);
 			try {
 				localStorage.removeItem(STORAGE_KEY_LEGACY);
 			} catch {
-				// ignore.
+				// ignore — best-effort cleanup.
 			}
+			return trimmed;
 		}
+		// Empty legacy value — discard it.
+		try {
+			localStorage.removeItem(STORAGE_KEY_LEGACY);
+		} catch {
+			// ignore.
+		}
+		return null;
 	} catch {
 		// localStorage unreadable — fall through.
+		return null;
 	}
+}
 
-	// (c) Decrypt the encrypted blob.
+/**
+ * Decrypt the encrypted localStorage blob using the IndexedDB CryptoKey.
+ * Returns the plaintext key, or undefined when unavailable.
+ */
+async function decryptStoredKey(): Promise<string | undefined> {
 	try {
 		const blob = localStorage.getItem(STORAGE_KEY_ENC);
 		const hasCrypto =
@@ -211,28 +185,66 @@ export async function loadAssemblyKey(): Promise<string | undefined> {
 			ciphertext,
 		);
 		const decoded = new TextDecoder().decode(plain).trim();
-		if (!decoded) return undefined;
-		memoryKey = decoded;
-		mirrorToWindow(decoded);
-		return decoded;
+		return decoded || undefined;
 	} catch {
 		return undefined;
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the decrypted AssemblyAI key, or undefined when none / unavailable.
+ *
+ * Source order: (a) in-memory cache, (b) `window.__BUGTOPROMPT__.assemblyAiKey`
+ * (host-injected hint, read-only), (c) the encrypted localStorage blob
+ * decrypted via the IndexedDB CryptoKey.
+ * A legacy plaintext key is transparently migrated to the encrypted form.
+ * Empty / whitespace values count as no key. The resolved key is cached in
+ * memory for this tab's lifetime.
+ */
+export async function loadAssemblyKey(): Promise<string | undefined> {
+	// (a) In-memory cache (already trimmed when set).
+	if (memoryKey) return memoryKey;
+
+	if (typeof window === "undefined") return undefined;
+
+	// (b) Window hint (host-injected — read only, never written back).
+	const winKey = window.__BUGTOPROMPT__?.assemblyAiKey?.trim();
+	if (winKey) {
+		memoryKey = winKey;
+		return winKey;
+	}
+
+	if (typeof localStorage === "undefined") return undefined;
+
+	// (c) Migration: a legacy plaintext key is upgraded to the encrypted form.
+	const migrated = await migrateLegacyKey();
+	if (migrated !== null) return migrated;
+
+	// (d) Decrypt the encrypted blob.
+	const decrypted = await decryptStoredKey();
+	if (decrypted) {
+		memoryKey = decrypted;
+	}
+	return decrypted;
+}
+
 /**
  * Persist the AssemblyAI key (trimmed), encrypted at rest. Empty / whitespace
- * is NEVER stored. The in-memory cache and `window.__BUGTOPROMPT__.assemblyAiKey`
- * are always set first so the current tab works even when crypto / IndexedDB /
- * localStorage are unavailable (graceful degrade).
+ * is NEVER stored. The in-memory cache is set first so the current tab works
+ * even when crypto / IndexedDB / localStorage are unavailable (graceful
+ * degrade). The key is NEVER written to window — the IndexedDB store is the
+ * sole source of truth.
  */
 export async function saveAssemblyKey(key: string): Promise<void> {
 	const t = key.trim();
 	if (!t) return;
 
-	// Degrade-safe: set the in-tab copies before touching persistent storage.
+	// Degrade-safe: set the in-memory copy before touching persistent storage.
 	memoryKey = t;
-	mirrorToWindow(t);
 
 	if (typeof window === "undefined" || typeof localStorage === "undefined") {
 		return;
@@ -259,14 +271,15 @@ export async function saveAssemblyKey(key: string): Promise<void> {
 		combined.set(ct, iv.length);
 		localStorage.setItem(STORAGE_KEY_ENC, bytesToBase64(combined));
 	} catch {
-		// Crypto / storage failure — the memory cache + window mirror above keep
-		// this tab functional for the session.
+		// Crypto / storage failure — the memory cache above keeps this tab
+		// functional for the session.
 	}
 }
 
 /**
  * Remove the stored key everywhere: the encrypted (and legacy) localStorage
- * blobs, the IndexedDB CryptoKey, the in-memory cache, and the window mirror.
+ * blobs, the IndexedDB CryptoKey, the in-memory cache, and any host-injected
+ * window hint.
  */
 export async function clearAssemblyKey(): Promise<void> {
 	memoryKey = undefined;
@@ -296,8 +309,9 @@ export async function clearAssemblyKey(): Promise<void> {
 
 /**
  * SYNC check for a usable streaming credential for this tab. Does NOT decrypt.
- * True iff a window-level streaming token or AssemblyAI key is set, a non-empty
- * encrypted blob exists in localStorage, or the in-memory cache is populated.
+ * True iff a window-level streaming token or AssemblyAI key is set (host hint),
+ * a non-empty encrypted blob exists in localStorage, or the in-memory cache
+ * is populated.
  */
 export function hasStoredKey(): boolean {
 	if (memoryKey) return true;
@@ -308,9 +322,8 @@ export function hasStoredKey(): boolean {
 			(typeof hint?.streamingToken === "string" &&
 				hint.streamingToken !== "") ||
 			(typeof hint?.assemblyAiKey === "string" && hint.assemblyAiKey !== "")
-		) {
+		)
 			return true;
-		}
 		if (typeof localStorage !== "undefined") {
 			try {
 				const blob = localStorage.getItem(STORAGE_KEY_ENC);

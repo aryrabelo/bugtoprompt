@@ -1,3 +1,5 @@
+import { deferred } from "../util/deferred";
+
 /**
  * Best-effort screen capture for a capture session. `getDisplayMedia` gives the
  * real composited pixels (canvas/WebGL/cross-origin included) — what the user
@@ -69,7 +71,7 @@ export async function startScreenGrabber(): Promise<ScreenGrabber> {
 			const ctx = canvas.getContext("2d");
 			if (!ctx) return null;
 			ctx.drawImage(video, 0, 0, width, height);
-			const { promise, resolve } = Promise.withResolvers<Blob | null>();
+			const { promise, resolve } = deferred<Blob | null>();
 			canvas.toBlob((b) => resolve(b), "image/png");
 			const blob = await promise;
 			return blob ? { blob, method: "getDisplayMedia" } : null;

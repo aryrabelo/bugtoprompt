@@ -92,6 +92,58 @@ function attrPart(attr: string, value: string): string {
 	return `[${attr}="${attrEscape(value)}"]`;
 }
 
+/** Single stable attribute — tag-qualified then bare. */
+function findBySingleAttr(
+	doc: Document,
+	tag: string,
+	pairs: Array<[string, string]>,
+): string | null {
+	for (const [attr, value] of pairs) {
+		const part = attrPart(attr, value);
+		if (isUnique(doc, `${tag}${part}`)) return `${tag}${part}`;
+		if (isUnique(doc, part)) return part;
+	}
+	return null;
+}
+
+/** Small O(n²) combos of two stable attributes, tag-qualified. */
+function findByAttrPair(
+	doc: Document,
+	tag: string,
+	pairs: Array<[string, string]>,
+): string | null {
+	for (let i = 0; i < pairs.length; i++) {
+		for (let j = i + 1; j < pairs.length; j++) {
+			const a = pairs[i] as [string, string];
+			const b = pairs[j] as [string, string];
+			const sel = `${tag}${attrPart(a[0], a[1])}${attrPart(b[0], b[1])}`;
+			if (isUnique(doc, sel)) return sel;
+		}
+	}
+	return null;
+}
+
+/** Conservative semantic classes — single then paired with the first attr. */
+function findByClass(
+	doc: Document,
+	el: Element,
+	tag: string,
+	pairs: Array<[string, string]>,
+): string | null {
+	const classes = Array.from(el.classList).filter(isStableClass);
+	for (const cls of classes) {
+		const sel = `${tag}.${classEscape(cls)}`;
+		if (isUnique(doc, sel)) return sel;
+	}
+	if (classes.length > 0 && pairs.length > 0) {
+		const cls = classes[0] as string;
+		const [attr, value] = pairs[0] as [string, string];
+		const sel = `${tag}.${classEscape(cls)}${attrPart(attr, value)}`;
+		if (isUnique(doc, sel)) return sel;
+	}
+	return null;
+}
+
 /**
  * A globally-unique selector for `el` built only from element-local signals
  * (id, data-testid, stable attributes, attribute combos, semantic classes), or
@@ -112,37 +164,12 @@ function uniqueLocal(doc: Document, el: Element): string | null {
 	const tag = el.tagName.toLowerCase();
 	const pairs = stableAttrPairs(el);
 
-	// Single stable attribute, tag-qualified then bare.
-	for (const [attr, value] of pairs) {
-		const part = attrPart(attr, value);
-		if (isUnique(doc, `${tag}${part}`)) return `${tag}${part}`;
-		if (isUnique(doc, part)) return part;
-	}
-
-	// Small combinations of two stable attributes, in priority order.
-	for (let i = 0; i < pairs.length; i++) {
-		for (let j = i + 1; j < pairs.length; j++) {
-			const a = pairs[i] as [string, string];
-			const b = pairs[j] as [string, string];
-			const sel = `${tag}${attrPart(a[0], a[1])}${attrPart(b[0], b[1])}`;
-			if (isUnique(doc, sel)) return sel;
-		}
-	}
-
-	// Conservative semantic classes, single then paired with the first attr.
-	const classes = Array.from(el.classList).filter(isStableClass);
-	for (const cls of classes) {
-		const sel = `${tag}.${classEscape(cls)}`;
-		if (isUnique(doc, sel)) return sel;
-	}
-	if (classes.length > 0 && pairs.length > 0) {
-		const cls = classes[0] as string;
-		const [attr, value] = pairs[0] as [string, string];
-		const sel = `${tag}.${classEscape(cls)}${attrPart(attr, value)}`;
-		if (isUnique(doc, sel)) return sel;
-	}
-
-	return null;
+	return (
+		findBySingleAttr(doc, tag, pairs) ??
+		findByAttrPair(doc, tag, pairs) ??
+		findByClass(doc, el, tag, pairs) ??
+		null
+	);
 }
 
 /** Index of `el` among its same-tag siblings (1-based), or 0 when it's the only
@@ -186,7 +213,7 @@ function siblingQualifier(el: Element): string | null {
 		}
 	}
 	for (const cls of Array.from(el.classList).filter(isStableClass)) {
-		const part = `.${CSS.escape(cls)}`;
+		const part = `.${classEscape(cls)}`;
 		if (distinguishes(part)) return part;
 	}
 	return null;

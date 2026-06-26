@@ -3,8 +3,8 @@
  * BugToPrompt — local gh-backed issue service.
  *
  * A dependency-free Node ESM HTTP backend implementing the bugtoprompt client
- * contract (see src/client/index.ts), intended for local UAT of "Gerar Posts"
- * and any other host. It speaks:
+ * contract (see src/client/index.ts), intended for local UAT of any host
+ * application. It speaks:
  *
  *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode
  *   GET  /targets?projectId=...     → configured repos as Target[]

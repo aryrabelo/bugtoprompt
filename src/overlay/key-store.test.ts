@@ -32,6 +32,11 @@ describe("key-store", () => {
 		expect(blob).not.toContain("my-secret-key");
 	});
 
+	it("saveAssemblyKey does NOT write the key to window (security: C2)", async () => {
+		await saveAssemblyKey("top-secret");
+		expect(window.__BUGTOPROMPT__?.assemblyAiKey).toBeUndefined();
+	});
+
 	it("save → load roundtrip (trimmed)", async () => {
 		await saveAssemblyKey("  spacey  ");
 		expect(await loadAssemblyKey()).toBe("spacey");

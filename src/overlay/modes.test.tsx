@@ -272,3 +272,49 @@ describe("BugToPrompt output modes", () => {
 		expect(screen.getByRole("button", { name: /download/i })).not.toBeNull();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Clipboard error surface (P0-1)
+// ---------------------------------------------------------------------------
+
+describe("BugToPrompt clipboard error", () => {
+	it("shows 'Failed to copy' alert when clipboard.writeText rejects", async () => {
+		const client = makeFakeClient();
+
+		render(
+			<BugToPrompt
+				client={client}
+				projectId="proj-test"
+				modes={["clipboard"]}
+				clipboard={{
+					writeText: vi.fn().mockRejectedValue(new Error("permission denied")),
+				}}
+			/>,
+		);
+
+		// Open panel.
+		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+
+		// Record then stop to reach the reviewing phase.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		// Wait for reviewing phase (Copy button visible).
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /copy/i })).not.toBeNull(),
+		);
+
+		// Click Copy — write rejects.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /copy/i }));
+		});
+
+		// The "Failed to copy" error must surface via role="alert".
+		await waitFor(() => expect(screen.queryByRole("alert")).not.toBeNull());
+		expect(screen.getByRole("alert").textContent).toMatch(/failed to copy/i);
+	});
+});

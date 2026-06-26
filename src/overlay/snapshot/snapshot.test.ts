@@ -66,6 +66,46 @@ describe("buildInteractiveSnapshot", () => {
 		expect(snap.interactiveElements).toHaveLength(1);
 		expect(snap.viewport.width).toBe(window.innerWidth);
 	});
+
+	test("password input value NEVER leaks into the snapshot (C1 security fix)", () => {
+		document.body.innerHTML = `<input type="password" aria-label="Password" />`;
+		const input = document.querySelector("input") as HTMLInputElement;
+		input.value = "hunter2"; // simulate user typing (not just the attribute)
+		const els = buildInteractiveSnapshot(document.body, visibleAll);
+		expect(els).toHaveLength(1);
+		const serialized = JSON.stringify(els);
+		expect(serialized).not.toContain("hunter2");
+		expect(els[0]?.name).toBe("Password"); // name comes from aria-label, not .value
+	});
+
+	test("text-entry inputs never expose .value; button-like inputs may", () => {
+		document.body.innerHTML = `
+			<input type="text" placeholder="Username" />
+			<input type="email" aria-label="Email" />
+			<input type="password" />
+			<input type="submit" />
+			<input type="reset" />
+		`;
+		const [txtEl, , pwdEl, submitEl, resetEl] = Array.from(
+			document.querySelectorAll("input"),
+		) as HTMLInputElement[];
+		txtEl.value = "typed-text";
+		pwdEl.value = "s3cret";
+		(submitEl as HTMLInputElement).value = "Send It";
+		(resetEl as HTMLInputElement).value = "Clear";
+		const els = buildInteractiveSnapshot(document.body, visibleAll);
+		const serialized = JSON.stringify(els);
+		// text-entry values must not appear
+		expect(serialized).not.toContain("typed-text");
+		expect(serialized).not.toContain("s3cret");
+		// button-value IS the visible label — must appear
+		expect(serialized).toContain("Send It");
+		expect(serialized).toContain("Clear");
+		// placeholder is a safe name source
+		expect(
+			els.find((e) => e.role === "textbox" && e.name === "Username"),
+		).toBeTruthy();
+	});
 });
 
 describe("cssSelector", () => {

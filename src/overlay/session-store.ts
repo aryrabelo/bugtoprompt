@@ -165,7 +165,7 @@ export function removeSession(): void {
 // IndexedDB helpers
 // ---------------------------------------------------------------------------
 
-const IDB_NAME = "bugtoprompt";
+const IDB_NAME = "bugtoprompt-sessions";
 const IDB_STORE = "screenshots";
 
 function openDb(recovered = false): Promise<IDBDatabase> {

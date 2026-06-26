@@ -54,8 +54,6 @@ vi.mock("../render", () => ({
 	promptTitle: vi.fn().mockReturnValue("Test capture title"),
 }));
 
-const STORAGE_KEY = "bugtoprompt:assemblyai-key";
-
 function makeFakeClient(): BugToPromptClient {
 	return {
 		mintStreamingToken: vi
@@ -129,13 +127,18 @@ describe("BugToPrompt AssemblyAI key prompt", () => {
 			fireEvent.click(screen.getByRole("button", { name: /save/i }));
 		});
 
-		// Persisted client-side (localStorage and/or the window mirror).
+		// Persisted client-side as encrypted blob — key must NOT be on window.
 		await waitFor(() => {
-			const stored =
-				localStorage.getItem(STORAGE_KEY) ??
-				(window as Window & { __BUGTOPROMPT__?: { assemblyAiKey?: string } })
-					.__BUGTOPROMPT__?.assemblyAiKey;
-			expect(stored).toBe("my-secret-key");
+			expect(
+				localStorage.getItem("bugtoprompt:assemblyai-key:enc"),
+			).not.toBeNull();
+			expect(
+				(
+					window as Window & {
+						__BUGTOPROMPT__?: { assemblyAiKey?: string };
+					}
+				).__BUGTOPROMPT__?.assemblyAiKey,
+			).toBeUndefined();
 		});
 	});
 

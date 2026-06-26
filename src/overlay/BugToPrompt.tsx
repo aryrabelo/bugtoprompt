@@ -68,6 +68,17 @@ function safeHost(url: string): string {
 	}
 }
 
+/** Trigger a real browser download for `blob`. Callers that provide an
+ *  `onDownload` override must bypass this and call `onDownload` themselves. */
+function triggerBlobDownload(blob: Blob, filename: string): void {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	a.click();
+	URL.revokeObjectURL(url);
+}
+
 /**
  * Inline "paste your AssemblyAI API key" prompt. Shown when live transcription
  * cannot start because no usable streaming credential is configured. The key is
@@ -128,56 +139,31 @@ function KeyPrompt({
 	);
 }
 
-// OutputMode is defined in session-store; re-export here for backward compat.
-export type { OutputMode };
+// ---------------------------------------------------------------------------
+// useAutoConfig — zero-config resolution hook
+// ---------------------------------------------------------------------------
 
-export interface BugToPromptProps {
-	/** The BugToPromptClient implementation. Optional — when omitted the overlay
-	 *  auto-resolves a backend from `window.__BUGTOPROMPT__`, a meta tag, or
-	 *  falls back to clipboard/download-only mode without a backend. */
-	client?: BugToPromptClient;
-	/** Explicit base URL for the bugtoprompt backend (overrides auto-detection).
-	 *  Only used when `client` is omitted. */
-	baseUrl?: string;
-	/** The currently-selected project (the issue's target repo is derived from it). */
-	projectId?: string;
-	/** The open target binding, when one is selected. */
-	workspaceId?: string;
-	branch?: string;
-	/** Which output modes to surface in the review panel.
-	 *  Default when `client` is explicit: `['issue']`.
-	 *  Default when auto-configured: `['clipboard','download']` (upgraded to server config). */
-	modes?: OutputMode[];
-	/** The primary action. Defaults to the first entry in `modes`. */
-	defaultMode?: OutputMode;
-	/** Screenshot strategy for this session. Overrides server config / global hint.
-	 *  "perPage" re-prompts on each navigation; "onMark" only on explicit Mark
-	 *  (default); "off" captures DOM-only snapshots without screen share. */
-	screenshotMode?: ScreenshotMode;
-	/** Default state of the pre-record Voice narration toggle (the user can still change it before recording). Default: false — voice is opt-in. */
-	autoVoice?: boolean;
-	// --- injection points for testability ---
-	/** Override the clipboard implementation (default: navigator.clipboard). */
-	clipboard?: Pick<Clipboard, "writeText">;
-	/** Called instead of the real DOM download trigger. Receives the rendered
-	 *  prompt as a Blob (.md) and the artifact JSON as a Blob. */
-	onDownload?: (md: Blob, artifactJson: Blob) => void;
+interface AutoConfigResult {
+	client: BugToPromptClient;
+	modes: OutputMode[];
+	projectId: string | undefined;
+	screenshotMode: ScreenshotMode;
+	hasBackend: boolean;
 }
 
-export function BugToPrompt({
-	client: clientProp,
+function useAutoConfig({
+	clientProp,
 	baseUrl,
-	projectId: projectIdProp,
-	workspaceId,
-	branch,
-	modes: modesProp,
-	defaultMode,
-	screenshotMode: screenshotModeProp,
-	autoVoice = false,
-	clipboard,
-	onDownload,
-}: BugToPromptProps): ReactElement | null {
-	// --- Zero-config: auto-resolve client and options when no explicit client ---
+	modesProp,
+	projectIdProp,
+	screenshotModeProp,
+}: {
+	clientProp: BugToPromptClient | undefined;
+	baseUrl: string | undefined;
+	modesProp: OutputMode[] | undefined;
+	projectIdProp: string | undefined;
+	screenshotModeProp: ScreenshotMode | undefined;
+}): AutoConfigResult {
 	const [auto, setAuto] = useState(() => ({
 		client: createLocalFallbackClient(),
 		modes: modesProp ?? (["clipboard", "download"] as OutputMode[]),
@@ -234,15 +220,258 @@ export function BugToPrompt({
 		auto.screenshotMode ??
 		"onMark";
 
+	return { client, modes, projectId, screenshotMode, hasBackend: auto.backend };
+}
+
+// ---------------------------------------------------------------------------
+// CaptureHistoryList — idle-phase capture history
+// ---------------------------------------------------------------------------
+
+interface CaptureHistoryListProps {
+	captures: CaptureRecord[];
+	clipboard: Pick<Clipboard, "writeText"> | undefined;
+	modes: OutputMode[];
+	projectId: string | undefined;
+	client: BugToPromptClient;
+	lastFiled: { id: string; url: string } | null;
+	onDelete: (id: string) => void;
+	onFiledUpdate: (filed: { id: string; url: string }) => void;
+	onDownload: (rec: CaptureRecord) => void;
+}
+
+function CaptureHistoryList({
+	captures,
+	clipboard,
+	modes,
+	projectId,
+	client,
+	lastFiled,
+	onDelete,
+	onFiledUpdate,
+	onDownload,
+}: CaptureHistoryListProps): ReactElement {
+	// Track which history-item copy failed so we can surface an inline alert.
+	const [copyFailedId, setCopyFailedId] = useState<string | null>(null);
+
+	if (captures.length === 0) {
+		return <p className="text-muted-foreground">No captures yet.</p>;
+	}
+
+	return (
+		<ul className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+			{captures.map((rec) => (
+				<li
+					key={rec.id}
+					className="flex flex-col gap-0.5 rounded-sm border border-border px-2 py-1"
+				>
+					<div className="flex items-start justify-between gap-1">
+						<span className="truncate font-medium leading-snug">
+							{rec.title}
+						</span>
+						<div className="flex shrink-0 items-center gap-0.5">
+							<Button
+								variant="ghost"
+								size="sm"
+								className="size-6 p-0"
+								aria-label="Copy"
+								onClick={() => {
+									const cb = clipboard ?? navigator.clipboard;
+									// P0-1: wrap in try/catch; surface failure inline.
+									void cb.writeText(rec.prompt).then(
+										() => setCopyFailedId(null),
+										() => setCopyFailedId(rec.id),
+									);
+								}}
+							>
+								<ClipboardCopy className="size-3.5" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="size-6 p-0"
+								aria-label="Download"
+								onClick={() => onDownload(rec)}
+							>
+								<Download className="size-3.5" />
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="size-6 p-0"
+								aria-label="Delete"
+								onClick={() => {
+									void removeCapture(rec.id).then(() => onDelete(rec.id));
+								}}
+							>
+								<Trash2 className="size-3.5" />
+							</Button>
+							{modes.includes("issue") ? (
+								<Button
+									variant="ghost"
+									size="sm"
+									className="size-6 p-0"
+									aria-label="File issue"
+									onClick={() => {
+										if (!projectId) return;
+										void client
+											.createIssue({
+												projectId,
+												sessionId: rec.id,
+												prompt: rec.prompt,
+											})
+											.then((r) => {
+												onFiledUpdate({ id: rec.id, url: r.url });
+											});
+									}}
+								>
+									<Bug className="size-3.5" />
+								</Button>
+							) : null}
+						</div>
+					</div>
+					<span className="text-[10px] text-muted-foreground">
+						{relativeTime(rec.createdAt)} · {safeHost(rec.pageUrl)}
+					</span>
+					{copyFailedId === rec.id ? (
+						<p role="alert" className="text-[10px] text-destructive">
+							Copy failed — check clipboard permissions.
+						</p>
+					) : null}
+					{lastFiled?.id === rec.id ? (
+						<a
+							href={lastFiled.url}
+							target="_blank"
+							rel="noreferrer"
+							className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+						>
+							<ExternalLink className="size-3" /> Issue filed
+						</a>
+					) : null}
+				</li>
+			))}
+		</ul>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// DonePanel — issue successfully filed
+// ---------------------------------------------------------------------------
+
+function DonePanel({
+	issueUrl,
+	onReset,
+}: {
+	issueUrl: string | undefined;
+	onReset: () => void;
+}): ReactElement {
+	return (
+		<>
+			<a
+				href={issueUrl}
+				target="_blank"
+				rel="noreferrer"
+				className="flex items-center gap-1.5 font-medium text-primary hover:underline"
+			>
+				<ExternalLink className="size-4" /> Issue filed
+			</a>
+			<Button size="sm" variant="secondary" onClick={onReset}>
+				New capture
+			</Button>
+		</>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ErrorPanel — session error
+// ---------------------------------------------------------------------------
+
+function ErrorPanel({
+	error,
+	onReset,
+}: {
+	error: string | undefined;
+	onReset: () => void;
+}): ReactElement {
+	return (
+		<>
+			<p role="alert" className="flex items-start gap-1.5 text-destructive">
+				<CircleAlert className="size-4 shrink-0" />
+				{error}
+			</p>
+			<Button size="sm" variant="secondary" onClick={onReset}>
+				Reset
+			</Button>
+		</>
+	);
+}
+
+// OutputMode is defined in session-store; re-export here for backward compat.
+export type { OutputMode };
+
+export interface BugToPromptProps {
+	/** The BugToPromptClient implementation. Optional — when omitted the overlay
+	 *  auto-resolves a backend from `window.__BUGTOPROMPT__`, a meta tag, or
+	 *  falls back to clipboard/download-only mode without a backend. */
+	client?: BugToPromptClient;
+	/** Explicit base URL for the bugtoprompt backend (overrides auto-detection).
+	 *  Only used when `client` is omitted. */
+	baseUrl?: string;
+	/** The currently-selected project (the issue's target repo is derived from it). */
+	projectId?: string;
+	/** The open target binding, when one is selected. */
+	workspaceId?: string;
+	branch?: string;
+	/** Which output modes to surface in the review panel.
+	 *  Default when `client` is explicit: `['issue']`.
+	 *  Default when auto-configured: `['clipboard','download']` (upgraded to server config). */
+	modes?: OutputMode[];
+	/** The primary action. Defaults to the first entry in `modes`. */
+	defaultMode?: OutputMode;
+	/** Screenshot strategy for this session. Overrides server config / global hint.
+	 *  "perPage" re-prompts on each navigation; "onMark" only on explicit Mark
+	 *  (default); "off" captures DOM-only snapshots without screen share. */
+	screenshotMode?: ScreenshotMode;
+	/** Default state of the pre-record Voice narration toggle (the user can still change it before recording). Default: false — voice is opt-in. */
+	autoVoice?: boolean;
+	// --- injection points for testability ---
+	/** Override the clipboard implementation (default: navigator.clipboard). */
+	clipboard?: Pick<Clipboard, "writeText">;
+	/** Called instead of the real DOM download trigger. Receives the rendered
+	 *  prompt as a Blob (.md) and the artifact JSON as a Blob. */
+	onDownload?: (md: Blob, artifactJson: Blob) => void;
+}
+
+export function BugToPrompt({
+	client: clientProp,
+	baseUrl,
+	projectId: projectIdProp,
+	workspaceId,
+	branch,
+	modes: modesProp,
+	defaultMode,
+	screenshotMode: screenshotModeProp,
+	autoVoice = false,
+	clipboard,
+	onDownload,
+}: BugToPromptProps): ReactElement | null {
+	const { client, modes, projectId, screenshotMode, hasBackend } =
+		useAutoConfig({
+			clientProp,
+			baseUrl,
+			modesProp,
+			projectIdProp,
+			screenshotModeProp,
+		});
+
 	const [open, setOpen] = useState(false);
 	const [pickedWs, setPickedWs] = useState<string | undefined>();
 	const [pickedBranch, setPickedBranch] = useState<string | undefined>();
 	// The binding is FROZEN at record-start: navigating the app (which moves the
 	// live selection) while recording must not retarget the capture's target.
 	const [frozen, setFrozen] = useState<SessionBinding | undefined>();
-	// Inline confirmation for clipboard/download modes.
+	// Inline confirmation for clipboard/download modes; "copy-failed" surfaces on error.
 	const [lastAction, setLastAction] = useState<
-		"none" | "copied" | "downloaded"
+		"none" | "copied" | "downloaded" | "copy-failed"
 	>("none");
 	const session = useSession(client, screenshotMode);
 	// History state — refreshed on panel open and after each finish.
@@ -257,6 +486,8 @@ export function BugToPrompt({
 	const [wantVoice, setWantVoice] = useState(autoVoice);
 	// Dedup guard so the issue-done effect only records once per session.
 	const lastRecordedRef = useRef<string>("");
+	// P1-3: ref for moving focus into the panel when it opens.
+	const panelRef = useRef<HTMLDivElement>(null);
 
 	const primaryMode = defaultMode ?? modes[0] ?? "issue";
 	const idle = session.phase === "idle";
@@ -266,7 +497,7 @@ export function BugToPrompt({
 	// Only nag for an AssemblyAI key on standalone, no-backend, no-key installs.
 	// A host that injects an explicit `client` (e.g. the host application) is never asked.
 	const showIdleKeyPrompt =
-		idle && clientProp === undefined && !auto.backend && !hasConfiguredKey();
+		idle && clientProp === undefined && !hasBackend && !hasConfiguredKey();
 
 	const liveBinding: SessionBinding = {
 		...(projectId ? { projectId } : {}),
@@ -304,17 +535,24 @@ export function BugToPrompt({
 		setCaptures(listCaptures());
 	};
 
+	// P0-1: handleClipboard wraps the clipboard write in try/catch and surfaces
+	// "copy-failed" on failure instead of silently swallowing the error.
 	const handleClipboard = async (): Promise<void> => {
 		const artifact = session.artifact;
 		if (!artifact) return;
 		const final = { ...artifact, transcript: session.transcript };
 		const text = renderPrompt(final);
 		const cb = clipboard ?? navigator.clipboard;
-		await cb.writeText(text);
-		setLastAction("copied");
-		recordFinished("clipboard");
+		try {
+			await cb.writeText(text);
+			setLastAction("copied");
+			recordFinished("clipboard");
+		} catch {
+			setLastAction("copy-failed");
+		}
 	};
 
+	// P2-1: handleDownload and handleHistoryDownload share triggerBlobDownload.
 	const handleDownload = (): void => {
 		const artifact = session.artifact;
 		if (!artifact) return;
@@ -326,24 +564,14 @@ export function BugToPrompt({
 		if (onDownload) {
 			onDownload(md, json);
 		} else {
-			const mdUrl = URL.createObjectURL(md);
-			const jsonUrl = URL.createObjectURL(json);
-			const a = document.createElement("a");
-			a.href = mdUrl;
-			a.download = `snap-${final.sessionId}.md`;
-			a.click();
-			URL.revokeObjectURL(mdUrl);
-			const b = document.createElement("a");
-			b.href = jsonUrl;
-			b.download = `snap-${final.sessionId}.json`;
-			b.click();
-			URL.revokeObjectURL(jsonUrl);
+			triggerBlobDownload(md, `snap-${final.sessionId}.md`);
+			triggerBlobDownload(json, `snap-${final.sessionId}.json`);
 		}
 		setLastAction("downloaded");
 		recordFinished("download");
 	};
 
-	/** Download a history record (same blob logic as handleDownload). */
+	/** Download a history record (reuses triggerBlobDownload). */
 	const handleHistoryDownload = (rec: CaptureRecord): void => {
 		const md = new Blob([rec.prompt], { type: "text/markdown" });
 		const json = new Blob([JSON.stringify(rec.artifact, null, 2)], {
@@ -352,24 +580,24 @@ export function BugToPrompt({
 		if (onDownload) {
 			onDownload(md, json);
 		} else {
-			const mdUrl = URL.createObjectURL(md);
-			const jsonUrl = URL.createObjectURL(json);
-			const a = document.createElement("a");
-			a.href = mdUrl;
-			a.download = `snap-${rec.id}.md`;
-			a.click();
-			URL.revokeObjectURL(mdUrl);
-			const b = document.createElement("a");
-			b.href = jsonUrl;
-			b.download = `snap-${rec.id}.json`;
-			b.click();
-			URL.revokeObjectURL(jsonUrl);
+			triggerBlobDownload(md, `snap-${rec.id}.md`);
+			triggerBlobDownload(json, `snap-${rec.id}.json`);
 		}
 	};
 
 	// Refresh captures when the panel opens.
 	useEffect(() => {
 		if (open) setCaptures(listCaptures());
+	}, [open]);
+
+	// P1-3: move focus into the panel when it opens so keyboard/screen-reader
+	// users land on the first interactive element immediately.
+	useEffect(() => {
+		if (!open || !panelRef.current) return;
+		const first = panelRef.current.querySelector<HTMLElement>(
+			'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+		);
+		first?.focus();
 	}, [open]);
 
 	// Record to history when an issue is successfully filed.
@@ -405,7 +633,14 @@ export function BugToPrompt({
 	const recording = session.phase === "recording";
 
 	const portal = createPortal(
+		// P1-3: role="dialog" + aria-modal give screen readers the panel's dialog
+		// semantics; aria-label names it. Focus is moved to the first child via
+		// the useEffect above on every open transition.
 		<div
+			ref={panelRef}
+			role="dialog"
+			aria-modal="true"
+			aria-label="BugToPrompt"
 			data-bugtoprompt
 			className="fixed right-4 bottom-4 z-[9999] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-md border border-border bg-popover p-3 text-popover-foreground text-xs shadow-xl"
 		>
@@ -451,95 +686,17 @@ export function BugToPrompt({
 						<KeyPrompt onSave={(key) => session.provideKey(key)} />
 					) : null}
 					{/* --- Capture history --- */}
-					{captures.length === 0 ? (
-						<p className="text-muted-foreground">No captures yet.</p>
-					) : (
-						<ul className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
-							{captures.map((rec) => (
-								<li
-									key={rec.id}
-									className="flex flex-col gap-0.5 rounded-sm border border-border px-2 py-1"
-								>
-									<div className="flex items-start justify-between gap-1">
-										<span className="truncate font-medium leading-snug">
-											{rec.title}
-										</span>
-										<div className="flex shrink-0 items-center gap-0.5">
-											<Button
-												variant="ghost"
-												size="sm"
-												className="size-6 p-0"
-												aria-label="Copy"
-												onClick={() => {
-													const cb = clipboard ?? navigator.clipboard;
-													void cb.writeText(rec.prompt);
-												}}
-											>
-												<ClipboardCopy className="size-3.5" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="sm"
-												className="size-6 p-0"
-												aria-label="Download"
-												onClick={() => handleHistoryDownload(rec)}
-											>
-												<Download className="size-3.5" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="sm"
-												className="size-6 p-0"
-												aria-label="Delete"
-												onClick={() => {
-													void removeCapture(rec.id).then(() =>
-														setCaptures(listCaptures()),
-													);
-												}}
-											>
-												<Trash2 className="size-3.5" />
-											</Button>
-											{modes.includes("issue") ? (
-												<Button
-													variant="ghost"
-													size="sm"
-													className="size-6 p-0"
-													aria-label="File issue"
-													onClick={() => {
-														if (!projectId) return;
-														void client
-															.createIssue({
-																projectId,
-																sessionId: rec.id,
-																prompt: rec.prompt,
-															})
-															.then((r) => {
-																setLastFiled({ id: rec.id, url: r.url });
-															});
-													}}
-												>
-													<Bug className="size-3.5" />
-												</Button>
-											) : null}
-										</div>
-									</div>
-									<span className="text-[10px] text-muted-foreground">
-										{relativeTime(rec.createdAt)} · {safeHost(rec.pageUrl)}
-									</span>
-									{lastFiled?.id === rec.id ? (
-										<a
-											href={lastFiled.url}
-											target="_blank"
-											rel="noreferrer"
-											className="flex items-center gap-1 text-[10px] text-primary hover:underline"
-										>
-											<ExternalLink className="size-3" /> Issue filed
-										</a>
-									) : null}
-								</li>
-							))}
-						</ul>
-					)}
+					<CaptureHistoryList
+						captures={captures}
+						clipboard={clipboard}
+						modes={modes}
+						projectId={projectId}
+						client={client}
+						lastFiled={lastFiled}
+						onDelete={() => setCaptures(listCaptures())}
+						onFiledUpdate={(filed) => setLastFiled(filed)}
+						onDownload={handleHistoryDownload}
+					/>
 					{/* --- Record action --- */}
 					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
 						<input
@@ -574,7 +731,9 @@ export function BugToPrompt({
 
 			{recording ? (
 				<>
-					<div className="flex items-center justify-between">
+					{/* P1-4: aria-live="polite" so recording start / streaming status
+					    changes (rec only → live) are announced to screen readers. */}
+					<div aria-live="polite" className="flex items-center justify-between">
 						<span className="flex items-center gap-1.5 font-medium text-red-500 tabular-nums">
 							<CircleDot className="size-4 animate-pulse" />{" "}
 							{clock(session.elapsedMs)}
@@ -674,7 +833,12 @@ export function BugToPrompt({
 						{session.markCount} screenshot{session.markCount === 1 ? "" : "s"}{" "}
 						captured.
 					</div>
-					{lastAction === "copied" ? (
+					{/* P0-1: show "copy failed" alert alongside the success confirmations. */}
+					{lastAction === "copy-failed" ? (
+						<p role="alert" className="text-destructive">
+							Failed to copy — check clipboard permissions.
+						</p>
+					) : lastAction === "copied" ? (
 						<p className="text-green-500">Copied to clipboard!</p>
 					) : lastAction === "downloaded" ? (
 						<p className="text-green-500">Downloaded!</p>
@@ -721,31 +885,11 @@ export function BugToPrompt({
 			) : null}
 
 			{session.phase === "done" ? (
-				<>
-					<a
-						href={session.issueUrl}
-						target="_blank"
-						rel="noreferrer"
-						className="flex items-center gap-1.5 font-medium text-primary hover:underline"
-					>
-						<ExternalLink className="size-4" /> Issue filed
-					</a>
-					<Button size="sm" variant="secondary" onClick={discard}>
-						New capture
-					</Button>
-				</>
+				<DonePanel issueUrl={session.issueUrl} onReset={discard} />
 			) : null}
 
 			{session.phase === "error" ? (
-				<>
-					<p role="alert" className="flex items-start gap-1.5 text-destructive">
-						<CircleAlert className="size-4 shrink-0" />
-						{session.error}
-					</p>
-					<Button size="sm" variant="secondary" onClick={discard}>
-						Reset
-					</Button>
-				</>
+				<ErrorPanel error={session.error} onReset={discard} />
 			) : null}
 		</div>,
 		document.body,

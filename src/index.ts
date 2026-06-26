@@ -3,6 +3,7 @@ export {
 	type BugToPromptProps,
 	type OutputMode,
 } from "./overlay/BugToPrompt";
+export type { ScreenshotMode } from "./overlay/session-store";
 export {
 	type SessionBinding,
 	type SessionPhase,

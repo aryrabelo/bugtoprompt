@@ -30,23 +30,35 @@ const INTERACTIVE_ROLES: Record<string, true> = {
 	spinbutton: true,
 };
 
+/** Tag-level implicit ARIA roles (no special-casing needed). */
+const TAG_ROLES: Record<string, string> = {
+	button: "button",
+	summary: "button",
+	select: "combobox",
+	textarea: "textbox",
+};
+
+/** Input-type implicit ARIA roles; absent key → "textbox"; explicit null → hidden/no role. */
+const INPUT_TYPE_ROLES: Record<string, string | null> = {
+	hidden: null,
+	checkbox: "checkbox",
+	radio: "radio",
+	range: "slider",
+	search: "searchbox",
+	button: "button",
+	submit: "button",
+	reset: "button",
+	image: "button",
+};
+
 /** The implicit ARIA role from the tag (+ input type), or null. */
 function implicitRole(el: Element): string | null {
 	const tag = el.tagName.toLowerCase();
 	if (tag === "a") return el.hasAttribute("href") ? "link" : null;
-	if (tag === "button") return "button";
-	if (tag === "summary") return "button";
-	if (tag === "select") return "combobox";
-	if (tag === "textarea") return "textbox";
+	if (TAG_ROLES[tag]) return TAG_ROLES[tag] ?? null;
 	if (tag === "input") {
-		const type = (el.getAttribute("type") ?? "text").toLowerCase();
-		if (type === "hidden") return null;
-		if (type === "checkbox") return "checkbox";
-		if (type === "radio") return "radio";
-		if (type === "range") return "slider";
-		if (type === "search") return "searchbox";
-		if (["button", "submit", "reset", "image"].includes(type)) return "button";
-		return "textbox";
+		const t = (el.getAttribute("type") ?? "text").toLowerCase();
+		return t in INPUT_TYPE_ROLES ? INPUT_TYPE_ROLES[t] : "textbox";
 	}
 	return null;
 }
@@ -71,7 +83,15 @@ function collapse(text: string): string {
 	return text.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
-/** The accessible name, ARIA priority simplified to the high-signal sources. */
+/**
+ * The accessible name, ARIA priority simplified to the high-signal sources.
+ *
+ * SECURITY: for text-entry fields (input[type=text/password/email/…] and
+ * textarea) we deliberately NEVER read `.value` — it contains user-typed data
+ * that must not enter the snapshot.  `.value` is only read for button-like
+ * inputs (button/submit/reset) where the value is the visible label, not a
+ * secret.
+ */
 export function accessibleName(el: Element): string {
 	const doc = el.ownerDocument ?? document;
 	const labelledby = el.getAttribute("aria-labelledby");
@@ -99,9 +119,19 @@ export function accessibleName(el: Element): string {
 	if (alt?.trim()) return collapse(alt);
 	const title = el.getAttribute("title");
 	if (title?.trim()) return collapse(title);
+	// .value is safe to use ONLY for button-like inputs where it IS the label.
+	// Text-entry types (text/password/email/search/tel/url/number/date/…) and
+	// textarea MUST NOT contribute their value — it is user-typed private data.
 	if (el.tagName === "INPUT") {
-		const value = (el as HTMLInputElement).value;
-		if (value?.trim()) return collapse(value);
+		const inputType = (el.getAttribute("type") ?? "text").toLowerCase();
+		if (
+			inputType === "button" ||
+			inputType === "submit" ||
+			inputType === "reset"
+		) {
+			const value = (el as HTMLInputElement).value;
+			if (value?.trim()) return collapse(value);
+		}
 	}
 	if (el.textContent?.trim()) return collapse(el.textContent);
 	return "";

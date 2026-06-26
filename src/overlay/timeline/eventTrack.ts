@@ -103,6 +103,12 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 		onRoute();
 		return result;
 	};
+	const originalReplace = win.history.replaceState.bind(win.history);
+	win.history.replaceState = (...args: Parameters<History["replaceState"]>) => {
+		const result = originalReplace(...args);
+		onRoute();
+		return result;
+	};
 
 	return () => {
 		win.document.removeEventListener("mousedown", onMouseDown, true);
@@ -110,5 +116,6 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 		win.document.removeEventListener("click", onClick, true);
 		win.removeEventListener("popstate", onRoute);
 		win.history.pushState = originalPush;
+		win.history.replaceState = originalReplace;
 	};
 }

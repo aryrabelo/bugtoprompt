@@ -13,6 +13,7 @@
  */
 
 import { debug } from "../debug";
+import { deferred } from "../util/deferred";
 import { createPcmDownsampler } from "./downsample";
 import { PCM_WORKLET_NAME, pcmWorkletUrl } from "./pcm-worklet";
 
@@ -247,7 +248,7 @@ export class AudioCapture {
 	}
 
 	private stopRecorder(): Promise<Blob> {
-		const { promise, resolve } = Promise.withResolvers<Blob>();
+		const { promise, resolve } = deferred<Blob>();
 		const recorder = this.recorder;
 		if (!recorder || recorder.state === "inactive") {
 			resolve(new Blob(this.chunks, { type: this.mimeType }));

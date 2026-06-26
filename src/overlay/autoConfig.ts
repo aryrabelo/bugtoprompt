@@ -5,8 +5,7 @@
  * usage when no backend is configured.
  */
 import type { BugToPromptClient } from "../client";
-import type { OutputMode } from "./BugToPrompt";
-import type { ScreenshotMode } from "./session-store";
+import type { OutputMode, ScreenshotMode } from "./session-store";
 
 export interface BugToPromptServerConfig {
 	modes?: OutputMode[];

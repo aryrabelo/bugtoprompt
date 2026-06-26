@@ -10,6 +10,25 @@
  * import this module.
  */
 
+/** Accumulate output samples from `channel` starting at fractional `startPos`.
+ *  Returns the collected PCM16 values and the carried remainder position. */
+function pickSamples(
+	channel: Float32Array,
+	step: number,
+	startPos: number,
+): { samples: number[]; nextPos: number } {
+	const out: number[] = [];
+	let pos = startPos;
+	while (pos < channel.length) {
+		let s = channel[Math.floor(pos)] || 0;
+		if (s < -1) s = -1;
+		else if (s > 1) s = 1;
+		out.push(s < 0 ? s * 0x8000 : s * 0x7fff);
+		pos += step;
+	}
+	return { samples: out, nextPos: pos - channel.length };
+}
+
 /**
  * Build a stateful downsampler. Feed it successive mono Float32 blocks (as from
  * `ScriptProcessorNode.onaudioprocess`); each call returns the PCM16 frame for
@@ -23,16 +42,8 @@ export function createPcmDownsampler(
 	let pos = 0;
 	return (channel) => {
 		if (channel.length === 0) return null;
-		const out: number[] = [];
-		while (pos < channel.length) {
-			let s = channel[Math.floor(pos)] || 0;
-			if (s < -1) s = -1;
-			else if (s > 1) s = 1;
-			out.push(s < 0 ? s * 0x8000 : s * 0x7fff);
-			pos += step;
-		}
-		// Carry the fractional remainder into the next block.
-		pos -= channel.length;
-		return out.length > 0 ? new Int16Array(out) : null;
+		const { samples, nextPos } = pickSamples(channel, step, pos);
+		pos = nextPos;
+		return samples.length > 0 ? new Int16Array(samples) : null;
 	};
 }

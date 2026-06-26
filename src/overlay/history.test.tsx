@@ -287,3 +287,38 @@ describe("clipboard finish appends to history", () => {
 		expect(record.prompt).toBe("# Rendered prompt content");
 	});
 });
+
+// ---------------------------------------------------------------------------
+// History panel clipboard error surface (P0-1)
+// ---------------------------------------------------------------------------
+
+describe("history panel clipboard error", () => {
+	it("shows inline alert on the item when copy fails", async () => {
+		addCapture(makeRecord("e1", "Error target", "prompt-error"));
+
+		const clipboardWriteText = vi
+			.fn()
+			.mockRejectedValue(new Error("not allowed"));
+
+		render(
+			<BugToPrompt
+				client={makeFakeClient()}
+				modes={["clipboard"]}
+				clipboard={{ writeText: clipboardWriteText }}
+			/>,
+		);
+
+		// Open the panel (idle phase shows history list).
+		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+
+		// The history item Copy button.
+		const [copyBtn] = screen.getAllByRole("button", { name: /copy/i });
+		await act(async () => {
+			fireEvent.click(copyBtn);
+		});
+
+		// An inline role="alert" must appear in the item.
+		await waitFor(() => expect(screen.queryByRole("alert")).not.toBeNull());
+		expect(screen.getByRole("alert").textContent).toMatch(/copy failed/i);
+	});
+});

@@ -122,22 +122,24 @@ function clickedElements(
 type TimelineRow = { tMs: number; line: string };
 
 function eventRow(ev: CaptureEvent, labels: Map<string, string>): TimelineRow {
-	if (ev.kind === "click") {
-		const own = ev.elementName?.trim()
-			? `<${ev.elementName.trim()}>${ev.elementRole ? ` (${ev.elementRole})` : ""}`
-			: undefined;
-		const label =
-			own ?? (ev.elementRef ? labels.get(ev.elementRef) : undefined);
-		const target = label ?? (ev.selector ? `\`${ev.selector}\`` : "(element)");
-		return { tMs: ev.tMs, line: `🖱 click ${target}` };
+	switch (ev.kind) {
+		case "click": {
+			const own = ev.elementName?.trim()
+				? `<${ev.elementName.trim()}>${ev.elementRole ? ` (${ev.elementRole})` : ""}`
+				: undefined;
+			const label =
+				own ?? (ev.elementRef ? labels.get(ev.elementRef) : undefined);
+			const target =
+				label ?? (ev.selector ? `\`${ev.selector}\`` : "(element)");
+			return { tMs: ev.tMs, line: `🖱 click ${target}` };
+		}
+		case "route":
+			return { tMs: ev.tMs, line: `🧭 route ${ev.url ?? ""}`.trimEnd() };
+		case "select":
+			return { tMs: ev.tMs, line: `✂️ selected "${ev.selectedText ?? ""}"` };
+		default:
+			return { tMs: ev.tMs, line: "🚩 mark" };
 	}
-	if (ev.kind === "route") {
-		return { tMs: ev.tMs, line: `🧭 route ${ev.url ?? ""}`.trimEnd() };
-	}
-	if (ev.kind === "select") {
-		return { tMs: ev.tMs, line: `✂️ selected "${ev.selectedText ?? ""}"` };
-	}
-	return { tMs: ev.tMs, line: "🚩 mark" };
 }
 
 /** The synced caption block (transcript + events, sorted by time). */

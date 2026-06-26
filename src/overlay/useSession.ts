@@ -32,6 +32,7 @@ import { hasStoredKey, saveAssemblyKey } from "./key-store";
 import {
 	loadSession,
 	loadShots,
+	type PersistedSession,
 	putShot,
 	removeSession,
 	type ScreenshotMode,
@@ -101,6 +102,260 @@ interface Pending {
 
 const newSessionId = (): string => `cap_${crypto.randomUUID()}`;
 
+/** Maximum audio blob size before a debug warning is emitted on stop. 8 MiB. */
+const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
+
+// ---------------------------------------------------------------------------
+// Module-level helpers extracted from stop() and rehydrate() to reduce
+// cyclomatic complexity and enable isolated testing.
+// ---------------------------------------------------------------------------
+
+interface CommitTrailingPartialBag {
+	partialRef: { current: string };
+	finalsRef: { current: TranscriptSegment[] };
+	turnStartRef: { current: number | null };
+	elapsed: () => number;
+	setPartial: (v: string) => void;
+}
+
+/** Flush the live-streaming partial into finalsRef so a stop mid-utterance
+ *  doesn't silently drop the last spoken words. */
+function commitTrailingPartial(bag: CommitTrailingPartialBag): void {
+	const tail = bag.partialRef.current.trim();
+	if (!tail) return;
+	bag.finalsRef.current.push({
+		tStartMs:
+			bag.turnStartRef.current ?? bag.finalsRef.current.at(-1)?.tEndMs ?? 0,
+		tEndMs: bag.elapsed(),
+		text: tail,
+	});
+	bag.partialRef.current = "";
+	bag.turnStartRef.current = null;
+	bag.setPartial("");
+}
+
+/** Convert raw audio + screenshot blobs to base64 strings.
+ *  Emits a debug warning (but does NOT fail) when audio exceeds MAX_AUDIO_BYTES. */
+async function toBase64Payloads(
+	stopped: StoppedAudio | undefined,
+	shotBlobs: Array<Blob | null>,
+): Promise<{ audioBase64: string; screenshotsBase64: string[] }> {
+	if (stopped && stopped.blob.size > MAX_AUDIO_BYTES) {
+		debug(
+			`stop: audio blob ${stopped.blob.size} B exceeds MAX_AUDIO_BYTES (${MAX_AUDIO_BYTES}); upload may be slow or rejected`,
+		);
+	}
+	const audioBase64 = stopped ? await blobToBase64(stopped.blob) : "";
+	const screenshotsBase64 = await Promise.all(
+		shotBlobs.map((b) => (b ? blobToBase64(b) : Promise.resolve(""))),
+	);
+	return { audioBase64, screenshotsBase64 };
+}
+
+interface RunBatchFallbackBag {
+	client: BugToPromptClient;
+	assembled: CaptureArtifact;
+	workspaceId: string | undefined;
+	finalsRef: { current: TranscriptSegment[] };
+	artifactRef: { current: CaptureArtifact | undefined };
+	setArtifact: (v: CaptureArtifact) => void;
+	setTranscript: (v: TranscriptSegment[]) => void;
+}
+
+/** Run batch transcription as a fallback when live streaming produced nothing.
+ *  Only adopts batch results when they contain text — an empty batch must NOT
+ *  overwrite a live transcript already in finalsRef. */
+async function runBatchFallback(bag: RunBatchFallbackBag): Promise<void> {
+	const {
+		client,
+		assembled,
+		workspaceId,
+		finalsRef,
+		artifactRef,
+		setArtifact,
+		setTranscript,
+	} = bag;
+	if (finalsRef.current.length === 0) {
+		try {
+			const { transcript: batch } = await client.transcribeBatch(
+				assembled.sessionId,
+				workspaceId,
+			);
+			if (batch.length > 0) {
+				finalsRef.current = batch;
+				const withBatch: CaptureArtifact = {
+					...assembled,
+					transcript: batch,
+					transcriptionMode: "batch-fallback",
+				};
+				artifactRef.current = withBatch;
+				setArtifact(withBatch);
+			}
+			setTranscript(finalsRef.current);
+		} catch {
+			setTranscript(finalsRef.current);
+		}
+	} else {
+		setTranscript(finalsRef.current);
+	}
+}
+
+/** Refs + setters bag threaded into rehydrateSession and its sub-helpers. */
+interface RehydrateBag {
+	// mutable refs
+	sessionIdRef: { current: string };
+	startEpochRef: { current: number };
+	bindingRef: { current: SessionBinding };
+	eventsRef: { current: CaptureEvent[] };
+	snapshotsRef: { current: CaptureSnapshot[] };
+	finalsRef: { current: TranscriptSegment[] };
+	shotBlobsRef: { current: Array<Blob | null> };
+	startPerfRef: { current: number };
+	recordingRef: { current: boolean };
+	grabberRef: { current: ScreenGrabber | undefined };
+	screenshotModeRef: { current: ScreenshotMode };
+	// ReturnType<typeof setInterval> is an allowed exception per ts-no-return-type
+	timerRef: { current: ReturnType<typeof setInterval> | undefined };
+	artifactRef: { current: CaptureArtifact | undefined };
+	// setters (called with direct values only, never with updater functions)
+	setArtifact: (v: CaptureArtifact | undefined) => void;
+	setTranscript: (v: TranscriptSegment[]) => void;
+	setMarkCount: (v: number) => void;
+	setPhase: (v: SessionPhase) => void;
+	setElapsedMs: (v: number) => void;
+	setStreaming: (v: boolean) => void;
+	// stable callbacks
+	mark: () => Promise<void>;
+	installListeners: (throttledMark: () => void) => void;
+	elapsed: () => number;
+}
+
+/** Restore a reviewing session: reconstruct the artifact and surface it to UI. */
+function restoreReviewing(
+	session: PersistedSession,
+	bag: Pick<
+		RehydrateBag,
+		| "artifactRef"
+		| "setArtifact"
+		| "setTranscript"
+		| "setMarkCount"
+		| "setPhase"
+	>,
+): void {
+	// Reconstruct a minimal artifact for clipboard / download export.
+	// Audio was already saved server-side; use a placeholder so the schema
+	// validates while renderPrompt (which uses transcript + events) works.
+	const assembled = assembleArtifact({
+		sessionId: session.sessionId,
+		...session.binding,
+		pageUrl: typeof window !== "undefined" ? window.location.href : "",
+		startedAt: session.startedAt,
+		durationMs: session.durationMs,
+		audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 0 },
+		transcript: session.transcript,
+		events: session.events,
+		snapshots: session.snapshots,
+		transcriptionMode: "streaming",
+	});
+	bag.artifactRef.current = assembled;
+	bag.setArtifact(assembled);
+	bag.setTranscript([...session.transcript]);
+	bag.setMarkCount(session.snapshots.length);
+	bag.setPhase("reviewing");
+}
+
+/** Resume a recording session: re-wire listeners, optionally re-acquire the
+ *  screen grabber.
+ *
+ *  FIX (codex M4): after the screen-grabber await, the cancellation flag is
+ *  re-checked; if the component unmounted during the async gap the grabber is
+ *  stopped immediately so the media stream does not leak. */
+async function restoreRecording(
+	session: PersistedSession,
+	bag: RehydrateBag,
+	signal: { cancelled: boolean },
+): Promise<void> {
+	bag.setTranscript([...session.transcript]);
+	bag.setMarkCount(session.snapshots.length);
+	bag.setElapsedMs(Date.now() - session.startedAt);
+	bag.recordingRef.current = true;
+	bag.setStreaming(false);
+
+	// Screen grabber acquisition depends on mode.
+	// "perPage"  → re-prompt immediately so marks on this page screenshot.
+	// "onMark"   → lazy: grabberRef stays undefined; mark() will acquire it.
+	// "off"      → never acquire the grabber.
+	if (bag.screenshotModeRef.current === "perPage" && !signal.cancelled) {
+		const grabber = await startScreenGrabber();
+		// FIX (codex M4): component may have unmounted while awaiting the grabber;
+		// stop it immediately to prevent the media stream from leaking.
+		if (signal.cancelled) {
+			grabber.stop();
+			return;
+		}
+		bag.grabberRef.current = grabber;
+	}
+
+	if (signal.cancelled) return;
+
+	const throttledMark = createThrottle(() => void bag.mark(), 600);
+	bag.installListeners(throttledMark);
+
+	bag.timerRef.current = setInterval(
+		() => bag.setElapsedMs(bag.elapsed()),
+		250,
+	);
+	bag.setPhase("recording");
+}
+
+/** Attempt to restore an in-progress session from localStorage + IndexedDB.
+ *  Called once on mount; the `signal` object lets the effect cancel async work
+ *  when the component unmounts before completion. */
+async function rehydrateSession(
+	bag: RehydrateBag,
+	signal: { cancelled: boolean },
+): Promise<void> {
+	const session = loadSession();
+	if (!session) return;
+
+	// Restore lightweight refs from the persisted snapshot.
+	bag.sessionIdRef.current = session.sessionId;
+	bag.startEpochRef.current = session.startedAt;
+	bag.bindingRef.current = session.binding;
+	bag.eventsRef.current = [...session.events];
+	bag.snapshotsRef.current = [...session.snapshots];
+	bag.finalsRef.current = [...session.transcript];
+
+	// Load screenshot blobs from IndexedDB. If the store is missing/corrupt,
+	// continue with null placeholders so startup does not crash.
+	let blobs: Array<Blob | null>;
+	try {
+		blobs = await loadShots(session.sessionId, session.snapshots.length);
+	} catch (err) {
+		console.warn(
+			"debug: screenshot store unavailable during rehydrate; continuing without stored shots",
+			err,
+		);
+		blobs = Array.from({ length: session.snapshots.length }, () => null);
+	}
+	if (signal.cancelled) return;
+	bag.shotBlobsRef.current = blobs;
+
+	// Align the performance-relative start with the original wall-clock epoch
+	// so elapsed() remains meaningful across a page reload.
+	bag.startPerfRef.current =
+		(typeof performance !== "undefined" ? performance.now() : 0) -
+		(Date.now() - session.startedAt);
+
+	if (session.status === "reviewing") {
+		restoreReviewing(session, bag);
+		return;
+	}
+
+	// status === "recording" — resume the live capture.
+	await restoreRecording(session, bag, signal);
+}
+
 export function useSession(
 	client: BugToPromptClient,
 	screenshotMode: ScreenshotMode = "onMark",
@@ -154,6 +409,12 @@ export function useSession(
 	/** True only while the session is actively recording; guards the click handler
 	 *  from misfiring if React's concurrent-mode defers the cleanup slightly. */
 	const recordingRef = useRef(false);
+	/** Shared signal for the mount-once rehydrate effect; start() sets
+	 *  cancelled=true to abort a concurrent rehydration so it cannot override
+	 *  the new recording phase. */
+	const rehydrateSignalRef = useRef<{ cancelled: boolean }>({
+		cancelled: false,
+	});
 
 	// Keep screenshotMode accessible in async callbacks without requiring them
 	// to re-close over the prop on each render.
@@ -348,13 +609,18 @@ export function useSession(
 				typeof performance !== "undefined" ? performance.now() : 0;
 
 			setStreaming(false);
+			// Cancel any in-flight rehydration immediately — if a previous reviewing
+			// session was being rehydrated asynchronously, its pending setPhase call
+			// must not override the recording phase we are about to set.
+			rehydrateSignalRef.current.cancelled = true;
 
 			// Everything past here is wrapped so an unexpected failure (e.g. the
 			// screen grabber throwing) surfaces as a visible error instead of a
 			// rejected promise swallowed by the record button's fire-and-forget call.
 			try {
-				// Acquire the screen grabber unless screenshots are disabled.
-				if (screenshotModeRef.current !== "off") {
+				// Acquire the screen grabber eagerly only in perPage mode.
+				// onMark acquires lazily in mark(); off never acquires.
+				if (screenshotModeRef.current === "perPage") {
 					grabberRef.current = await startScreenGrabber();
 				} else {
 					grabberRef.current = undefined;
@@ -416,7 +682,11 @@ export function useSession(
 			setError(
 				`Microphone unavailable: ${(err as Error).message}. On macOS the Tauri app needs the microphone entitlement.`,
 			);
-			// Don't set phase to error — recording can continue without audio
+			// Don't set phase to error — recording can continue without audio.
+			// FIX (codex M2): also stop+clear the transcriber ws opened before the
+			// mic request so it does not leak when audio.start() throws.
+			transcriberRef.current?.stop();
+			transcriberRef.current = undefined;
 			audioRef.current = undefined;
 			setVoiceEnabled(false);
 			debug("enableVoice: mic unavailable", err);
@@ -476,23 +746,17 @@ export function useSession(
 		// recording stopped mid-utterance leaves the last words in `partial`,
 		// never flushed to finalsRef. Commit that trailing partial so the spoken
 		// text survives into the artifact and the review screen.
-		const tail = partialRef.current.trim();
-		if (tail) {
-			finalsRef.current.push({
-				tStartMs: turnStartRef.current ?? finalsRef.current.at(-1)?.tEndMs ?? 0,
-				tEndMs: elapsed(),
-				text: tail,
-			});
-			partialRef.current = "";
-			turnStartRef.current = null;
-			setPartial("");
-		}
+		commitTrailingPartial({
+			partialRef,
+			finalsRef,
+			turnStartRef,
+			elapsed,
+			setPartial,
+		});
 
-		const audioBase64 = stopped ? await blobToBase64(stopped.blob) : "";
-		const screenshotsBase64 = await Promise.all(
-			shotBlobsRef.current.map((b) =>
-				b ? blobToBase64(b) : Promise.resolve(""),
-			),
+		const { audioBase64, screenshotsBase64 } = await toBase64Payloads(
+			stopped,
+			shotBlobsRef.current,
 		);
 
 		const assembled = assembleArtifact({
@@ -535,29 +799,15 @@ export function useSession(
 		// committed above, so finalsRef holds everything the live stream gave us).
 		// A backend batch stub that returns [] must not wipe a good transcript, so
 		// adopt batch results only when they actually contain text.
-		if (finalsRef.current.length === 0) {
-			try {
-				const { transcript: batch } = await client.transcribeBatch(
-					assembled.sessionId,
-					bindingRef.current.workspaceId,
-				);
-				if (batch.length > 0) {
-					finalsRef.current = batch;
-					const withBatch: CaptureArtifact = {
-						...assembled,
-						transcript: batch,
-						transcriptionMode: "batch-fallback",
-					};
-					artifactRef.current = withBatch;
-					setArtifact(withBatch);
-				}
-				setTranscript(finalsRef.current);
-			} catch {
-				setTranscript(finalsRef.current);
-			}
-		} else {
-			setTranscript(finalsRef.current);
-		}
+		await runBatchFallback({
+			client,
+			assembled,
+			workspaceId: bindingRef.current.workspaceId,
+			finalsRef,
+			artifactRef,
+			setArtifact,
+			setTranscript,
+		});
 
 		// Persist the reviewing state so a cross-page navigation can still
 		// surface the assembled artifact for export.
@@ -645,94 +895,41 @@ export function useSession(
 	// ---------------------------------------------------------------------------
 	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-once effect; all closures are stable
 	useEffect(() => {
-		let cancelled = false;
+		// Store the signal in rehydrateSignalRef so start() can cancel a
+		// concurrent rehydration before it overrides the new recording phase.
+		rehydrateSignalRef.current = { cancelled: false };
+		const signal = rehydrateSignalRef.current;
 
-		const rehydrate = async (): Promise<void> => {
-			const session = loadSession();
-			if (!session) return;
-
-			// Restore lightweight refs from the persisted snapshot.
-			sessionIdRef.current = session.sessionId;
-			startEpochRef.current = session.startedAt;
-			bindingRef.current = session.binding;
-			eventsRef.current = [...session.events];
-			snapshotsRef.current = [...session.snapshots];
-			finalsRef.current = [...session.transcript];
-
-			// Load screenshot blobs from IndexedDB. If the store is missing/corrupt,
-			// continue with null placeholders so startup does not crash.
-			let blobs: Array<Blob | null>;
-			try {
-				blobs = await loadShots(session.sessionId, session.snapshots.length);
-			} catch (err) {
-				console.warn(
-					"debug: screenshot store unavailable during rehydrate; continuing without stored shots",
-					err,
-				);
-				blobs = Array.from({ length: session.snapshots.length }, () => null);
-			}
-			if (cancelled) return;
-			shotBlobsRef.current = blobs;
-
-			// Align the performance-relative start with the original wall-clock epoch
-			// so elapsed() remains meaningful across a page reload.
-			startPerfRef.current =
-				(typeof performance !== "undefined" ? performance.now() : 0) -
-				(Date.now() - session.startedAt);
-
-			if (session.status === "reviewing") {
-				// Reconstruct a minimal artifact for clipboard / download export.
-				// Audio was already saved server-side; use a placeholder so the schema
-				// validates while renderPrompt (which uses transcript + events) works.
-				const assembled = assembleArtifact({
-					sessionId: session.sessionId,
-					...session.binding,
-					pageUrl: typeof window !== "undefined" ? window.location.href : "",
-					startedAt: session.startedAt,
-					durationMs: session.durationMs,
-					audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 0 },
-					transcript: session.transcript,
-					events: session.events,
-					snapshots: session.snapshots,
-					transcriptionMode: "streaming",
-				});
-				artifactRef.current = assembled;
-				setArtifact(assembled);
-				setTranscript([...session.transcript]);
-				setMarkCount(session.snapshots.length);
-				setPhase("reviewing");
-				return;
-			}
-
-			// status === "recording" — resume the live capture.
-			setTranscript([...session.transcript]);
-			setMarkCount(session.snapshots.length);
-			setElapsedMs(Date.now() - session.startedAt);
-			recordingRef.current = true;
-
-			setStreaming(false);
-
-			// Screen grabber acquisition depends on mode.
-			// "perPage"  → re-prompt immediately so marks on this page screenshot.
-			// "onMark"   → lazy: grabberRef stays undefined; mark() will acquire it.
-			// "off"      → never acquire the grabber.
-			if (screenshotModeRef.current === "perPage" && !cancelled) {
-				grabberRef.current = await startScreenGrabber();
-			}
-
-			if (cancelled) return;
-
-			const throttledMark = createThrottle(() => void mark(), 600);
-			installListeners(throttledMark);
-
-			timerRef.current = setInterval(() => setElapsedMs(elapsed()), 250);
-			setPhase("recording");
-		};
-
-		void rehydrate();
+		void rehydrateSession(
+			{
+				sessionIdRef,
+				startEpochRef,
+				bindingRef,
+				eventsRef,
+				snapshotsRef,
+				finalsRef,
+				shotBlobsRef,
+				startPerfRef,
+				recordingRef,
+				grabberRef,
+				screenshotModeRef,
+				timerRef,
+				artifactRef,
+				setArtifact,
+				setTranscript,
+				setMarkCount,
+				setPhase,
+				setElapsedMs,
+				setStreaming,
+				mark,
+				installListeners,
+				elapsed,
+			},
+			signal,
+		);
 
 		return () => {
-			cancelled = true;
+			signal.cancelled = true;
 		};
 	}, []);
 

@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-06-26
+
+### Security
+
+- **Captured input values are no longer stored.** The DOM snapshot previously
+  read element `.value` (including `<input type="password">`) into the persisted
+  artifact, while only the rendered prompt was redacted — so saved/downloaded
+  artifact JSON could contain credentials and PII. Text-entry field values are
+  no longer captured; the accessible name comes from labels/placeholders only,
+  and `.value` is kept solely for button-like inputs where it is the label.
+- **The AssemblyAI key is no longer mirrored onto `window`.** `saveAssemblyKey`
+  used to write the key to `window.__BUGTOPROMPT__`, readable by any script on
+  the page; the encrypted IndexedDB store is now the only persistence. Reading a
+  host-injected window hint key is still supported.
+
+### Fixed
+
+- IndexedDB store collision: the session store and key store shared one
+  `bugtoprompt` database with different object stores. They now use separate
+  databases (`bugtoprompt-sessions`, `bugtoprompt-keys`).
+- Microphone failure no longer leaks the streaming WebSocket — the transcriber
+  is stopped when `getUserMedia` fails after the socket opened.
+- Screen-capture rehydration no longer leaks a display stream when the overlay
+  unmounts while the permission prompt is pending.
+- `screenshotMode: "onMark"` no longer triggers a screen-share prompt on record
+  start (only `"perPage"` acquires eagerly).
+- Replaced `Promise.withResolvers()` (absent in Node 18, which `engines`
+  declares) with an internal `deferred()` helper.
+- Clipboard copy failures now surface a visible error instead of failing silently.
+- `postJson` now includes the server response body in thrown errors.
+- Removed a circular import between `autoConfig` and `BugToPrompt`.
+
+### Added
+
+- Accessibility: the panel is now a labelled `role="dialog"`, focus moves to it
+  on open, and recording status is announced via an `aria-live` region.
+- `ScreenshotMode` is now exported from the package root.
+- Route tracking also patches `history.replaceState` (not only `pushState`).
+
+### Changed
+
+- Added lefthook pre-commit hooks (biome + typecheck + test).
+- Refactored high cognitive-complexity hotspots with no behavior change:
+  `BugToPrompt` split into phase panels + hooks; `useSession` `stop`/`rehydrate`
+  decomposed; plus `streaming-auth`, `TargetPicker`, snapshot
+  `selector`/`implicitRole`, `key-store`, render `eventRow`, and audio
+  `downsample`.
+
 ## [0.12.8] - 2026-06-25
 
 ### Added
@@ -202,6 +250,7 @@ Reconciliation to the authoritative spec (`bugtoprompt`, `<BugToPrompt />`).
   single source of truth, exported from the `bugtoprompt/schema` subpath.
 - tsup build (ESM + `.d.ts`), vitest (jsdom) test suite.
 
+[0.13.0]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.0
 [0.12.8]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.12.8
 [0.9.0]: https://github.com/
 [0.8.0]: https://github.com/
