@@ -227,7 +227,7 @@ describe("<BugToPrompt /> zero-config (no props)", () => {
 			vi.fn().mockRejectedValue(new Error("no backend configured")),
 		);
 		render(<BugToPrompt />);
-		expect(screen.getByRole("button", { name: /snap/i })).toBeTruthy();
+		expect(screen.getByRole("button", { name: /bugtoprompt/i })).toBeTruthy();
 	});
 
 	it("reaches reviewing phase via fallback client (saveArtifact resolves)", async () => {
@@ -245,7 +245,7 @@ describe("<BugToPrompt /> zero-config (no props)", () => {
 		);
 
 		// Open overlay.
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		// Start recording.
 		await act(async () => {
@@ -309,7 +309,7 @@ describe("<BugToPrompt /> auto-config from server", () => {
 		);
 
 		// Open overlay and drive to reviewing.
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /record/i }));
@@ -346,7 +346,7 @@ describe("<BugToPrompt client={...} /> existing contract", () => {
 			/>,
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /record/i }));

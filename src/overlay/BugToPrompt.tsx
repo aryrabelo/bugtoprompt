@@ -624,7 +624,7 @@ export function BugToPrompt({
 				onClick={() => setOpen(true)}
 				className="fixed right-4 bottom-4 z-[9999] flex items-center gap-1.5 rounded-full bg-foreground px-3 py-2 text-background text-xs shadow-lg transition-colors hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 			>
-				<Bug className="size-4" /> Snap
+				<Bug className="size-4" /> BugToPrompt
 			</button>,
 			document.body,
 		);

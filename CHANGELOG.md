@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-06-26
+
+### Changed
+
+- The collapsed launcher button now reads **BugToPrompt** (was "Snap"), matching
+  the open panel's title.
+
 ## [0.13.0] - 2026-06-26
 
 ### Security
@@ -250,6 +257,7 @@ Reconciliation to the authoritative spec (`bugtoprompt`, `<BugToPrompt />`).
   single source of truth, exported from the `bugtoprompt/schema` subpath.
 - tsup build (ESM + `.d.ts`), vitest (jsdom) test suite.
 
+[0.13.1]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.1
 [0.13.0]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.0
 [0.12.8]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.12.8
 [0.9.0]: https://github.com/

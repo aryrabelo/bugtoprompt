@@ -92,7 +92,7 @@ async function driveToReview(
 	);
 
 	// Open the overlay.
-	fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+	fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 	// Start recording.
 	await act(async () => {
@@ -160,7 +160,7 @@ describe("BugToPrompt output modes", () => {
 			/>,
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /record/i }));
@@ -194,7 +194,7 @@ describe("BugToPrompt output modes", () => {
 			/>,
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /record/i }));
 		});
@@ -224,7 +224,7 @@ describe("BugToPrompt output modes", () => {
 			/>,
 		);
 
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /record/i }));
 		});
@@ -293,7 +293,7 @@ describe("BugToPrompt clipboard error", () => {
 		);
 
 		// Open panel.
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		// Record then stop to reach the reviewing phase.
 		await act(async () => {

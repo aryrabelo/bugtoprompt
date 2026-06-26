@@ -72,7 +72,7 @@ function makeFakeClient(): BugToPromptClient {
 
 /** Open the overlay panel by clicking the floating launcher. */
 function openPanel(): void {
-	fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+	fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 }
 
 // ---------------------------------------------------------------------------

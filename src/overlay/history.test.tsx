@@ -122,7 +122,7 @@ async function driveToClipboardFinish(clipboardWriteText: Mock): Promise<void> {
 		/>,
 	);
 
-	fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+	fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 	await act(async () => {
 		fireEvent.click(screen.getByRole("button", { name: /record/i }));
@@ -184,7 +184,7 @@ describe("BugToPrompt history panel", () => {
 				clipboard={{ writeText: vi.fn() }}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 		expect(screen.getByText(/no captures yet/i)).toBeTruthy();
 	});
 
@@ -199,7 +199,7 @@ describe("BugToPrompt history panel", () => {
 				clipboard={{ writeText: vi.fn() }}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		expect(screen.getByText("First bug capture")).toBeTruthy();
 		expect(screen.getByText("Second bug capture")).toBeTruthy();
@@ -217,7 +217,7 @@ describe("BugToPrompt history panel", () => {
 				clipboard={{ writeText: clipboardWriteText }}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		// There are now 2 Copy buttons (one per history item) in the idle panel.
 		const copyBtns = screen.getAllByRole("button", { name: /copy/i });
@@ -242,7 +242,7 @@ describe("BugToPrompt history panel", () => {
 				clipboard={{ writeText: vi.fn() }}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		expect(screen.getByText("To delete")).toBeTruthy();
 		expect(screen.getByText("To keep")).toBeTruthy();
@@ -309,7 +309,7 @@ describe("history panel clipboard error", () => {
 		);
 
 		// Open the panel (idle phase shows history list).
-		fireEvent.click(screen.getByRole("button", { name: /snap/i }));
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		// The history item Copy button.
 		const [copyBtn] = screen.getAllByRole("button", { name: /copy/i });
