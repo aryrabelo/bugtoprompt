@@ -13,7 +13,7 @@ never leak secret keys in production.
 
 | Path | How | When |
 |---|---|---|
-| **React import** | `import { BugToPrompt } from "bugtoprompt"` → `<BugToPrompt />` (no required props) | SPA hosts you control (e.g. gerarposts) |
+| **React import** | `import { BugToPrompt } from "bugtoprompt"` → `<BugToPrompt />` (no required props) | SPA hosts you control |
 | **Script tag** | `<script src="…/bugtoprompt.global.js" defer></script>` (self-mounts) | Any site, incl. server-rendered / "old" multi-page apps |
 | **Console** | Paste a one-liner in DevTools → injects the script + boots | Pages you can't edit, or to unlock prod (see §3) |
 | **Chrome extension** *(planned)* | Install the extension; its content script injects the overlay on the configured origins | When you want the config + key to live in the extension, not in the page/console — see §7 |

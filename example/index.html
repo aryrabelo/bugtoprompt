@@ -43,10 +43,20 @@
 
   <!--
     Drop-in usage: one script tag, no build step, no framework.
-    Adjust the src path to point at the hosted bugtoprompt.global.js.
+
+    CDN (works on a fresh clone, always up to date):
+      src="https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js"
+
+    Local build (run `pnpm build` first, then swap src to ../dist/bugtoprompt.global.js):
+      src="../dist/bugtoprompt.global.js"
+
+    React usage (install: npm i bugtoprompt):
+      import { BugToPrompt } from 'bugtoprompt';
+      // In your root component:
+      <BugToPrompt />
   -->
   <script
-    src="../dist/bugtoprompt.global.js"
+    src="https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js"
     defer
     data-modes="clipboard,download"
   ></script>

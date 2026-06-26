@@ -5,8 +5,8 @@
  * interface.
  */
 
-import { debug } from "../overlay/debug";
 import type { CaptureArtifact } from "../schema";
+import { debug } from "../shared/debug";
 
 export interface Target {
 	id: string;

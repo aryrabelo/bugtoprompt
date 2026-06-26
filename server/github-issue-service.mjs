@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * BugToPrompt — local gh-backed issue service.
+ * BugToPrompt — reference gh-backed issue service.
  *
- * A dependency-free Node ESM HTTP backend implementing the bugtoprompt client
- * contract (see src/client/index.ts), intended for local UAT of any host
- * application. It speaks:
+ * A dependency-free Node ESM HTTP backend implementing the BugToPromptClient
+ * contract (see src/client/index.ts). Any host application can point the
+ * overlay at this process; configure everything via environment variables —
+ * no code edits required.
+ *
+ * Endpoints served:
  *
  *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode
  *   GET  /targets?projectId=...     → configured repos as Target[]
@@ -13,8 +16,47 @@
  *   POST /streaming-token           → mint an AssemblyAI temp token (best-effort)
  *   POST /issue                     → `gh issue create` against the chosen repo
  *
- * Issue creation is OFF by default; it is enabled only when `issueMode` is true
- * in config or BUGTOPROMPT_ENABLE_ISSUES=1. No secrets are written to disk.
+ * Issue creation is OFF by default; enable with BUGTOPROMPT_ENABLE_ISSUES=1.
+ * No secrets are written to disk.
+ *
+ * Environment variables
+ * ─────────────────────────────────────────────────────────────────────────
+ * Variable                    Default        Purpose
+ * ─────────────────────────────────────────────────────────────────────────
+ * BUGTOPROMPT_HOST            127.0.0.1      Bind address. Set to 0.0.0.0 to
+ *                                            expose beyond localhost (add auth).
+ * BUGTOPROMPT_PORT            4127           Listen port.
+ * BUGTOPROMPT_REPOS           (none)         Comma-separated repos exposed as
+ *                                            targets: owner/repo[#branch].
+ *                                            E.g. "acme/web,acme/api#develop"
+ * BUGTOPROMPT_PROJECT_ID      bugtoprompt    Advertised projectId returned by
+ *                                            GET /bugtoprompt/config. Used by
+ *                                            autoConfig to match the overlay.
+ * BUGTOPROMPT_ENABLE_ISSUES   0              Set to 1 to enable POST /issue.
+ *                                            Requires the `gh` CLI to be
+ *                                            authenticated in this environment.
+ * BUGTOPROMPT_ALLOWED_ORIGINS (none)         Extra comma-separated origins
+ *                                            allowed by CORS + CSRF guard.
+ *                                            localhost & 127.0.0.1 are always
+ *                                            trusted; Tauri origins too.
+ * BUGTOPROMPT_TOKEN           (none)         Shared secret. When set, every
+ *                                            non-OPTIONS request must present it
+ *                                            as "Authorization: Bearer <token>"
+ *                                            or "x-bugtoprompt-token: <token>".
+ * BUGTOPROMPT_SCREENSHOT_MODE (none)         Passed through to the client via
+ *                                            GET /bugtoprompt/config.
+ * BUGTOPROMPT_ENV             (none)         Environment label (e.g. "staging")
+ *                                            passed through via /bugtoprompt/config.
+ * BUGTOPROMPT_CONFIG          (none)         Inline JSON string or path to a
+ *                                            JSON file with the full config
+ *                                            object. Merged before env overrides.
+ *                                            Keys: repos, projectId, issueMode,
+ *                                            defaultMode, screenshotMode, env.
+ * ASSEMBLYAI_API_KEY          (none)         AssemblyAI API key. Required for
+ *                                            POST /streaming-token and
+ *                                            POST /transcribe; those endpoints
+ *                                            return 501 when the key is absent.
+ * ─────────────────────────────────────────────────────────────────────────
  */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -130,6 +172,7 @@ function buildConfig() {
 		env,
 		enabledModes,
 		defaultMode,
+		host: process.env.BUGTOPROMPT_HOST || "127.0.0.1",
 		port: Number(process.env.BUGTOPROMPT_PORT) || DEFAULT_PORT,
 	};
 }
@@ -630,10 +673,10 @@ const server = createServer((req, res) => {
 	});
 });
 
-server.listen(config.port, "127.0.0.1", () => {
+server.listen(config.port, config.host, () => {
 	const state = config.issueMode ? "ENABLED" : "disabled";
 	console.log(
-		`bugtoprompt issue service on http://localhost:${config.port} ` +
+		`bugtoprompt server on http://${config.host}:${config.port} ` +
 			`(issue mode ${state}; ${config.targets.length} repo target(s))`,
 	);
 });

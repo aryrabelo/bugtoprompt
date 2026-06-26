@@ -58,6 +58,7 @@ export function CaptionEditor({
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	// Auto-scroll to bottom whenever the timeline grows or the partial changes.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: these are the intentional change-signals that must re-trigger the auto-scroll
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (el) {

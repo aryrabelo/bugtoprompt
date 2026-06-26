@@ -24,7 +24,7 @@ pnpm test        # vitest
 pnpm build       # tsup
 ```
 
-CI (the **UltraCode** GitHub Actions workflow) runs these on every PR. Running
+CI (the **CI** GitHub Actions workflow) runs these on every PR. Running
 them locally first keeps the loop fast.
 
 ## Code style

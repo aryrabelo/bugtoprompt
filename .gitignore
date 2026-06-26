@@ -5,3 +5,4 @@ dist
 # Local agent / harness state — never publish
 .claude/
 .harness-mem/
+docs/superpowers/

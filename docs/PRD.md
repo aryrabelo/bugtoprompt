@@ -50,8 +50,8 @@ title/time/page) and listed with per-item actions — **Copy**, **Download**,
 **Delete**, and **File issue** when issue mode is enabled — plus **Record** to
 start a new one. This is the open-source value: a personal, organized,
 client-side history of the bugs you captured. The host-specific "Target"
-(worktree) picker is now **issue-mode-only config**, hidden by default (e.g. in
-gerarposts there is no target select). Backed by the §4 store.
+picker is now **issue-mode-only config**, hidden by default (hidden when the
+backend returns no targets). Backed by the §4 store.
 
 ## 5. Key safety — Dev vs Production
 
@@ -91,4 +91,4 @@ only safe defaults.
 4. **Standalone script + CSS** — IIFE self-mount; compiled self-contained stylesheet.
 5. **Console activation** — one-liner that injects (4); prod key-unlock snippets.
 6. **Chrome extension** — package (4) with extension-storage config + content-script injection.
-7. **Host adoption** — gerarposts (React import, _live_), then others.
+7. **Host adoption** — React import into any SPA, then others.

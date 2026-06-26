@@ -36,16 +36,21 @@ mixed-content blocking.
 | Variable | Default | Notes |
 |---|---|---|
 | `ASSEMBLYAI_API_KEY` | — | required for transcription; without it `/streaming-token` and `/transcribe` return `501` |
+| `BUGTOPROMPT_HOST` | `127.0.0.1` | bind address; set to `0.0.0.0` to expose beyond localhost (add auth + TLS) |
 | `BUGTOPROMPT_PORT` | `4127` | listen port |
-| `BUGTOPROMPT_ALLOWED_ORIGINS` | — | comma-separated extra origins; localhost is auto-trusted |
-| `BUGTOPROMPT_TOKEN` | — | optional shared secret required on every non-OPTIONS request |
-| `BUGTOPROMPT_ENABLE_ISSUES` | `0` | set `1` to enable `/issue` (needs the `gh` CLI authenticated) |
-| `BUGTOPROMPT_REPOS` | — | comma-separated repos exposed as targets |
+| `BUGTOPROMPT_REPOS` | — | comma-separated repos as targets: `owner/repo[#branch]` |
 | `BUGTOPROMPT_PROJECT_ID` | `bugtoprompt` | advertised projectId |
+| `BUGTOPROMPT_ENABLE_ISSUES` | `0` | set `1` to enable `/issue` (needs the `gh` CLI authenticated) |
+| `BUGTOPROMPT_ALLOWED_ORIGINS` | — | comma-separated extra origins; localhost & Tauri are auto-trusted |
+| `BUGTOPROMPT_TOKEN` | — | optional shared secret (`Authorization: Bearer <token>`) required on every non-OPTIONS request |
+| `BUGTOPROMPT_SCREENSHOT_MODE` | — | passed through to the client via `/bugtoprompt/config` |
+| `BUGTOPROMPT_ENV` | — | environment label (e.g. `staging`) passed through via `/bugtoprompt/config` |
+| `BUGTOPROMPT_CONFIG` | — | inline JSON or path to a JSON config file; merged before env overrides |
 
-The broker binds `127.0.0.1`, applies an origin allowlist, and validates
-sessionIds against path traversal. It is a developer tool — front it with TLS and
-auth before exposing it beyond localhost.
+Full descriptions and defaults live in the JSDoc at the top of `github-issue-service.mjs`.
+
+The server applies an origin allowlist and validates session IDs against path traversal.
+It is a developer tool — front it with TLS and auth before exposing it beyond localhost.
 
 ## License
 
