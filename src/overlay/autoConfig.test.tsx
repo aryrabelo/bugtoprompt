@@ -365,3 +365,56 @@ describe("<BugToPrompt client={...} /> existing contract", () => {
 		).not.toBeNull();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Explicit baseUrl is proof of a backend even when the /bugtoprompt/config
+// probe fails (404/network) — issue mode + token minting still adopted.
+// ---------------------------------------------------------------------------
+
+describe("<BugToPrompt baseUrl /> adopts backend without a config probe", () => {
+	it("shows File Issue when baseUrl is set but /bugtoprompt/config 404s", async () => {
+		// /bugtoprompt/config → 404 (probe fails); /artifact → ok so the session
+		// reaches reviewing; everything else rejects (batch fallback).
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation((url: unknown) => {
+				if (typeof url === "string" && url.endsWith("/bugtoprompt/config")) {
+					return Promise.resolve({ ok: false, status: 404 });
+				}
+				if (typeof url === "string" && url.endsWith("/artifact")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ dir: "", sessionId: "s1" }),
+					});
+				}
+				return Promise.reject(new Error("no backend for this endpoint"));
+			}),
+		);
+
+		render(
+			<BugToPrompt
+				baseUrl="/api/bugtoprompt"
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
+		);
+
+		// Backend adopted from the explicit baseUrl → issue mode present even
+		// though the config probe 404'd (old behavior left it clipboard-only).
+		expect(
+			screen.queryByRole("button", { name: /file issue/i }),
+		).not.toBeNull();
+	});
+});

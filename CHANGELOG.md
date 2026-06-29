@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.2] - 2026-06-29
+
+### Fixed
+
+- **An explicit `baseUrl` now enables backend mode without the config probe.**
+  The global build previously adopted the fetch client (issue mode + server
+  token minting) only after `GET {base}/bugtoprompt/config` returned 200, so a
+  host that set `baseUrl`/`data-base` but didn't implement that optional probe
+  silently fell back to clipboard/download and showed the "paste an AssemblyAI
+  key" panel. A non-empty resolved base is now treated as proof of a backend;
+  the config probe remains optional and is only needed for same-origin
+  zero-config discovery (empty base).
+
 ## [0.13.1] - 2026-06-26
 
 ### Changed
@@ -257,6 +270,7 @@ Reconciliation to the authoritative spec (`bugtoprompt`, `<BugToPrompt />`).
   single source of truth, exported from the `bugtoprompt/schema` subpath.
 - tsup build (ESM + `.d.ts`), vitest (jsdom) test suite.
 
+[0.13.2]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.2
 [0.13.1]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.1
 [0.13.0]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.13.0
 [0.12.8]: https://github.com/aryrabelo/bugtoprompt/releases/tag/v0.12.8

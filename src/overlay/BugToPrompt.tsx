@@ -181,15 +181,20 @@ function useAutoConfig({
 			const base = resolveBaseUrl(baseUrl);
 			const cfg = await fetchServerConfig(base);
 			if (cancelled) return;
-			if (cfg) {
+			// A non-empty base (explicit `baseUrl` prop, `window.__BUGTOPROMPT__`,
+			// or the meta tag) is itself proof of a backend — adopt the fetch
+			// client and enable issue/token minting even when the optional
+			// `GET {base}/bugtoprompt/config` probe doesn't answer. The probe is
+			// only required for same-origin zero-config discovery (empty base).
+			if (cfg || base) {
 				setAuto({
 					client: createFetchClient(base),
 					modes:
 						modesProp ??
-						cfg.modes ??
+						cfg?.modes ??
 						(["issue", "clipboard", "download"] as OutputMode[]),
-					projectId: projectIdProp ?? cfg.projectId,
-					screenshotMode: cfg.screenshotMode,
+					projectId: projectIdProp ?? cfg?.projectId,
+					screenshotMode: cfg?.screenshotMode,
 					backend: true,
 				});
 			}
