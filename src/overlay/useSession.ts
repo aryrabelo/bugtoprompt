@@ -446,6 +446,35 @@ export function useSession(
 		latestEls.current = captureInteractiveSnapshot(window).interactiveElements;
 	}, []);
 
+	/** Snapshot the current in-flight recording state, or null when no session
+	 *  is active. Always tagged status "recording" — reviewing state is written
+	 *  directly by stop(). */
+	const buildRecordingSnapshot = useCallback((): PersistedSession | null => {
+		const id = sessionIdRef.current;
+		if (!id) return null;
+		return {
+			v: 1,
+			sessionId: id,
+			startedAt: startEpochRef.current,
+			binding: bindingRef.current,
+			status: "recording",
+			events: [...eventsRef.current],
+			snapshots: [...snapshotsRef.current],
+			transcript: [...finalsRef.current],
+			durationMs: elapsed(),
+		};
+	}, [elapsed]);
+
+	/** Write the current recording state to localStorage right now, cancelling
+	 *  any pending debounced write. Used at record-start (so a session that never
+	 *  fires a capture event still survives a page load) and on pagehide (so the
+	 *  last event isn't swallowed by the debounce window). */
+	const persistNow = useCallback((): void => {
+		clearTimeout(persistTimerRef.current);
+		const snap = buildRecordingSnapshot();
+		if (snap) saveSession(snap);
+	}, [buildRecordingSnapshot]);
+
 	/**
 	 * Debounced (~400 ms) persist of the current in-flight recording state to
 	 * localStorage. Called after every mutation of events / snapshots / transcript.
@@ -454,21 +483,10 @@ export function useSession(
 	const schedulePersist = useCallback((): void => {
 		clearTimeout(persistTimerRef.current);
 		persistTimerRef.current = setTimeout(() => {
-			const id = sessionIdRef.current;
-			if (!id) return;
-			saveSession({
-				v: 1,
-				sessionId: id,
-				startedAt: startEpochRef.current,
-				binding: bindingRef.current,
-				status: "recording",
-				events: [...eventsRef.current],
-				snapshots: [...snapshotsRef.current],
-				transcript: [...finalsRef.current],
-				durationMs: elapsed(),
-			});
+			const snap = buildRecordingSnapshot();
+			if (snap) saveSession(snap);
 		}, 400);
-	}, [elapsed]);
+	}, [buildRecordingSnapshot]);
 
 	/**
 	 * Build and open a StreamingTranscriber wired to the standard partial/final
@@ -636,12 +654,17 @@ export function useSession(
 
 				timerRef.current = setInterval(() => setElapsedMs(elapsed()), 250);
 				setPhase("recording");
+				// Persist immediately so a full-page navigation that happens before
+				// any capture event (the prod repro: record → click a link within a
+				// few seconds, 0 marks) still leaves a session for the next page to
+				// rehydrate. The debounced schedulePersist alone never fires here.
+				persistNow();
 			} catch (err) {
 				setError(`Could not start recording: ${(err as Error).message}`);
 				setPhase("error");
 			}
 		},
-		[elapsed, installListeners, mark, refreshSnapshotEls],
+		[elapsed, installListeners, mark, persistNow, refreshSnapshotEls],
 	);
 
 	const enableVoice = useCallback(async (): Promise<void> => {
@@ -945,6 +968,20 @@ export function useSession(
 			grabberRef.current?.stop();
 		};
 	}, []);
+
+	// ---------------------------------------------------------------------------
+	// Flush on page hide — a full-page navigation can fire before the 400 ms
+	// debounce, so write the latest recording state synchronously. Guarded by
+	// recordingRef so a reviewing session (written by stop()) is never clobbered
+	// with a "recording" snapshot.
+	// ---------------------------------------------------------------------------
+	useEffect(() => {
+		const flush = (): void => {
+			if (recordingRef.current) persistNow();
+		};
+		window.addEventListener("pagehide", flush);
+		return () => window.removeEventListener("pagehide", flush);
+	}, [persistNow]);
 
 	return {
 		phase,

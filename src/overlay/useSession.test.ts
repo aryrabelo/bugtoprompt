@@ -739,4 +739,49 @@ describe("useSession — persistence during recording", () => {
 		expect(saved?.snapshots).toHaveLength(1);
 		expect(saved?.events.filter((e) => e.kind === "mark")).toHaveLength(1);
 	});
+
+	it("(p) start with zero marks persists the recording session immediately (survives full-page navigation before any event)", async () => {
+		const client = makeFakeClient();
+		const { result, unmount } = renderHook(() => useSession(client));
+
+		await act(async () => {
+			await result.current.start({ projectId: "proj-1" });
+		});
+
+		// Prod repro: recording started, no marks, no voice, no clicks — then a
+		// full-page (MPA) navigation. The session MUST already be in localStorage
+		// so the next page can rehydrate it. No debounce advance: the write is
+		// synchronous at record-start, not gated on the first capture event.
+		const saved = loadSession();
+		expect(saved).not.toBeNull();
+		expect(saved?.status).toBe("recording");
+		expect(saved?.sessionId).toBeTruthy();
+
+		unmount();
+	});
+
+	it("(q) pagehide flushes a still-debounced recording update synchronously", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+
+		// A mark schedules a debounced (400 ms) persist. Before it fires, a
+		// full-page navigation dispatches `pagehide`. The mark must still reach
+		// storage — the debounce window cannot swallow the last event.
+		await act(async () => {
+			await result.current.mark();
+		});
+		act(() => {
+			window.dispatchEvent(new Event("pagehide"));
+		});
+
+		const saved = loadSession();
+		expect(saved?.status).toBe("recording");
+		expect(saved?.snapshots).toHaveLength(1);
+	});
 });
