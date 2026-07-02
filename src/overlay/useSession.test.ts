@@ -260,9 +260,11 @@ describe("useSession", () => {
 		expect(mockTranscriberInstance.stop).toHaveBeenCalled();
 	});
 
-	it("(e) save-failure: saveArtifact rejects → phase error", async () => {
+	it("(e) save-failure: saveArtifact rejects → degrades to reviewing with a warning (not fatal)", async () => {
 		const client = makeFakeClient({
-			saveArtifact: vi.fn().mockRejectedValue(new Error("disk full")),
+			saveArtifact: vi
+				.fn()
+				.mockRejectedValue(new Error("413 artifact too large")),
 		});
 		const { result } = renderHook(() => useSession(client));
 
@@ -273,8 +275,12 @@ describe("useSession", () => {
 			await result.current.stop();
 		});
 
-		expect(result.current.phase).toBe("error");
-		expect(result.current.error).toMatch(/Failed to save/);
+		// Upload failed, but the capture survives: review is reachable so
+		// clipboard/download/File issue still work — not a fatal error.
+		expect(result.current.phase).toBe("reviewing");
+		expect(result.current.saveWarning).toMatch(/Couldn't upload/);
+		expect(result.current.error).toBeUndefined();
+		expect(result.current.artifact).toBeDefined();
 	});
 
 	it("(f) failing token resolution sets needsKey after enableVoice, phase stays recording", async () => {
@@ -445,7 +451,12 @@ describe("useSession — snap-on-click", () => {
 		});
 
 		expect(result.current.phase).toBe("recording");
-		// Default is ON.
+		// Screenshots are opt-in — default is OFF now.
+		expect(result.current.snapOnClick).toBe(false);
+		// Opt in: this is the sole screen-share prompt (acquires the grabber).
+		await act(async () => {
+			await result.current.setSnapOnClick(true);
+		});
 		expect(result.current.snapOnClick).toBe(true);
 
 		// Five rapid clicks outside the overlay.
@@ -503,6 +514,10 @@ describe("useSession — snap-on-click", () => {
 
 		await act(async () => {
 			await result.current.start({});
+		});
+		// Opt in so the grabber exists and mark() captures a screenshot.
+		await act(async () => {
+			await result.current.setSnapOnClick(true);
 		});
 
 		const tickBefore = result.current.flashTick;
@@ -689,7 +704,7 @@ describe("useSession — screenshotMode", () => {
 		expect(result.current.phase).toBe("recording");
 	});
 
-	it("(n3) screenshotMode 'perPage' → start() acquires grabber eagerly", async () => {
+	it("(n3) screenshotMode 'perPage' → start() does NOT prompt for screen share (screenshots are opt-in)", async () => {
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client, "perPage"));
 
@@ -697,9 +712,80 @@ describe("useSession — screenshotMode", () => {
 			await result.current.start({});
 		});
 
-		// Exactly one grabber acquisition on start() for perPage mode.
-		expect(startScreenGrabber).toHaveBeenCalledOnce();
+		// No eager acquisition at start in any mode — the prompt is deferred to
+		// the "Snap on click" opt-in.
+		expect(startScreenGrabber).not.toHaveBeenCalled();
 		expect(result.current.phase).toBe("recording");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Screenshot opt-in tests
+// ---------------------------------------------------------------------------
+
+describe("useSession — screenshot opt-in", () => {
+	afterEach(() => {
+		localStorage.clear();
+	});
+
+	it("(r) enabling snap-on-click acquires the grabber exactly once (idempotent)", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onMark"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+		// No prompt at start.
+		expect(startScreenGrabber).not.toHaveBeenCalled();
+
+		await act(async () => {
+			await result.current.setSnapOnClick(true);
+		});
+		expect(startScreenGrabber).toHaveBeenCalledOnce();
+
+		// Toggle off then on again — the grabber is already held, no re-acquire.
+		await act(async () => {
+			await result.current.setSnapOnClick(false);
+		});
+		await act(async () => {
+			await result.current.setSnapOnClick(true);
+		});
+		expect(startScreenGrabber).toHaveBeenCalledOnce();
+	});
+
+	it("(s) screenshotMode 'off' → enabling snap-on-click never requests screen share", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "off"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+		await act(async () => {
+			await result.current.setSnapOnClick(true);
+		});
+
+		expect(startScreenGrabber).not.toHaveBeenCalled();
+	});
+
+	it("(t) clicks with snap-on-click OFF do not mark (screenshots opt-in)", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onMark"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+
+		// Default off: a click outside the overlay must not create a mark in this
+		// session. (markCount is session-scoped; the shared grab spy is not, since
+		// this file has no RTL auto-cleanup and sibling recording sessions leak
+		// their document click listeners.)
+		await act(async () => {
+			document.dispatchEvent(
+				new MouseEvent("click", { bubbles: true, cancelable: true }),
+			);
+		});
+
+		expect(result.current.markCount).toBe(0);
 	});
 });
 

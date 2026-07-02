@@ -809,7 +809,9 @@ export function BugToPrompt({
 						<input
 							type="checkbox"
 							checked={session.snapOnClick}
-							onChange={(e) => session.setSnapOnClick(e.currentTarget.checked)}
+							onChange={(e) =>
+								void session.setSnapOnClick(e.currentTarget.checked)
+							}
 							className="size-3 cursor-pointer accent-primary"
 						/>
 						<MousePointer2 className="size-3" />
@@ -838,6 +840,11 @@ export function BugToPrompt({
 						{session.markCount} screenshot{session.markCount === 1 ? "" : "s"}{" "}
 						captured.
 					</div>
+					{session.saveWarning ? (
+						<p role="alert" className="text-yellow-500">
+							{session.saveWarning}
+						</p>
+					) : null}
 					{/* P0-1: show "copy failed" alert alongside the success confirmations. */}
 					{lastAction === "copy-failed" ? (
 						<p role="alert" className="text-destructive">

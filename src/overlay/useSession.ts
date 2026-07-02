@@ -76,9 +76,14 @@ export interface UseSessionResult {
 	hasKey: boolean;
 	/** Incremented after each grab resolves — drives the Shutter flash. */
 	flashTick: number;
-	/** Whether document clicks auto-trigger mark() while recording. Default: true. */
+	/** Whether document clicks trigger a screenshotting mark() while recording.
+	 *  Default: false — screenshots are opt-in; the first enable requests screen
+	 *  share (a user gesture), so no share prompt ever fires at record-start. */
 	snapOnClick: boolean;
 	error?: string;
+	/** Non-fatal notice surfaced in the reviewing phase (e.g. the hosted artifact
+	 *  upload failed but clipboard/download/issue still work). */
+	saveWarning?: string;
 	issueUrl?: string;
 	start(binding: SessionBinding): Promise<void>;
 	mark(): Promise<void>;
@@ -90,7 +95,7 @@ export interface UseSessionResult {
 	 *  Resolves true iff live transcription engaged (or the key was stored OK
 	 *  while idle). */
 	provideKey(key: string): Promise<boolean>;
-	setSnapOnClick(v: boolean): void;
+	setSnapOnClick(v: boolean): Promise<void>;
 	voiceEnabled: boolean;
 	enableVoice(): Promise<void>;
 }
@@ -281,20 +286,9 @@ async function restoreRecording(
 	bag.recordingRef.current = true;
 	bag.setStreaming(false);
 
-	// Screen grabber acquisition depends on mode.
-	// "perPage"  → re-prompt immediately so marks on this page screenshot.
-	// "onMark"   → lazy: grabberRef stays undefined; mark() will acquire it.
-	// "off"      → never acquire the grabber.
-	if (bag.screenshotModeRef.current === "perPage" && !signal.cancelled) {
-		const grabber = await startScreenGrabber();
-		// FIX (codex M4): component may have unmounted while awaiting the grabber;
-		// stop it immediately to prevent the media stream from leaking.
-		if (signal.cancelled) {
-			grabber.stop();
-			return;
-		}
-		bag.grabberRef.current = grabber;
-	}
+	// Screenshots are opt-in: the grabber is acquired only when the user enables
+	// the "Snap on click" toggle (a user gesture), never on resume. A rehydrated
+	// session therefore starts with no grabber and no screen-share prompt.
 
 	if (signal.cancelled) return;
 
@@ -372,10 +366,11 @@ export function useSession(
 	const [needsKey, setNeedsKey] = useState(false);
 	const [hasKey, setHasKey] = useState<boolean>(() => hasStoredKey());
 	const [flashTick, setFlashTick] = useState(0);
-	const [snapOnClickState, setSnapOnClickState] = useState(true);
+	const [snapOnClickState, setSnapOnClickState] = useState(false);
 	const [voiceEnabled, setVoiceEnabled] = useState(false);
 	const [error, setError] = useState<string>();
 	const [issueUrl, setIssueUrl] = useState<string>();
+	const [saveWarning, setSaveWarning] = useState<string>();
 
 	const audioRef = useRef<AudioCapture | undefined>(undefined);
 	const transcriberRef = useRef<StreamingTranscriber | undefined>(undefined);
@@ -405,7 +400,11 @@ export function useSession(
 	);
 	const artifactRef = useRef<CaptureArtifact | undefined>(undefined);
 	const pendingRef = useRef<Pending | undefined>(undefined);
-	const snapOnClickRef = useRef(true);
+	const snapOnClickRef = useRef(false);
+	/** Viewport CSS coords of the click that triggered the pending mark; read
+	 *  (and cleared) by mark() so the grab can crop around it. undefined for
+	 *  route/manual marks → whole-frame fallback framing. */
+	const clickPointRef = useRef<{ x: number; y: number } | undefined>(undefined);
 	/** True only while the session is actively recording; guards the click handler
 	 *  from misfiring if React's concurrent-mode defers the cleanup slightly. */
 	const recordingRef = useRef(false);
@@ -429,12 +428,23 @@ export function useSession(
 	);
 
 	/**
-	 * Keeps snapOnClickRef in sync without requiring the click listener to be
-	 * reinstalled each time the toggle changes.
+	 * Toggle click-triggered screenshots. Screenshots are opt-in: the FIRST time
+	 * the user enables this (a user gesture, always during recording) we request
+	 * the display stream once — that is the only screen-share prompt, and it
+	 * never fires at record-start. Denial yields a no-op grabber (grab() → null),
+	 * so marks still record the interactive snapshot, just without an image.
+	 * Disabling never stops the stream; the click handler simply stops marking.
 	 */
-	const setSnapOnClick = useCallback((v: boolean): void => {
+	const setSnapOnClick = useCallback(async (v: boolean): Promise<void> => {
 		snapOnClickRef.current = v;
 		setSnapOnClickState(v);
+		if (
+			v &&
+			grabberRef.current === undefined &&
+			screenshotModeRef.current !== "off"
+		) {
+			grabberRef.current = await startScreenGrabber();
+		}
 	}, []);
 
 	const resolveRef = useCallback((el: Element): string | undefined => {
@@ -533,6 +543,8 @@ export function useSession(
 				if (!snapOnClickRef.current) return;
 				// Ignore clicks whose target is inside the overlay itself.
 				if ((e.target as Element).closest?.("[data-bugtoprompt]")) return;
+				// Remember where the user clicked so the grab can crop around it.
+				clickPointRef.current = { x: e.clientX, y: e.clientY };
 				throttledMark();
 			};
 			document.addEventListener("click", handleClick, { capture: true });
@@ -543,7 +555,11 @@ export function useSession(
 						eventsRef.current.push(ev);
 						schedulePersist();
 						// Route-change auto-snap is always on (not gated by snapOnClick).
-						if (ev.kind === "route") throttledMark();
+						// No click point → the grab uses whole-frame fallback framing.
+						if (ev.kind === "route") {
+							clickPointRef.current = undefined;
+							throttledMark();
+						}
 					},
 					elapsedMs: elapsed,
 					resolveRef,
@@ -562,23 +578,18 @@ export function useSession(
 		latestEls.current = snap.interactiveElements;
 		const tMs = elapsed();
 
-		// Determine screenshot grab based on mode.
+		// Screenshot the click point when the user has opted in (grabber acquired
+		// via the "Snap on click" toggle). No grabber → interactive snapshot only.
 		let grab: { blob: Blob; method: "getDisplayMedia" } | null = null;
 		if (screenshotModeRef.current !== "off") {
-			// Lazy-init the grabber when rehydrating with "onMark" mode (it was not
-			// pre-acquired on rehydrate; acquire on the first explicit mark instead).
-			if (
-				grabberRef.current === undefined &&
-				screenshotModeRef.current === "onMark"
-			) {
-				grabberRef.current = await startScreenGrabber();
-			}
-			grab = (await grabberRef.current?.grab()) ?? null;
+			const point = clickPointRef.current;
+			clickPointRef.current = undefined;
+			grab = (await grabberRef.current?.grab(point)) ?? null;
 		}
 
 		const index = snapshotsRef.current.length;
 		const screenshotRef = grab
-			? `snap-${String(index).padStart(4, "0")}.png`
+			? `snap-${String(index).padStart(4, "0")}.jpg`
 			: undefined;
 		snapshotsRef.current.push({
 			tMs,
@@ -615,6 +626,13 @@ export function useSession(
 			setMarkCount(0);
 			setElapsedMs(0);
 			setNeedsKey(false);
+			setSaveWarning(undefined);
+			// Screenshots are opt-in per session: reset the toggle to off so no
+			// screen-share prompt fires at start and a stale (stopped) grabber from
+			// a prior session is never reused. The user re-enables to opt in.
+			snapOnClickRef.current = false;
+			setSnapOnClickState(false);
+			clickPointRef.current = undefined;
 			eventsRef.current = [];
 			snapshotsRef.current = [];
 			shotBlobsRef.current = [];
@@ -636,13 +654,9 @@ export function useSession(
 			// screen grabber throwing) surfaces as a visible error instead of a
 			// rejected promise swallowed by the record button's fire-and-forget call.
 			try {
-				// Acquire the screen grabber eagerly only in perPage mode.
-				// onMark acquires lazily in mark(); off never acquires.
-				if (screenshotModeRef.current === "perPage") {
-					grabberRef.current = await startScreenGrabber();
-				} else {
-					grabberRef.current = undefined;
-				}
+				// No screen-share prompt at record-start: the grabber is acquired
+				// only when the user enables "Snap on click" (see setSnapOnClick).
+				grabberRef.current = undefined;
 				refreshSnapshotEls();
 				recordingRef.current = true;
 
@@ -812,9 +826,13 @@ export function useSession(
 				screenshotsBase64,
 			});
 		} catch (err) {
-			setError(`Failed to save capture: ${(err as Error).message}`);
-			setPhase("error");
-			return;
+			// Non-fatal: the hosted artifact upload failed (e.g. 413 too large), but
+			// the assembled artifact is already in memory. Proceed to review so
+			// clipboard/download/file-issue still work — losing the whole capture
+			// over a failed upload is the worse outcome.
+			setSaveWarning(
+				`Couldn't upload the capture to the server (${(err as Error).message}). Clipboard, download, and File issue still work.`,
+			);
 		}
 
 		// Batch fallback runs ONLY when live transcription produced nothing — it
@@ -876,11 +894,19 @@ export function useSession(
 				...base,
 				transcript: finalsRef.current,
 			};
-			await client.saveArtifact({
-				artifact: edited,
-				audioBase64: pending.audioBase64,
-				screenshotsBase64: pending.screenshotsBase64,
-			});
+			// The hosted /issue path works without a stored artifact, so a failed
+			// upload (e.g. 413 too large) must not block filing — warn and continue.
+			try {
+				await client.saveArtifact({
+					artifact: edited,
+					audioBase64: pending.audioBase64,
+					screenshotsBase64: pending.screenshotsBase64,
+				});
+			} catch (err) {
+				setSaveWarning(
+					`Couldn't upload the capture to the server (${(err as Error).message}). Filing the issue without the hosted artifact.`,
+				);
+			}
 			const result = await client.createIssue({
 				projectId: binding.projectId,
 				...(binding.workspaceId ? { targetId: binding.workspaceId } : {}),
@@ -909,6 +935,7 @@ export function useSession(
 		setError(undefined);
 		setIssueUrl(undefined);
 		setNeedsKey(false);
+		setSaveWarning(undefined);
 		// Remove the persisted session state; blobs are kept for history.
 		removeSession();
 	}, []);
@@ -996,6 +1023,7 @@ export function useSession(
 		flashTick,
 		snapOnClick: snapOnClickState,
 		error,
+		saveWarning,
 		issueUrl,
 		start,
 		mark,
