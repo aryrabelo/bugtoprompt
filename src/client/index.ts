@@ -47,6 +47,56 @@ export async function blobToBase64(blob: Blob): Promise<string> {
 	return btoa(binary);
 }
 
+/** Decode a base64 string (no data-URL prefix) back to raw bytes for upload. */
+function base64ToBytes(b64: string): Uint8Array {
+	const binary = atob(b64);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+/**
+ * Signals that a blob upload could not be completed — either the backend lacks
+ * the /blob route (legacy/self-hosted: 404/405) or the upload was rejected
+ * (413/429/5xx) or the request itself failed. The caller falls back to the
+ * legacy base64 artifact payload once.
+ */
+class BlobRouteError extends Error {}
+
+/**
+ * POST one media blob to `{baseUrl}/blob?session=&kind=&seq=` as a raw binary
+ * body. Returns the server ref on success; throws BlobRouteError on any failure
+ * so the caller can degrade to the legacy path.
+ */
+async function uploadBlob(
+	baseUrl: string,
+	sessionId: string,
+	kind: "screenshot" | "audio",
+	seq: number,
+	bytes: Uint8Array,
+	contentType: string,
+): Promise<string> {
+	const url = `${baseUrl}/blob?session=${encodeURIComponent(sessionId)}&kind=${kind}&seq=${seq}`;
+	let res: Response;
+	try {
+		res = await fetch(url, {
+			method: "POST",
+			headers: { "Content-Type": contentType },
+			// Uint8Array is a valid runtime BodyInit; the cast bridges a lib.dom/
+			// @types/node typing gap where Uint8Array<ArrayBufferLike> is rejected.
+			body: bytes as BodyInit,
+		});
+	} catch (err) {
+		throw new BlobRouteError(`blob fetch failed: ${String(err)}`);
+	}
+	if (!res.ok) {
+		debug("blob upload failed", { url, status: res.status, kind, seq });
+		throw new BlobRouteError(`${res.status} ${res.statusText}`);
+	}
+	const { ref } = (await res.json()) as { ref: string };
+	return ref;
+}
+
 async function postJson<T>(
 	url: string,
 	body: Record<string, unknown>,
@@ -83,12 +133,60 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 			return postJson(`${baseUrl}/streaming-token`, body);
 		},
 
-		saveArtifact(input) {
-			return postJson(`${baseUrl}/artifact`, {
-				artifact: input.artifact,
-				audioBase64: input.audioBase64,
-				screenshotsBase64: input.screenshotsBase64,
-			});
+		async saveArtifact(input) {
+			const { artifact, audioBase64, screenshotsBase64 } = input;
+			const shots = screenshotsBase64
+				.map((b64, seq) => ({ b64, seq }))
+				.filter((s) => s.b64.length > 0);
+			const hasAudio = audioBase64.length > 0;
+
+			// Empty capture: no media to stage, send an artifact-only payload.
+			if (shots.length === 0 && !hasAudio) {
+				return postJson(`${baseUrl}/artifact`, { artifact });
+			}
+
+			// New path: stage each blob via the binary /blob route, then reference
+			// them from a slim artifact. Any blob failure (route absent, too large,
+			// rate-limited, 5xx, network) degrades to the legacy base64 payload once.
+			try {
+				const screenshotRefs: string[] = [];
+				for (const { b64, seq } of shots) {
+					screenshotRefs.push(
+						await uploadBlob(
+							baseUrl,
+							artifact.sessionId,
+							"screenshot",
+							seq,
+							base64ToBytes(b64),
+							"image/jpeg",
+						),
+					);
+				}
+				let audioRef: string | undefined;
+				if (hasAudio) {
+					audioRef = await uploadBlob(
+						baseUrl,
+						artifact.sessionId,
+						"audio",
+						0,
+						base64ToBytes(audioBase64),
+						"audio/webm",
+					);
+				}
+				const body: Record<string, unknown> = { artifact };
+				if (screenshotRefs.length > 0) body.screenshotRefs = screenshotRefs;
+				if (audioRef !== undefined) body.audioRef = audioRef;
+				return await postJson(`${baseUrl}/artifact`, body);
+			} catch (err) {
+				// A slim-artifact POST failure is a real error — surface it.
+				if (!(err instanceof BlobRouteError)) throw err;
+				// Blob staging unavailable: fall back to the legacy base64 payload.
+				return postJson(`${baseUrl}/artifact`, {
+					artifact,
+					audioBase64,
+					screenshotsBase64,
+				});
+			}
 		},
 
 		transcribeBatch(sessionId, targetId?) {
