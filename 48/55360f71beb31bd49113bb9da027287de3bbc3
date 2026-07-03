@@ -1,0 +1,19 @@
+src/client/client.test.ts
+  s_f4b63c53a51064::t_290a7d1ae44aab 59,67-69,77-79,81-82,85,92,97-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "4855360f71beb31bd49113bb9da027287de3bbc3",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
