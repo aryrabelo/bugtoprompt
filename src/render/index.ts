@@ -12,6 +12,7 @@ import type {
 	CaptureArtifact,
 	CaptureEvent,
 	InteractiveElement,
+	TranscriptSegment,
 } from "../schema";
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,17 @@ export function promptTitle(artifact: CaptureArtifact): string {
 	const base = first ?? `Bug capture on ${pathOf(artifact.pageUrl)}`;
 	const trimmed = base.length > 72 ? `${base.slice(0, 71)}…` : base;
 	return redactSecrets(trimmed);
+}
+
+/** Plain-text transcript for the DB `transcriptText` column (voice captures
+ *  only). Non-empty segments joined by newline and redacted like the prompt
+ *  body; empty string when the capture had no speech. */
+export function transcriptText(segments: TranscriptSegment[]): string {
+	const text = segments
+		.map((s) => s.text.trim())
+		.filter((t) => t.length > 0)
+		.join("\n");
+	return text ? redactSecrets(text) : "";
 }
 
 /** The full prompt body in issue format. Redaction is applied to the whole

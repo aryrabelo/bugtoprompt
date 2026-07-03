@@ -201,7 +201,7 @@ describe("createLocalFallbackClient", () => {
 	it("createIssue rejects with a helpful message", async () => {
 		const client = createLocalFallbackClient();
 		await expect(
-			client.createIssue({ projectId: "p", sessionId: "s", prompt: "x" }),
+			client.createIssue({ sessionId: "s", promptRef: "x" }),
 		).rejects.toThrow("issue mode requires a backend");
 	});
 

@@ -28,10 +28,11 @@ export interface BugToPromptClient {
 		targetId?: string,
 	): Promise<{ transcript: CaptureArtifact["transcript"] }>;
 	createIssue(input: {
-		projectId: string;
-		targetId?: string;
 		sessionId: string;
-		prompt: string;
+		promptRef: string;
+		artifactRef?: string;
+		transcriptText?: string;
+		targetId?: string;
 	}): Promise<{ created: boolean; number: number; url: string }>;
 	listTargets(projectId: string): Promise<Target[]>;
 }
@@ -197,10 +198,13 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 
 		createIssue(input) {
 			const body: Record<string, unknown> = {
-				projectId: input.projectId,
 				sessionId: input.sessionId,
-				prompt: input.prompt,
+				promptRef: input.promptRef,
 			};
+			if (input.artifactRef !== undefined) body.artifactRef = input.artifactRef;
+			if (input.transcriptText !== undefined) {
+				body.transcriptText = input.transcriptText;
+			}
 			if (input.targetId !== undefined) body.targetId = input.targetId;
 			return postJson(`${baseUrl}/issue`, body);
 		},

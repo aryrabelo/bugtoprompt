@@ -25,7 +25,7 @@ import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type BugToPromptClient, createFetchClient } from "../client";
-import { promptTitle, renderPrompt } from "../render";
+import { promptTitle, renderPrompt, transcriptText } from "../render";
 import { Button } from "../ui/button";
 import {
 	createLocalFallbackClient,
@@ -320,9 +320,15 @@ function CaptureHistoryList({
 										if (!projectId) return;
 										void client
 											.createIssue({
-												projectId,
 												sessionId: rec.id,
-												prompt: rec.prompt,
+												promptRef: rec.prompt,
+												...(transcriptText(rec.artifact.transcript)
+													? {
+															transcriptText: transcriptText(
+																rec.artifact.transcript,
+															),
+														}
+													: {}),
 											})
 											.then((r) => {
 												onFiledUpdate({ id: rec.id, url: r.url });

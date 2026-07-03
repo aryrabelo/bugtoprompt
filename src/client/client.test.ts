@@ -56,41 +56,47 @@ describe("createFetchClient", () => {
 		expect(JSON.parse(init.body as string)).toEqual({});
 	});
 
-	it("createIssue POSTs correct fields including prompt", async () => {
+	it("createIssue POSTs promptRef/artifactRef/transcriptText per server contract", async () => {
 		fetchSpy.mockResolvedValue(
 			okResponse({ created: true, number: 7, url: "https://gh/7" }),
 		);
 
 		const client = createFetchClient(BASE);
 		await client.createIssue({
-			projectId: "proj",
 			sessionId: "sess",
-			prompt: "the prompt body",
+			promptRef: "the prompt body",
+			artifactRef: "cap_sess/artifact.json",
+			transcriptText: "spoken words",
 			targetId: "t1",
 		});
 
 		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe("http://x/issue");
 		const body = JSON.parse(init.body as string) as Record<string, unknown>;
-		expect(body.projectId).toBe("proj");
 		expect(body.sessionId).toBe("sess");
-		expect(body.prompt).toBe("the prompt body");
+		expect(body.promptRef).toBe("the prompt body");
+		expect(body.artifactRef).toBe("cap_sess/artifact.json");
+		expect(body.transcriptText).toBe("spoken words");
 		expect(body.targetId).toBe("t1");
+		// The server reads promptRef, not prompt — the old `prompt` field dropped data.
+		expect(body.prompt).toBeUndefined();
 	});
 
-	it("createIssue omits targetId when not provided", async () => {
+	it("createIssue omits optional fields when not provided", async () => {
 		fetchSpy.mockResolvedValue(
 			okResponse({ created: true, number: 8, url: "https://gh/8" }),
 		);
 
 		await createFetchClient(BASE).createIssue({
-			projectId: "p",
 			sessionId: "s",
-			prompt: "body",
+			promptRef: "body",
 		});
 
 		const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string) as Record<string, unknown>;
+		expect(body.promptRef).toBe("body");
+		expect(body.artifactRef).toBeUndefined();
+		expect(body.transcriptText).toBeUndefined();
 		expect(body.targetId).toBeUndefined();
 	});
 

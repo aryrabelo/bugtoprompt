@@ -60,6 +60,7 @@ vi.mock("./snapshot/screenshot", () => ({
 // tests deterministic and independent of the render module.
 vi.mock("../render", () => ({
 	renderPrompt: vi.fn().mockReturnValue("## mocked prompt"),
+	transcriptText: vi.fn().mockReturnValue(""),
 }));
 
 // ---------------------------------------------------------------------------
@@ -169,7 +170,7 @@ describe("useSession", () => {
 		expect(result.current.issueUrl).toBe("https://gh/1");
 	});
 
-	it("(b2) submitIssue passes prompt to createIssue", async () => {
+	it("(b2) submitIssue forwards promptRef + artifactRef to createIssue", async () => {
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client));
 
@@ -185,10 +186,16 @@ describe("useSession", () => {
 
 		expect(client.createIssue).toHaveBeenCalledOnce();
 		const callArg = (client.createIssue as Mock).mock.calls[0][0] as {
-			prompt: string;
+			promptRef: string;
+			artifactRef?: string;
 		};
-		expect(typeof callArg.prompt).toBe("string");
-		expect(callArg.prompt.length).toBeGreaterThan(0);
+		// The rendered prompt must ride as promptRef (the server column), never
+		// the old `prompt` field that landed NULL in prod.
+		expect(typeof callArg.promptRef).toBe("string");
+		expect(callArg.promptRef.length).toBeGreaterThan(0);
+		expect((callArg as unknown as { prompt?: string }).prompt).toBeUndefined();
+		// saveArtifact resolved { dir: "/tmp/cap" } → that ref must reach the API.
+		expect(callArg.artifactRef).toBe("/tmp/cap");
 	});
 
 	it("(c) batch-fallback: transcribeBatch called when mintStreamingToken rejects", async () => {

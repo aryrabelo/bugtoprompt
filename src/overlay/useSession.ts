@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type BugToPromptClient, blobToBase64 } from "../client";
-import { renderPrompt } from "../render";
+import { renderPrompt, transcriptText } from "../render";
 import type {
 	CaptureArtifact,
 	CaptureEvent,
@@ -896,22 +896,28 @@ export function useSession(
 			};
 			// The hosted /issue path works without a stored artifact, so a failed
 			// upload (e.g. 413 too large) must not block filing — warn and continue.
+			let artifactRef: string | undefined;
 			try {
-				await client.saveArtifact({
+				const saved = await client.saveArtifact({
 					artifact: edited,
 					audioBase64: pending.audioBase64,
 					screenshotsBase64: pending.screenshotsBase64,
 				});
+				// The stored-artifact ref lets the backend link the bug to its
+				// capture; empty when the fallback client has no server dir.
+				if (saved.dir) artifactRef = saved.dir;
 			} catch (err) {
 				setSaveWarning(
 					`Couldn't upload the capture to the server (${(err as Error).message}). Filing the issue without the hosted artifact.`,
 				);
 			}
+			const transcript = transcriptText(finalsRef.current);
 			const result = await client.createIssue({
-				projectId: binding.projectId,
 				...(binding.workspaceId ? { targetId: binding.workspaceId } : {}),
 				sessionId: base.sessionId,
-				prompt: renderPrompt(edited),
+				promptRef: renderPrompt(edited),
+				...(artifactRef !== undefined ? { artifactRef } : {}),
+				...(transcript ? { transcriptText: transcript } : {}),
 			});
 			setIssueUrl(result.url);
 			// Remove the persisted session state; blobs are kept for history.
