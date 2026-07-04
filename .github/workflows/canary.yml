@@ -1,0 +1,29 @@
+name: prod-canary
+
+# aryrabelo.com floats to bugtoprompt@latest on unpkg, so a broken publish goes
+# live in ~10 min with no deploy-time gate. This probes the two things that
+# gate matters for; a failed run emails the repo owner (GitHub default), which
+# is the whole alerting mechanism — no extra infra.
+on:
+  schedule:
+    - cron: "*/15 * * * *" # GitHub throttles under load; effective cadence ~15-30 min
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: overlay loads from unpkg @latest
+        # -f fails on any non-2xx (after -L redirect); size guard catches an
+        # empty/truncated bundle that still returns 200.
+        run: |
+          curl -fsSL "https://unpkg.com/bugtoprompt@latest/dist/bugtoprompt.global.js" -o overlay.js
+          test "$(wc -c < overlay.js)" -gt 100000
+
+      - name: api config endpoint healthy
+        # Same Origin the overlay uses; jq empty fails on non-JSON / error bodies.
+        run: |
+          curl -fsS -H 'Origin: https://aryrabelo.com' \
+            "https://api.bugtoprompt.com/v1/p/pk_f71b0d35-01e6-4210-b9ae-07370d516d31/bugtoprompt/config" \
+            -o config.json
+          jq empty config.json
