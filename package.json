@@ -1,6 +1,6 @@
 {
 	"name": "bugtoprompt",
-	"version": "0.13.5",
+	"version": "0.13.6",
 	"description": "BugToPrompt — a portable bug-capture overlay that turns a bug into an AI-ready prompt",
 	"keywords": [
 		"react",
