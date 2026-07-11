@@ -25,18 +25,25 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	// Clean up any mounted container and style tag between tests.
+	// Unmount via window.BugToPrompt if still mounted; the shadow host carries
+	// the stylesheet, so removing it cleans everything.
+	window.BugToPrompt?.unmount();
 	for (const el of Array.from(
-		document.querySelectorAll("[data-bugtoprompt-style]"),
+		document.querySelectorAll("[data-bugtoprompt-host]"),
 	)) {
 		el.remove();
 	}
-	// Unmount via window.BugToPrompt if still mounted.
-	window.BugToPrompt?.unmount();
 	window.__BUGTOPROMPT__ = undefined;
 });
 
-it("mount() injects <style data-bugtoprompt-style> and a [data-bugtoprompt] element", async () => {
+/** The overlay lives in a shadow root on the [data-bugtoprompt-host] element;
+ *  document queries do not pierce it, so tests query through shadowRoot. */
+function shadow(): ShadowRoot | null {
+	const host = document.querySelector("[data-bugtoprompt-host]");
+	return host?.shadowRoot ?? null;
+}
+
+it("mount() creates a shadow host with scoped styles and the overlay inside", async () => {
 	// Dynamic import AFTER window.__BUGTOPROMPT__ is set — required so the
 	// module-level auto-mount guard sees manual:true on first evaluation.
 	// Exception to ts-no-dynamic-import: module-loading boundary test.
@@ -46,31 +53,33 @@ it("mount() injects <style data-bugtoprompt-style> and a [data-bugtoprompt] elem
 		mount();
 	});
 
-	expect(document.querySelector("[data-bugtoprompt-style]")).not.toBeNull();
-	expect(document.querySelector("[data-bugtoprompt]")).not.toBeNull();
+	// Nothing leaks into the host document: no style tag, no overlay element.
+	expect(document.querySelector("[data-bugtoprompt-style]")).toBeNull();
+	expect(document.querySelector("[data-bugtoprompt]")).toBeNull();
+	// Everything lives inside the shadow root.
+	expect(shadow()?.querySelector("[data-bugtoprompt-style]")).not.toBeNull();
+	expect(shadow()?.querySelector("[data-bugtoprompt]")).not.toBeNull();
 });
 
-it("unmount() removes the container but leaves the stylesheet", async () => {
+it("unmount() removes the shadow host entirely", async () => {
 	const { mount, unmount } = await import("./standalone");
 
 	await act(async () => {
 		mount();
 	});
 
-	// Baseline — overlay is present.
-	expect(document.querySelector("[data-bugtoprompt]")).not.toBeNull();
+	// Baseline — overlay is present inside the shadow root.
+	expect(shadow()?.querySelector("[data-bugtoprompt]")).not.toBeNull();
 
 	await act(async () => {
 		unmount();
 	});
 
-	// Container gone — no more [data-bugtoprompt] portals.
-	expect(document.querySelector("[data-bugtoprompt]")).toBeNull();
-	// Stylesheet persists (singleton, intentional).
-	expect(document.querySelector("[data-bugtoprompt-style]")).not.toBeNull();
+	// Host (and with it styles + overlay) gone from the document.
+	expect(document.querySelector("[data-bugtoprompt-host]")).toBeNull();
 });
 
-it("mount() is idempotent — calling twice mounts only one container", async () => {
+it("mount() is idempotent — calling twice mounts only one shadow host", async () => {
 	const { mount } = await import("./standalone");
 
 	await act(async () => {
@@ -78,6 +87,5 @@ it("mount() is idempotent — calling twice mounts only one container", async ()
 		mount(); // second call must be a no-op
 	});
 
-	// Only one style tag injected.
-	expect(document.querySelectorAll("[data-bugtoprompt-style]").length).toBe(1);
+	expect(document.querySelectorAll("[data-bugtoprompt-host]").length).toBe(1);
 });

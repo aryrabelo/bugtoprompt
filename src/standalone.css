@@ -1,7 +1,73 @@
-@import "tailwindcss";
+/*
+ * IMPORTANT: no global preflight. This stylesheet is injected into arbitrary
+ * host pages (script tag, MV3 extension), so Tailwind's global element resets
+ * (img{display:block}, ol{list-style:none}, ...) would corrupt the host site.
+ * We import only theme + utilities and re-create the preflight rules the
+ * overlay needs, scoped under [data-bugtoprompt].
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
 
 /* Scan overlay source so Tailwind generates only the utilities it uses. */
 @source "./**/*.{ts,tsx}";
+
+/*
+ * Scoped preflight — the subset of Tailwind's reset the overlay relies on,
+ * applied ONLY inside the portal roots. Host-page elements are untouched.
+ */
+@layer base {
+	:where([data-bugtoprompt]),
+	:where([data-bugtoprompt]) *,
+	:where([data-bugtoprompt]) ::before,
+	:where([data-bugtoprompt]) ::after {
+		box-sizing: border-box;
+		border-width: 0;
+		border-style: solid;
+		border-color: var(--sp-border, currentColor);
+		margin: 0;
+		padding: 0;
+	}
+	:where([data-bugtoprompt]) {
+		font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+		line-height: 1.5;
+		-webkit-font-smoothing: antialiased;
+	}
+	:where([data-bugtoprompt]) :is(img, svg, video, canvas) {
+		display: block;
+		vertical-align: middle;
+		max-width: 100%;
+		height: auto;
+	}
+	:where([data-bugtoprompt]) :is(button, input, select, textarea) {
+		font: inherit;
+		letter-spacing: inherit;
+		color: inherit;
+		background: transparent;
+	}
+	:where([data-bugtoprompt]) button {
+		cursor: pointer;
+		-webkit-appearance: button;
+	}
+	:where([data-bugtoprompt]) :is(ol, ul, menu) {
+		list-style: none;
+	}
+	:where([data-bugtoprompt]) a {
+		color: inherit;
+		text-decoration: inherit;
+	}
+	:where([data-bugtoprompt]) summary {
+		display: list-item;
+		cursor: pointer;
+	}
+	:where([data-bugtoprompt]) textarea {
+		resize: vertical;
+	}
+	:where([data-bugtoprompt]) :is(h1, h2, h3, h4, p) {
+		font-size: inherit;
+		font-weight: inherit;
+	}
+}
 
 /*
  * Map semantic color utility names to --sp-* prefixed CSS custom properties.
@@ -73,5 +139,17 @@
 		--sp-border: oklch(89.0% 0.006 264.5);
 		--sp-input: oklch(89.0% 0.006 264.5);
 		--sp-ring: oklch(18.3% 0.009 259.5);
+	}
+}
+
+/*
+ * P0-5: honor prefers-reduced-motion for the pulsing status dots (recording
+ * dot + caption live/partial dots). Shutter.tsx guards only its own shutter
+ * animations; this covers every Tailwind `animate-pulse` inside the overlay.
+ * Scoped to [data-bugtoprompt] so host-page pulses are untouched.
+ */
+@media (prefers-reduced-motion: reduce) {
+	[data-bugtoprompt] .animate-pulse {
+		animation: none;
 	}
 }

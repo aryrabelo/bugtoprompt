@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="options.css" />
+		<title>BugToPrompt Options</title>
+	</head>
+	<body>
+		<main class="panel">
+			<h1>BugToPrompt Options</h1>
+			<label class="field">
+				<span>Sidecar URL</span>
+				<input id="baseUrl" type="url" placeholder="http://127.0.0.1:4127" />
+				<small>Loopback HTTP only (http://127.0.0.1:PORT or http://localhost:PORT).</small>
+			</label>
+			<label class="field">
+				<span>Screenshot mode</span>
+				<select id="screenshotMode">
+					<option value="onClick">On every click</option>
+					<option value="perPage">Per page</option>
+					<option value="onMark">On mark</option>
+					<option value="off">Off</option>
+				</select>
+			</label>
+			<section class="field">
+				<span>Site repo bindings</span>
+				<small
+					>Map a site's hostname to a GitHub repo (owner/repo). BugToPrompt files
+					issues there when capturing on that site. Host may be exact
+					(app.example.com) or a wildcard (*.example.com).</small
+				>
+				<div id="bindings" class="bindings"></div>
+				<button id="add-binding" type="button" class="secondary">Add binding</button>
+				<p class="hint">
+					Heads up: the sidecar only trusts origins in its allowlist. For each
+					non-localhost site, start the sidecar with
+					<code>BUGTOPROMPT_ALLOWED_ORIGINS=https://&lt;host&gt;</code>
+					(comma-separate multiple) and restart it, or requests are blocked
+					(CORS 403).
+				</p>
+			</section>
+			<button id="save" type="button">Save</button>
+			<p id="status" class="status" role="status"></p>
+		</main>
+		<script src="options.js"></script>
+	</body>
+</html>

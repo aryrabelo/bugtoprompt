@@ -29,7 +29,7 @@ export interface BugToPromptClient {
 	): Promise<{ transcript: CaptureArtifact["transcript"] }>;
 	createIssue(input: {
 		sessionId: string;
-		promptRef: string;
+		prompt: string;
 		artifactRef?: string;
 		transcriptText?: string;
 		targetId?: string;
@@ -199,7 +199,7 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 		createIssue(input) {
 			const body: Record<string, unknown> = {
 				sessionId: input.sessionId,
-				promptRef: input.promptRef,
+				prompt: input.prompt,
 			};
 			if (input.artifactRef !== undefined) body.artifactRef = input.artifactRef;
 			if (input.transcriptText !== undefined) {

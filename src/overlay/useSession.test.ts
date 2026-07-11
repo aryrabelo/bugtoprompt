@@ -1,4 +1,4 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BugToPromptClient, Target } from "../client";
@@ -38,6 +38,7 @@ let mockTranscriberInstance: MockTranscriberInstance;
 
 // vi.hoisted ensures this object exists before the vi.mock factories run
 const mockGrabber = vi.hoisted(() => ({
+	available: true,
 	grab: vi.fn().mockResolvedValue(null),
 	stop: vi.fn(),
 }));
@@ -129,6 +130,19 @@ beforeEach(() => {
 
 	mockGrabber.grab.mockResolvedValue(null);
 	mockGrabber.stop.mockReset();
+	mockGrabber.available = true;
+	// Ensure startScreenGrabber resolves the shared grabber (a prior test may
+	// have overridden it for the denial case).
+	(startScreenGrabber as unknown as Mock).mockResolvedValue(mockGrabber);
+	// jsdom does not implement object-URL APIs the click-preview path needs.
+	URL.createObjectURL = vi.fn(() => `blob:mock-${Math.random()}`);
+	URL.revokeObjectURL = vi.fn();
+});
+
+// Unmount every rendered hook so its listeners (installEventTrack, grabber) are
+// torn down and cannot leak clicks/grabs into a later test.
+afterEach(() => {
+	cleanup();
 });
 
 // ---------------------------------------------------------------------------
@@ -170,7 +184,7 @@ describe("useSession", () => {
 		expect(result.current.issueUrl).toBe("https://gh/1");
 	});
 
-	it("(b2) submitIssue forwards promptRef + artifactRef to createIssue", async () => {
+	it("(b2) submitIssue forwards prompt + artifactRef to createIssue", async () => {
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client));
 
@@ -186,14 +200,15 @@ describe("useSession", () => {
 
 		expect(client.createIssue).toHaveBeenCalledOnce();
 		const callArg = (client.createIssue as Mock).mock.calls[0][0] as {
-			promptRef: string;
+			prompt: string;
+			promptRef?: string;
 			artifactRef?: string;
 		};
-		// The rendered prompt must ride as promptRef (the server column), never
-		// the old `prompt` field that landed NULL in prod.
-		expect(typeof callArg.promptRef).toBe("string");
-		expect(callArg.promptRef.length).toBeGreaterThan(0);
-		expect((callArg as unknown as { prompt?: string }).prompt).toBeUndefined();
+		// The rendered prompt must ride as `prompt` (the issue body the server reads),
+		// never the old promptRef field that the server ignored.
+		expect(typeof callArg.prompt).toBe("string");
+		expect(callArg.prompt.length).toBeGreaterThan(0);
+		expect(callArg.promptRef).toBeUndefined();
 		// saveArtifact resolved { dir: "/tmp/cap" } → that ref must reach the API.
 		expect(callArg.artifactRef).toBe("/tmp/cap");
 	});
@@ -445,142 +460,159 @@ describe("useSession", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Snap-on-click + ordering tests
+// onClick capture + numbering + ordering
 // ---------------------------------------------------------------------------
 
-describe("useSession — snap-on-click", () => {
-	it("(f) N rapid clicks while recording with snapOnClick ON → snapshot count == 1 within window", async () => {
-		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client));
+function pointerClick(el: Element, x = 10, y = 20): void {
+	el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+	el.dispatchEvent(
+		new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }),
+	);
+}
 
-		await act(async () => {
-			await result.current.start({});
-		});
-
-		expect(result.current.phase).toBe("recording");
-		// Screenshots are opt-in — default is OFF now.
-		expect(result.current.snapOnClick).toBe(false);
-		// Opt in: this is the sole screen-share prompt (acquires the grabber).
-		await act(async () => {
-			await result.current.setSnapOnClick(true);
-		});
-		expect(result.current.snapOnClick).toBe(true);
-
-		// Five rapid clicks outside the overlay.
-		await act(async () => {
-			for (let i = 0; i < 5; i++) {
-				document.dispatchEvent(
-					new MouseEvent("click", { bubbles: true, cancelable: true }),
-				);
-			}
-		});
-
-		// The 600 ms throttle coalesces the burst into a single leading-edge snap.
-		expect(result.current.markCount).toBe(1);
+describe("useSession — onClick capture", () => {
+	afterEach(() => {
+		localStorage.clear();
+		document.body.innerHTML = "";
+		vi.restoreAllMocks();
 	});
 
-	it("(g) click inside [data-bugtoprompt] does NOT snap", async () => {
+	it("(f) every page click reserves a numbered snapshot (no throttle)", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client));
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
+		expect(result.current.phase).toBe("recording");
 
-		// Build a minimal overlay DOM element with an inner button.
+		await act(async () => {
+			pointerClick(btn);
+			pointerClick(btn);
+			pointerClick(btn);
+		});
+
+		// Every click gets its own snapshot slot — no coalescing.
+		expect(result.current.markCount).toBe(3);
+	});
+
+	it("(g) click inside [data-bugtoprompt] does NOT reserve or grab", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
 		const overlay = document.createElement("div");
 		overlay.setAttribute("data-bugtoprompt", "");
 		const inner = document.createElement("button");
 		overlay.appendChild(inner);
 		document.body.appendChild(overlay);
-
-		try {
-			await act(async () => {
-				inner.dispatchEvent(
-					new MouseEvent("click", { bubbles: true, cancelable: true }),
-				);
-			});
-
-			expect(mockGrabber.grab).not.toHaveBeenCalled();
-			expect(result.current.markCount).toBe(0);
-		} finally {
-			document.body.removeChild(overlay);
-		}
-	});
-
-	it("(h) ORDERING: flashTick increments strictly after grab() resolves", async () => {
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client));
-
-		// grab logs its resolution before returning.
-		const grabOrder: string[] = [];
-		mockGrabber.grab.mockImplementationOnce(async () => {
-			grabOrder.push("grab-resolved");
-			return null;
-		});
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
-		// Opt in so the grabber exists and mark() captures a screenshot.
 		await act(async () => {
-			await result.current.setSnapOnClick(true);
+			pointerClick(inner);
 		});
 
-		const tickBefore = result.current.flashTick;
-
-		await act(async () => {
-			await result.current.mark();
-		});
-
-		// grab ran (and logged) before mark() returned.
-		expect(grabOrder).toEqual(["grab-resolved"]);
-		// flashTick incremented exactly once: proves the signal fired after grab.
-		expect(result.current.flashTick).toBe(tickBefore + 1);
-		// grab was called exactly once.
-		expect(mockGrabber.grab).toHaveBeenCalledTimes(1);
+		expect(mockGrabber.grab).not.toHaveBeenCalled();
+		expect(result.current.markCount).toBe(0);
 	});
 
-	it("(i) route event while recording triggers exactly one throttled snap", async () => {
+	it("(h) clickPreviews populate in click order with 1-based numbers + refs", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client));
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
+		await act(async () => {
+			pointerClick(btn);
+			pointerClick(btn);
+			// Let both grab promises resolve.
+			await Promise.resolve();
+			await Promise.resolve();
+		});
 
-		expect(result.current.phase).toBe("recording");
+		const previews = result.current.clickPreviews;
+		expect(previews.map((p) => p.clickNumber)).toEqual([1, 2]);
+		expect(previews[0].screenshotRef).toBe("snap-0000.jpg");
+		expect(previews[1].screenshotRef).toBe("snap-0001.jpg");
+		expect(previews[0].url).toContain("blob:mock");
+		// grab received the point + clickNumber input for each click.
+		expect(mockGrabber.grab).toHaveBeenCalledWith({
+			point: { x: 10, y: 20 },
+			clickNumber: 1,
+		});
+	});
 
-		// Simulate a SPA route change via pushState (eventTrack patches this).
+	it("(i) route change triggers exactly one throttled whole-frame snap", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onClick"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
 		await act(async () => {
 			window.history.pushState({}, "", "/new-route");
 		});
 
-		// One snap should have been triggered by the route event.
+		// Route snap goes through mark() (whole-frame, no click input).
 		expect(result.current.markCount).toBe(1);
+		expect(mockGrabber.grab).toHaveBeenCalledWith();
 	});
 
-	it("(j) route-snap is always on — not gated by snapOnClick toggle", async () => {
+	it("(j) stop() awaits pending click grabs before assembling the artifact", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		const gate = Promise.withResolvers<{
+			blob: Blob;
+			method: "getDisplayMedia";
+		} | null>();
+		mockGrabber.grab.mockReturnValueOnce(gate.promise);
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client));
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
-
-		// Turn OFF snap-on-click.
-		act(() => {
-			result.current.setSnapOnClick(false);
-		});
-
-		expect(result.current.snapOnClick).toBe(false);
-
-		// Route change — must still snap even with snapOnClick=false.
 		await act(async () => {
-			window.history.pushState({}, "", "/another-route");
+			pointerClick(btn);
 		});
 
-		expect(result.current.markCount).toBe(1);
+		await act(async () => {
+			const stopping = result.current.stop();
+			// Resolve the grab only after stop() has begun; stop must wait for it.
+			gate.resolve({
+				blob: new Blob(["img"], { type: "image/jpeg" }),
+				method: "getDisplayMedia",
+			});
+			await stopping;
+		});
+
+		expect(result.current.phase).toBe("reviewing");
+		// The late grab's screenshot made it into the assembled snapshot.
+		const shot = result.current.artifact?.snapshots.find(
+			(s) => s.screenshotRef === "snap-0000.jpg",
+		);
+		expect(shot).toBeDefined();
 	});
 });
 
@@ -672,127 +704,139 @@ describe("useSession — rehydration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// screenshotMode tests
+// screenshotMode + grabber acquisition
 // ---------------------------------------------------------------------------
 
 describe("useSession — screenshotMode", () => {
 	afterEach(() => {
 		localStorage.clear();
+		document.body.innerHTML = "";
+		vi.restoreAllMocks();
 	});
 
-	it("(n) screenshotMode 'off' → mark() skips the screen grabber but still pushes a DOM snapshot", async () => {
+	it("(n) 'off' → no grabber acquired at start; mark() pushes a DOM-only snapshot", async () => {
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client, "off"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
+		// "off" never requests screen share.
+		expect(startScreenGrabber).not.toHaveBeenCalled();
 
 		await act(async () => {
 			await result.current.mark();
 		});
 
-		// The grabber mock must never have been called.
 		expect(mockGrabber.grab).not.toHaveBeenCalled();
-		// A DOM snapshot was still pushed — markCount reflects it.
 		expect(result.current.markCount).toBe(1);
 	});
 
-	it("(n2) screenshotMode 'onMark' → start() does NOT prompt for screen share (FIX codex m3)", async () => {
+	it("(n2) 'onClick' acquires the grabber once at start (inside the Start gesture)", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onClick"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+
+		expect(startScreenGrabber).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("recording");
+		expect(result.current.screenshotsUnavailable).toBe(false);
+	});
+
+	it("(n3) 'onMark' acquires the grabber so manual Mark captures a whole-frame shot", async () => {
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
 		const client = makeFakeClient();
 		const { result } = renderHook(() => useSession(client, "onMark"));
 
 		await act(async () => {
 			await result.current.start({});
-		});
-
-		// The screen-share permission prompt must not have fired on start().
-		expect(startScreenGrabber).not.toHaveBeenCalled();
-		expect(result.current.phase).toBe("recording");
-	});
-
-	it("(n3) screenshotMode 'perPage' → start() does NOT prompt for screen share (screenshots are opt-in)", async () => {
-		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client, "perPage"));
-
-		await act(async () => {
-			await result.current.start({});
-		});
-
-		// No eager acquisition at start in any mode — the prompt is deferred to
-		// the "Snap on click" opt-in.
-		expect(startScreenGrabber).not.toHaveBeenCalled();
-		expect(result.current.phase).toBe("recording");
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Screenshot opt-in tests
-// ---------------------------------------------------------------------------
-
-describe("useSession — screenshot opt-in", () => {
-	afterEach(() => {
-		localStorage.clear();
-	});
-
-	it("(r) enabling snap-on-click acquires the grabber exactly once (idempotent)", async () => {
-		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client, "onMark"));
-
-		await act(async () => {
-			await result.current.start({});
-		});
-		// No prompt at start.
-		expect(startScreenGrabber).not.toHaveBeenCalled();
-
-		await act(async () => {
-			await result.current.setSnapOnClick(true);
 		});
 		expect(startScreenGrabber).toHaveBeenCalledOnce();
 
-		// Toggle off then on again — the grabber is already held, no re-acquire.
 		await act(async () => {
-			await result.current.setSnapOnClick(false);
+			await result.current.mark();
 		});
-		await act(async () => {
-			await result.current.setSnapOnClick(true);
-		});
-		expect(startScreenGrabber).toHaveBeenCalledOnce();
+		// Whole-frame grab (no click input).
+		expect(mockGrabber.grab).toHaveBeenCalledWith();
+		expect(result.current.markCount).toBe(1);
 	});
 
-	it("(s) screenshotMode 'off' → enabling snap-on-click never requests screen share", async () => {
+	it("(o) denied/unavailable display capture → screenshotsUnavailable, clicks still reserved DOM-only", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		(startScreenGrabber as unknown as Mock).mockResolvedValueOnce({
+			available: false,
+			grab: vi.fn().mockResolvedValue(null),
+			stop: vi.fn(),
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client, "off"));
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
 			await result.current.start({});
 		});
-		await act(async () => {
-			await result.current.setSnapOnClick(true);
-		});
+		expect(result.current.screenshotsUnavailable).toBe(true);
+		expect(result.current.phase).toBe("recording");
 
-		expect(startScreenGrabber).not.toHaveBeenCalled();
+		await act(async () => {
+			pointerClick(btn);
+		});
+		// Click still recorded as a numbered DOM-only snapshot; no preview image.
+		expect(result.current.markCount).toBe(1);
+		expect(result.current.clickPreviews).toHaveLength(0);
 	});
 
-	it("(t) clicks with snap-on-click OFF do not mark (screenshots opt-in)", async () => {
+	it("(p) resumes click numbering from the highest persisted clickNumber", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		const sessionId = "cap_resume-clicknum";
+		saveSession({
+			v: 1,
+			sessionId,
+			startedAt: Date.now() - 5000,
+			binding: {},
+			status: "recording",
+			events: [{ tMs: 100, kind: "click", selector: "#a", clickNumber: 2 }],
+			snapshots: [
+				{
+					tMs: 100,
+					viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+					interactiveElements: [],
+				},
+			],
+			transcript: [],
+			durationMs: 5000,
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
 		const client = makeFakeClient();
-		const { result } = renderHook(() => useSession(client, "onMark"));
+		const { result } = renderHook(() => useSession(client, "onClick"));
 
 		await act(async () => {
-			await result.current.start({});
+			await vi.advanceTimersByTimeAsync(60);
 		});
+		expect(result.current.phase).toBe("recording");
 
-		// Default off: a click outside the overlay must not create a mark in this
-		// session. (markCount is session-scoped; the shared grab spy is not, since
-		// this file has no RTL auto-cleanup and sibling recording sessions leak
-		// their document click listeners.)
 		await act(async () => {
-			document.dispatchEvent(
-				new MouseEvent("click", { bubbles: true, cancelable: true }),
-			);
+			pointerClick(btn);
+			await vi.advanceTimersByTimeAsync(500);
 		});
 
-		expect(result.current.markCount).toBe(0);
+		const saved = loadSession();
+		const lastClick = saved?.events.filter((e) => e.kind === "click").at(-1);
+		// Next click continues from 2 → 3, never reusing an ordinal.
+		expect(lastClick?.clickNumber).toBe(3);
+		vi.useRealTimers();
 	});
 });
 

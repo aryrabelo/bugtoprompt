@@ -132,7 +132,11 @@ function eventRow(ev: CaptureEvent, labels: Map<string, string>): TimelineRow {
 				own ?? (ev.elementRef ? labels.get(ev.elementRef) : undefined);
 			const target =
 				label ?? (ev.selector ? `\`${ev.selector}\`` : "(element)");
-			return { tMs: ev.tMs, line: `🖱 click ${target}` };
+			// Correlate the click with its numbered screenshot when present, so a
+			// reader can jump from the timeline to the matching image + marker.
+			const num = ev.clickNumber ? `#${ev.clickNumber} ` : "";
+			const shot = ev.screenshotRef ? ` — \`${ev.screenshotRef}\`` : "";
+			return { tMs: ev.tMs, line: `🖱 click ${num}${target}${shot}` };
 		}
 		case "route":
 			return { tMs: ev.tMs, line: `🧭 route ${ev.url ?? ""}`.trimEnd() };

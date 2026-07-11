@@ -21,6 +21,11 @@ export interface EventTrackOptions {
 	elapsedMs: () => number;
 	/** Map a clicked element to a snapshot ref, when known. */
 	resolveRef?: (el: Element) => string | undefined;
+	/** Fired after `onEvent` for an accepted `kind:"click"` event, carrying the
+	 *  viewport CSS coords to crop a screenshot around: the mouseup point for
+	 *  pointer clicks, the clicked element's bounding-box center for keyboard
+	 *  activation. Not fired for select/route/mark. */
+	onPageClick?: (event: CaptureEvent, point: { x: number; y: number }) => void;
 	win?: Window;
 }
 
@@ -41,23 +46,41 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 		target: Element,
 		tMs: number,
 		kind: "click" | "select",
-		selectedText?: string,
+		extra?: { selectedText?: string; point?: { x: number; y: number } },
 	): void => {
-		// Never record interactions with the overlay's own UI.
-		if (target.closest?.("[data-bugtoprompt]")) return;
+		// Never record interactions with the overlay's own UI. With the Shadow
+		// DOM mount, events from inside the overlay retarget to the shadow host
+		// element, so match the host marker as well.
+		if (target.closest?.("[data-bugtoprompt], [data-bugtoprompt-host]")) return;
 		const el = target.closest?.(INTERACTIVE) ?? target;
 		const ref = opts.resolveRef?.(el);
 		const name = accessibleName(el);
 		const role = interactiveRole(el);
-		opts.onEvent({
+		const event: CaptureEvent = {
 			tMs,
 			kind,
 			selector: cssSelector(el),
 			...(name ? { elementName: name } : {}),
 			...(role ? { elementRole: role } : {}),
 			...(ref ? { elementRef: ref } : {}),
-			...(selectedText ? { selectedText } : {}),
-		});
+			...(extra?.selectedText ? { selectedText: extra.selectedText } : {}),
+		};
+		opts.onEvent(event);
+		if (kind === "click" && opts.onPageClick) {
+			// Pointer clicks pass a mouseup point; keyboard activation falls back to
+			// the element's bounding-box center so the crop still frames the target.
+			let point = extra?.point;
+			if (!point) {
+				const rect = el.getBoundingClientRect?.();
+				if (rect) {
+					point = {
+						x: rect.left + rect.width / 2,
+						y: rect.top + rect.height / 2,
+					};
+				}
+			}
+			if (point) opts.onPageClick(event, point);
+		}
 	};
 
 	const onMouseDown = (ev: Event): void => {
@@ -74,8 +97,14 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 		downTarget = null;
 		if (target?.nodeType !== 1) return;
 		const selected = (win.getSelection?.()?.toString() ?? "").trim();
-		if (selected) emit(target, tMs, "select", selected.slice(0, MAX_SELECTED));
-		else emit(target, tMs, "click");
+		if (selected) {
+			emit(target, tMs, "select", {
+				selectedText: selected.slice(0, MAX_SELECTED),
+			});
+		} else {
+			const mev = ev as MouseEvent;
+			emit(target, tMs, "click", { point: { x: mev.clientX, y: mev.clientY } });
+		}
 	};
 	// `mousedown`/`mouseup` cover mouse clicks AND drag-selections; a bare
 	// keyboard activation fires `click` with detail 0 and no mouse events.

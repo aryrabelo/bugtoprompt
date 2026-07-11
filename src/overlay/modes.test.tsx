@@ -96,7 +96,7 @@ async function driveToReview(
 
 	// Start recording.
 	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 	});
 
 	// Stop recording.
@@ -144,7 +144,9 @@ describe("BugToPrompt output modes", () => {
 	it("issue mode: 'File issue' button is visible in review phase", async () => {
 		const client = makeFakeClient();
 		await driveToReview(client, ["issue"]);
-		expect(screen.getByRole("button", { name: /file issue/i })).not.toBeNull();
+		expect(
+			screen.getByRole("button", { name: /create github issue/i }),
+		).not.toBeNull();
 	});
 
 	it("clipboard mode: clicking Copy calls clipboard.writeText with rendered prompt", async () => {
@@ -163,7 +165,7 @@ describe("BugToPrompt output modes", () => {
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -196,7 +198,7 @@ describe("BugToPrompt output modes", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -226,7 +228,7 @@ describe("BugToPrompt output modes", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -259,7 +261,9 @@ describe("BugToPrompt output modes", () => {
 		// With defaultMode not set → first of modes = 'issue' is primary.
 		// The primary button gets variant="default" while others get "secondary".
 		// We verify the issue button exists as the primary action here.
-		const issueBtn = screen.getByRole("button", { name: /file issue/i });
+		const issueBtn = screen.getByRole("button", {
+			name: /create github issue/i,
+		});
 		expect(issueBtn).not.toBeNull();
 	});
 
@@ -267,7 +271,9 @@ describe("BugToPrompt output modes", () => {
 		const client = makeFakeClient();
 		await driveToReview(client, ["issue", "clipboard", "download"]);
 
-		expect(screen.getByRole("button", { name: /file issue/i })).not.toBeNull();
+		expect(
+			screen.getByRole("button", { name: /create github issue/i }),
+		).not.toBeNull();
 		expect(screen.getByRole("button", { name: /copy/i })).not.toBeNull();
 		expect(screen.getByRole("button", { name: /download/i })).not.toBeNull();
 	});
@@ -297,7 +303,7 @@ describe("BugToPrompt clipboard error", () => {
 
 		// Record then stop to reach the reviewing phase.
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));

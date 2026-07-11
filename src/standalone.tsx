@@ -26,20 +26,9 @@ import type { ScreenshotMode } from "./overlay/useSession";
 // Module-level singleton state
 // ---------------------------------------------------------------------------
 
+let _host: HTMLDivElement | null = null;
 let _container: HTMLDivElement | null = null;
 let _root: Root | null = null;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function injectStyles(): void {
-	if (document.querySelector("[data-bugtoprompt-style]")) return;
-	const style = document.createElement("style");
-	style.setAttribute("data-bugtoprompt-style", "");
-	style.textContent = css;
-	document.head.appendChild(style);
-}
 
 /** Read config from the <script data-*> element that loaded this file.
  *  `document.currentScript` is only available during synchronous evaluation,
@@ -59,6 +48,8 @@ function readScriptConfig(): Partial<BugToPromptProps> {
 		cfg.screenshotMode = ds.screenshotMode as ScreenshotMode;
 	}
 	if (ds.defaultMode) cfg.defaultMode = ds.defaultMode as OutputMode;
+	if (ds.autoVoice) cfg.autoVoice = ds.autoVoice === "true";
+	if (ds.defaultOpen) cfg.defaultOpen = ds.defaultOpen === "true";
 	// Not a BugToPromptProp: persist the key client-side so the streaming-token
 	// resolver can mint v3 tokens directly against AssemblyAI without a backend.
 	if (ds.assemblyaiKey) saveAssemblyKey(ds.assemblyaiKey);
@@ -75,6 +66,8 @@ function readGlobalConfig(): Partial<BugToPromptProps> {
 	if (g.defaultMode) cfg.defaultMode = g.defaultMode;
 	if (g.projectId) cfg.projectId = g.projectId;
 	if (g.screenshotMode) cfg.screenshotMode = g.screenshotMode;
+	if (typeof g.autoVoice === "boolean") cfg.autoVoice = g.autoVoice;
+	if (typeof g.defaultOpen === "boolean") cfg.defaultOpen = g.defaultOpen;
 	return cfg;
 }
 
@@ -94,29 +87,42 @@ export function mount(opts?: Partial<BugToPromptProps>): () => void {
 	if (typeof document === "undefined") return unmount;
 	if (_container) return unmount; // already mounted — no-op
 
-	injectStyles();
-
 	const props: BugToPromptProps = {
 		...readGlobalConfig(),
 		..._scriptConfig,
 		...opts,
 	};
 
+	// Shadow DOM isolation: the stylesheet lives inside the shadow root, so the
+	// overlay's Tailwind classes can never collide with a host page that uses
+	// the same class names (.hidden, .flex, ...), and host CSS cannot restyle
+	// the overlay. The host element carries data-bugtoprompt-host so the click
+	// tracker can ignore retargeted overlay events.
+	_host = document.createElement("div");
+	_host.setAttribute("data-bugtoprompt-host", "");
+	const shadow = _host.attachShadow({ mode: "open" });
+	const style = document.createElement("style");
+	style.setAttribute("data-bugtoprompt-style", "");
+	style.textContent = css;
+	shadow.appendChild(style);
 	_container = document.createElement("div");
-	document.body.appendChild(_container);
+	shadow.appendChild(_container);
+	document.body.appendChild(_host);
+
 	_root = createRoot(_container);
-	_root.render(<BugToPrompt {...props} />);
+	_root.render(<BugToPrompt {...props} portalTarget={_container} />);
 
 	return unmount;
 }
 
-/** Remove the overlay container from the DOM. The injected stylesheet stays. */
+/** Remove the overlay (shadow host and all) from the DOM. */
 export function unmount(): void {
 	if (!_root) return;
 	_root.unmount();
 	_root = null;
-	_container?.remove();
 	_container = null;
+	_host?.remove();
+	_host = null;
 }
 
 // ---------------------------------------------------------------------------

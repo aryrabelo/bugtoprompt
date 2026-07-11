@@ -21,18 +21,42 @@ export interface ScreenGrab {
 }
 
 export interface ScreenGrabber {
-	/** Grab one JPEG frame; null when capture is unavailable. When `point`
-	 *  (viewport CSS coords of the click) is given and the share is a tab, the
-	 *  frame is cropped around it; otherwise the whole frame is downscaled. */
-	grab(point?: { x: number; y: number }): Promise<ScreenGrab | null>;
+	/** True when a live display stream was acquired; false for the no-op grabber
+	 *  (capture unavailable or the user denied the screen-share prompt). Lets the
+	 *  session surface a non-blocking "Screenshots unavailable" status. */
+	available: boolean;
+	/** Grab one JPEG frame; null when capture is unavailable or encoding fails.
+	 *  With `input` (a click point in viewport CSS coords + its 1-based
+	 *  clickNumber) on a tab share, the frame is cropped to an exact
+	 *  CLICK_CROP_WIDTH_CSS×CLICK_CROP_HEIGHT_CSS image with the click centered
+	 *  and a numbered marker drawn on it; otherwise the whole frame is
+	 *  downscaled (route/manual Mark). */
+	grab(input?: {
+		point: { x: number; y: number };
+		clickNumber: number;
+	}): Promise<ScreenGrab | null>;
 	stop(): void;
 }
 
 /** Longest edge (device px) of the downscaled whole-frame fallback. Sized for
  *  an AI agent's context window, not a human display. */
 const FALLBACK_MAX_DIM = 1024;
-/** Crop box edge in CSS px, centered on the click, for tab shares. */
-const CROP_BOX_CSS = 600;
+/** Fixed click-crop dimensions in CSS px. Every click screenshot is exactly
+ *  this size so the click stays geometrically centered and thumbnails are
+ *  uniform. */
+export const CLICK_CROP_WIDTH_CSS = 400;
+export const CLICK_CROP_HEIGHT_CSS = 600;
+/** Destination center of the crop — where the click (and its numbered marker)
+ *  always lands, even when the source crop hits a viewport edge. */
+export const CLICK_CENTER_X = CLICK_CROP_WIDTH_CSS / 2;
+export const CLICK_CENTER_Y = CLICK_CROP_HEIGHT_CSS / 2;
+/** Neutral fill for uncovered pixels when the crop extends past the frame —
+ *  matches the overlay's dark background so padding is unobtrusive. */
+const CROP_PAD_COLOR = "#1a1d29";
+/** JPEG quality ladder for click crops. The canvas stays exactly
+ *  CLICK_CROP_WIDTH_CSS×CLICK_CROP_HEIGHT_CSS — only quality varies so output
+ *  dimensions never change. */
+const CLICK_QUALITY_STEPS: ReadonlyArray<number> = [0.8, 0.7, 0.6];
 /** Re-encode the frame until the JPEG fits an AI context window (~300 KB) —
  *  these images feed a model, not a human eye. Each step is [destScale,
  *  quality]; the first result under the cap wins, else the smallest (last) is
@@ -63,25 +87,55 @@ export function isTabShare(
 }
 
 /**
- * A source-rect (frame px) for a `boxCss`-sized crop centered on `point`
- * (viewport CSS coords), clamped to the frame. `scale` maps CSS px → frame px
- * via frameW / viewport.width.
+ * Framing for a fixed CLICK_CROP_WIDTH_CSS×CLICK_CROP_HEIGHT_CSS click crop.
+ *
+ * Returns the source rectangle in frame px (the pixels actually available from
+ * the captured tab) together with the destination offset/size in CSS px (=
+ * output px) at which to draw them. When the desired crop extends past a
+ * viewport edge the source is clamped and the destination offset grows so the
+ * click stays at the exact destination center (CLICK_CENTER_X, CLICK_CENTER_Y);
+ * the uncovered destination pixels are left for the caller to fill with a
+ * neutral background. `scale` maps CSS px → frame px via frameW / viewport.width.
  */
 export function computeCropRect(
 	frameW: number,
 	frameH: number,
 	viewport: { width: number; height: number },
 	point: { x: number; y: number },
-	boxCss = CROP_BOX_CSS,
-): { sx: number; sy: number; sw: number; sh: number } {
+	widthCss = CLICK_CROP_WIDTH_CSS,
+	heightCss = CLICK_CROP_HEIGHT_CSS,
+): {
+	sx: number;
+	sy: number;
+	sw: number;
+	sh: number;
+	dx: number;
+	dy: number;
+	dw: number;
+	dh: number;
+} {
 	const scale = viewport.width > 0 ? frameW / viewport.width : 1;
-	const sw = Math.min(Math.round(boxCss * scale), frameW);
-	const sh = Math.min(Math.round(boxCss * scale), frameH);
-	const cx = point.x * scale;
-	const cy = point.y * scale;
-	const sx = Math.round(Math.max(0, Math.min(cx - sw / 2, frameW - sw)));
-	const sy = Math.round(Math.max(0, Math.min(cy - sh / 2, frameH - sh)));
-	return { sx, sy, sw, sh };
+	// Desired crop rect in CSS coords, centered on the click.
+	const left = point.x - widthCss / 2;
+	const top = point.y - heightCss / 2;
+	// Intersect with the available viewport region [0..width]×[0..height].
+	const availL = Math.max(left, 0);
+	const availT = Math.max(top, 0);
+	const availR = Math.min(left + widthCss, viewport.width);
+	const availB = Math.min(top + heightCss, viewport.height);
+	const availW = Math.max(0, availR - availL);
+	const availH = Math.max(0, availB - availT);
+	// Destination offset: how far into the fixed output the covered region sits.
+	const dx = Math.round(availL - left);
+	const dy = Math.round(availT - top);
+	const dw = Math.round(availW);
+	const dh = Math.round(availH);
+	// Source rect in frame px, clamped to the frame bounds.
+	const sx = Math.round(availL * scale);
+	const sy = Math.round(availT * scale);
+	const sw = Math.min(Math.round(availW * scale), frameW - sx);
+	const sh = Math.min(Math.round(availH * scale), frameH - sy);
+	return { sx, sy, sw, sh, dx, dy, dw, dh };
 }
 
 /** Downscale so the longest edge is ≤ `maxDim`; never upscales. */
@@ -100,11 +154,52 @@ export function computeScaledSize(
 }
 
 const NULL_GRABBER: ScreenGrabber = {
+	available: false,
 	async grab() {
 		return null;
 	},
 	stop() {},
 };
+
+/** Encode a canvas to a JPEG blob, walking the quality ladder until it fits the
+ *  byte cap; keeps the smallest result if even the last step is over. */
+async function encodeCanvas(
+	canvas: HTMLCanvasElement,
+	qualities: ReadonlyArray<number>,
+): Promise<Blob | null> {
+	let blob: Blob | null = null;
+	for (const quality of qualities) {
+		const { promise, resolve } = deferred<Blob | null>();
+		canvas.toBlob((b) => resolve(b), "image/jpeg", quality);
+		const step = await promise;
+		if (step) blob = step;
+		if (step && step.size <= TARGET_MAX_BYTES) break;
+	}
+	return blob;
+}
+
+/** Draw a numbered marker at the destination center so the screenshot is
+ *  visibly linked to its timeline click number. */
+function drawClickMarker(
+	ctx: CanvasRenderingContext2D,
+	clickNumber: number,
+): void {
+	const r = 16;
+	ctx.save();
+	ctx.beginPath();
+	ctx.arc(CLICK_CENTER_X, CLICK_CENTER_Y, r, 0, Math.PI * 2);
+	ctx.fillStyle = "rgba(220, 38, 38, 0.9)";
+	ctx.fill();
+	ctx.lineWidth = 2;
+	ctx.strokeStyle = "#ffffff";
+	ctx.stroke();
+	ctx.fillStyle = "#ffffff";
+	ctx.font = "bold 18px sans-serif";
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(String(clickNumber), CLICK_CENTER_X, CLICK_CENTER_Y);
+	ctx.restore();
+}
 
 function stopStream(stream: MediaStream): void {
 	for (const track of stream.getTracks()) track.stop();
@@ -143,7 +238,8 @@ export async function startScreenGrabber(): Promise<ScreenGrabber> {
 	await video.play().catch(() => undefined);
 
 	return {
-		async grab(point) {
+		available: true,
+		async grab(input) {
 			const settings = track.getSettings();
 			const frameW = settings.width ?? video.videoWidth ?? window.innerWidth;
 			const frameH = settings.height ?? video.videoHeight ?? window.innerHeight;
@@ -152,38 +248,40 @@ export async function startScreenGrabber(): Promise<ScreenGrabber> {
 			const dpr = window.devicePixelRatio || 1;
 			const viewport = { width: window.innerWidth, height: window.innerHeight };
 
-			// Source rect (frame px) + base destination size. Tab share + a click
-			// point → crop around the click at full resolution; otherwise downscale
-			// the whole frame.
-			let src: { sx: number; sy: number; sw: number; sh: number };
-			let dest: { width: number; height: number };
-			if (point && isTabShare(frameW, viewport.width, dpr)) {
-				const r = computeCropRect(frameW, frameH, viewport, point);
-				src = r;
-				dest = { width: r.sw, height: r.sh };
-			} else {
-				src = { sx: 0, sy: 0, sw: frameW, sh: frameH };
-				dest = computeScaledSize(frameW, frameH);
-			}
-
 			const canvas = document.createElement("canvas");
 			const ctx = canvas.getContext("2d");
 			if (!ctx) return null;
 
-			// Re-encode down the [scale, quality] ladder until the JPEG fits the
-			// AI-context byte cap; keep the smallest if even the last step is over.
+			// Click on a tab share → fixed CLICK_CROP_WIDTH_CSS×CLICK_CROP_HEIGHT_CSS
+			// output in CSS px (DPR-independent), click centered, numbered marker on
+			// top; uncovered edge pixels filled neutral. Only quality varies so the
+			// output dimensions stay exact.
+			if (input && isTabShare(frameW, viewport.width, dpr)) {
+				const r = computeCropRect(frameW, frameH, viewport, input.point);
+				canvas.width = CLICK_CROP_WIDTH_CSS;
+				canvas.height = CLICK_CROP_HEIGHT_CSS;
+				ctx.fillStyle = CROP_PAD_COLOR;
+				ctx.fillRect(0, 0, CLICK_CROP_WIDTH_CSS, CLICK_CROP_HEIGHT_CSS);
+				if (r.sw > 0 && r.sh > 0 && r.dw > 0 && r.dh > 0) {
+					ctx.drawImage(video, r.sx, r.sy, r.sw, r.sh, r.dx, r.dy, r.dw, r.dh);
+				}
+				drawClickMarker(ctx, input.clickNumber);
+				const blob = await encodeCanvas(canvas, CLICK_QUALITY_STEPS);
+				return blob ? { blob, method: "getDisplayMedia" } : null;
+			}
+
+			// Route/manual Mark (no click point) → downscale the whole frame, walking
+			// the [scale, quality] ladder until the JPEG fits the AI-context cap.
+			const dest = computeScaledSize(frameW, frameH);
 			let blob: Blob | null = null;
 			for (const [scale, quality] of ENCODE_STEPS) {
 				const dw = Math.max(1, Math.round(dest.width * scale));
 				const dh = Math.max(1, Math.round(dest.height * scale));
 				canvas.width = dw;
 				canvas.height = dh;
-				ctx.drawImage(video, src.sx, src.sy, src.sw, src.sh, 0, 0, dw, dh);
-				const { promise, resolve } = deferred<Blob | null>();
-				canvas.toBlob((b) => resolve(b), "image/jpeg", quality);
-				const step = await promise;
-				if (step) blob = step;
-				if (step && step.size <= TARGET_MAX_BYTES) break;
+				ctx.drawImage(video, 0, 0, frameW, frameH, 0, 0, dw, dh);
+				blob = await encodeCanvas(canvas, [quality]);
+				if (blob && blob.size <= TARGET_MAX_BYTES) break;
 			}
 			return blob ? { blob, method: "getDisplayMedia" } : null;
 		},

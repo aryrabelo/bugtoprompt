@@ -76,10 +76,18 @@ export interface UseSessionResult {
 	hasKey: boolean;
 	/** Incremented after each grab resolves — drives the Shutter flash. */
 	flashTick: number;
-	/** Whether document clicks trigger a screenshotting mark() while recording.
-	 *  Default: false — screenshots are opt-in; the first enable requests screen
-	 *  share (a user gesture), so no share prompt ever fires at record-start. */
-	snapOnClick: boolean;
+	/** Ordered thumbnails for click screenshots, one per grabbed click, in click
+	 *  order. Backed by object URLs created when the blob resolves and revoked on
+	 *  reset/unmount. The sole data source for the review strip + latest thumb. */
+	clickPreviews: Array<{
+		clickNumber: number;
+		screenshotRef: string;
+		url: string;
+	}>;
+	/** True when a screenshot mode was requested but the display stream could not
+	 *  be acquired (denied/unavailable). Recording continues; the UI shows one
+	 *  non-blocking "Screenshots unavailable" notice. */
+	screenshotsUnavailable: boolean;
 	error?: string;
 	/** Non-fatal notice surfaced in the reviewing phase (e.g. the hosted artifact
 	 *  upload failed but clipboard/download/issue still work). */
@@ -89,13 +97,12 @@ export interface UseSessionResult {
 	mark(): Promise<void>;
 	stop(): Promise<void>;
 	editSegment(index: number, text: string): void;
-	submitIssue(): Promise<void>;
+	submitIssue(override?: SessionBinding): Promise<void>;
 	reset(): void;
 	/** Persist an AssemblyAI key; if recording, attempt to go live immediately.
 	 *  Resolves true iff live transcription engaged (or the key was stored OK
 	 *  while idle). */
 	provideKey(key: string): Promise<boolean>;
-	setSnapOnClick(v: boolean): Promise<void>;
 	voiceEnabled: boolean;
 	enableVoice(): Promise<void>;
 }
@@ -219,6 +226,7 @@ interface RehydrateBag {
 	recordingRef: { current: boolean };
 	grabberRef: { current: ScreenGrabber | undefined };
 	screenshotModeRef: { current: ScreenshotMode };
+	clickCounterRef: { current: number };
 	// ReturnType<typeof setInterval> is an allowed exception per ts-no-return-type
 	timerRef: { current: ReturnType<typeof setInterval> | undefined };
 	artifactRef: { current: CaptureArtifact | undefined };
@@ -286,9 +294,10 @@ async function restoreRecording(
 	bag.recordingRef.current = true;
 	bag.setStreaming(false);
 
-	// Screenshots are opt-in: the grabber is acquired only when the user enables
-	// the "Snap on click" toggle (a user gesture), never on resume. A rehydrated
-	// session therefore starts with no grabber and no screen-share prompt.
+	// Screen capture needs a user gesture: the grabber is acquired inside
+	// start() (the "Start capture" click) and getDisplayMedia cannot be
+	// re-requested on resume. A rehydrated session therefore starts with no
+	// grabber and no screen-share prompt; clicks stay DOM-only until stop.
 
 	if (signal.cancelled) return;
 
@@ -319,6 +328,12 @@ async function rehydrateSession(
 	bag.eventsRef.current = [...session.events];
 	bag.snapshotsRef.current = [...session.snapshots];
 	bag.finalsRef.current = [...session.transcript];
+	// Continue click numbering from the highest persisted clickNumber so a resumed
+	// session never reuses an ordinal.
+	bag.clickCounterRef.current = session.events.reduce(
+		(max, e) => Math.max(max, e.clickNumber ?? 0),
+		0,
+	);
 
 	// Load screenshot blobs from IndexedDB. If the store is missing/corrupt,
 	// continue with null placeholders so startup does not crash.
@@ -366,7 +381,10 @@ export function useSession(
 	const [needsKey, setNeedsKey] = useState(false);
 	const [hasKey, setHasKey] = useState<boolean>(() => hasStoredKey());
 	const [flashTick, setFlashTick] = useState(0);
-	const [snapOnClickState, setSnapOnClickState] = useState(false);
+	const [clickPreviews, setClickPreviews] = useState<
+		Array<{ clickNumber: number; screenshotRef: string; url: string }>
+	>([]);
+	const [screenshotsUnavailable, setScreenshotsUnavailable] = useState(false);
 	const [voiceEnabled, setVoiceEnabled] = useState(false);
 	const [error, setError] = useState<string>();
 	const [issueUrl, setIssueUrl] = useState<string>();
@@ -400,11 +418,18 @@ export function useSession(
 	);
 	const artifactRef = useRef<CaptureArtifact | undefined>(undefined);
 	const pendingRef = useRef<Pending | undefined>(undefined);
-	const snapOnClickRef = useRef(false);
-	/** Viewport CSS coords of the click that triggered the pending mark; read
-	 *  (and cleared) by mark() so the grab can crop around it. undefined for
-	 *  route/manual marks → whole-frame fallback framing. */
-	const clickPointRef = useRef<{ x: number; y: number } | undefined>(undefined);
+	/** 1-based counter for click screenshots; assigned synchronously at click
+	 *  time so numbering is deterministic regardless of grab resolution order. */
+	const clickCounterRef = useRef(0);
+	/** In-flight click grab promises; stop() awaits all so no numbered click is
+	 *  dropped by an early assembly/upload. */
+	const pendingGrabsRef = useRef<Array<Promise<void>>>([]);
+	/** Object URLs backing clickPreviews; revoked on reset/unmount. */
+	const objectUrlsRef = useRef<string[]>([]);
+	/** Mutable mirror of clickPreviews for synchronous writes from grab callbacks. */
+	const clickPreviewsRef = useRef<
+		Array<{ clickNumber: number; screenshotRef: string; url: string }>
+	>([]);
 	/** True only while the session is actively recording; guards the click handler
 	 *  from misfiring if React's concurrent-mode defers the cleanup slightly. */
 	const recordingRef = useRef(false);
@@ -426,26 +451,6 @@ export function useSession(
 			startPerfRef.current,
 		[],
 	);
-
-	/**
-	 * Toggle click-triggered screenshots. Screenshots are opt-in: the FIRST time
-	 * the user enables this (a user gesture, always during recording) we request
-	 * the display stream once — that is the only screen-share prompt, and it
-	 * never fires at record-start. Denial yields a no-op grabber (grab() → null),
-	 * so marks still record the interactive snapshot, just without an image.
-	 * Disabling never stops the stream; the click handler simply stops marking.
-	 */
-	const setSnapOnClick = useCallback(async (v: boolean): Promise<void> => {
-		snapOnClickRef.current = v;
-		setSnapOnClickState(v);
-		if (
-			v &&
-			grabberRef.current === undefined &&
-			screenshotModeRef.current !== "off"
-		) {
-			grabberRef.current = await startScreenGrabber();
-		}
-	}, []);
 
 	const resolveRef = useCallback((el: Element): string | undefined => {
 		const sel = cssSelector(el);
@@ -533,44 +538,83 @@ export function useSession(
 	);
 
 	/**
-	 * Install the click handler and event-track listeners. Populates
+	 * Handle an accepted page click in "onClick" mode: assign a 1-based click
+	 * number, reserve matching snapshot/blob slots synchronously (so interleaved
+	 * route snaps or later clicks cannot take this index), then start the grab
+	 * immediately. The grab promise is tracked so stop() can await it; a failed
+	 * grab leaves the numbered click as DOM-only context without renumbering.
+	 */
+	const handlePageClick = useCallback(
+		(ev: CaptureEvent, point: { x: number; y: number }): void => {
+			if (!recordingRef.current) return;
+			if (screenshotModeRef.current !== "onClick") return;
+			const clickNumber = ++clickCounterRef.current;
+			ev.clickNumber = clickNumber;
+			const snap = captureInteractiveSnapshot(window);
+			latestEls.current = snap.interactiveElements;
+			const index = snapshotsRef.current.length;
+			snapshotsRef.current.push({
+				tMs: ev.tMs,
+				viewport: snap.viewport,
+				interactiveElements: snap.interactiveElements,
+			});
+			shotBlobsRef.current.push(null);
+			setMarkCount(snapshotsRef.current.length);
+			schedulePersist();
+
+			const grabber = grabberRef.current;
+			if (!grabber) return; // no display stream (e.g. resumed session)
+			const grabPromise = (async () => {
+				const grab = await grabber
+					.grab({ point, clickNumber })
+					.catch(() => null);
+				if (!grab?.blob) return; // failed grab → numbered DOM-only context
+				const screenshotRef = `snap-${String(index).padStart(4, "0")}.jpg`;
+				const slot = snapshotsRef.current[index];
+				if (slot) {
+					slot.screenshotRef = screenshotRef;
+					slot.screenshotMethod = grab.method;
+				}
+				shotBlobsRef.current[index] = grab.blob;
+				ev.screenshotRef = screenshotRef;
+				void putShot(sessionIdRef.current, index, grab.blob);
+				const url = URL.createObjectURL(grab.blob);
+				objectUrlsRef.current.push(url);
+				clickPreviewsRef.current = [
+					...clickPreviewsRef.current,
+					{ clickNumber, screenshotRef, url },
+				];
+				setClickPreviews(clickPreviewsRef.current);
+				setFlashTick((n) => n + 1);
+				schedulePersist();
+			})();
+			pendingGrabsRef.current.push(grabPromise);
+		},
+		[schedulePersist],
+	);
+	/**
+	 * Install the event-track listeners. Click screenshots flow through
+	 * `onPageClick`; route changes reuse the throttled whole-frame snap. Populates
 	 * `cleanupsRef` so the callers (start + rehydrate) share identical teardown.
 	 */
 	const installListeners = useCallback(
 		(throttledMark: () => void): void => {
-			const handleClick = (e: MouseEvent): void => {
-				if (!recordingRef.current) return;
-				if (!snapOnClickRef.current) return;
-				// Ignore clicks whose target is inside the overlay itself.
-				if ((e.target as Element).closest?.("[data-bugtoprompt]")) return;
-				// Remember where the user clicked so the grab can crop around it.
-				clickPointRef.current = { x: e.clientX, y: e.clientY };
-				throttledMark();
-			};
-			document.addEventListener("click", handleClick, { capture: true });
-
 			cleanupsRef.current = [
 				installEventTrack({
 					onEvent: (ev) => {
 						eventsRef.current.push(ev);
 						schedulePersist();
-						// Route-change auto-snap is always on (not gated by snapOnClick).
-						// No click point → the grab uses whole-frame fallback framing.
-						if (ev.kind === "route") {
-							clickPointRef.current = undefined;
-							throttledMark();
-						}
+						// Route-change auto-snap keeps its own throttle; no click point →
+						// whole-frame fallback framing.
+						if (ev.kind === "route") throttledMark();
 					},
 					elapsedMs: elapsed,
 					resolveRef,
+					onPageClick: handlePageClick,
 				}),
-				() =>
-					document.removeEventListener("click", handleClick, {
-						capture: true,
-					}),
 			];
 		},
-		[elapsed, resolveRef, schedulePersist],
+		[elapsed, resolveRef, schedulePersist, handlePageClick],
 	);
 
 	const mark = useCallback(async (): Promise<void> => {
@@ -578,13 +622,11 @@ export function useSession(
 		latestEls.current = snap.interactiveElements;
 		const tMs = elapsed();
 
-		// Screenshot the click point when the user has opted in (grabber acquired
-		// via the "Snap on click" toggle). No grabber → interactive snapshot only.
+		// Manual Mark / route snaps are whole-frame (no click point). Off mode or
+		// no grabber → interactive snapshot only.
 		let grab: { blob: Blob; method: "getDisplayMedia" } | null = null;
 		if (screenshotModeRef.current !== "off") {
-			const point = clickPointRef.current;
-			clickPointRef.current = undefined;
-			grab = (await grabberRef.current?.grab(point)) ?? null;
+			grab = (await grabberRef.current?.grab()) ?? null;
 		}
 
 		const index = snapshotsRef.current.length;
@@ -616,6 +658,13 @@ export function useSession(
 
 	const start = useCallback(
 		async (binding: SessionBinding): Promise<void> => {
+			// Kick off the display-capture request FIRST, inside the Start-capture
+			// user gesture and before any await, so getDisplayMedia is allowed. Only
+			// "off" skips screenshots entirely. Denial resolves a no-op grabber
+			// (available:false) — recording still proceeds.
+			const grabberPromise =
+				screenshotModeRef.current !== "off" ? startScreenGrabber() : undefined;
+
 			setError(undefined);
 			setIssueUrl(undefined);
 			setPartial("");
@@ -627,12 +676,14 @@ export function useSession(
 			setElapsedMs(0);
 			setNeedsKey(false);
 			setSaveWarning(undefined);
-			// Screenshots are opt-in per session: reset the toggle to off so no
-			// screen-share prompt fires at start and a stale (stopped) grabber from
-			// a prior session is never reused. The user re-enables to opt in.
-			snapOnClickRef.current = false;
-			setSnapOnClickState(false);
-			clickPointRef.current = undefined;
+			setScreenshotsUnavailable(false);
+			// Reset click tracking + revoke any preview URLs from a prior session.
+			clickCounterRef.current = 0;
+			pendingGrabsRef.current = [];
+			for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+			objectUrlsRef.current = [];
+			clickPreviewsRef.current = [];
+			setClickPreviews([]);
 			eventsRef.current = [];
 			snapshotsRef.current = [];
 			shotBlobsRef.current = [];
@@ -654,15 +705,19 @@ export function useSession(
 			// screen grabber throwing) surfaces as a visible error instead of a
 			// rejected promise swallowed by the record button's fire-and-forget call.
 			try {
-				// No screen-share prompt at record-start: the grabber is acquired
-				// only when the user enables "Snap on click" (see setSnapOnClick).
+				// Stop a stale grabber from a prior session, then adopt the new one.
+				grabberRef.current?.stop();
 				grabberRef.current = undefined;
+				if (grabberPromise) {
+					const grabber = await grabberPromise;
+					grabberRef.current = grabber;
+					setScreenshotsUnavailable(!grabber.available);
+				}
 				refreshSnapshotEls();
 				recordingRef.current = true;
 
-				// ONE shared throttle for both click and route-change triggers so
-				// bursts (e.g. a click that also triggers a pushState) coalesce into
-				// one snap.
+				// A throttle for route-change whole-frame snaps (click snaps go through
+				// handlePageClick, un-throttled, one per click).
 				const throttledMark = createThrottle(() => void mark(), 600);
 				installListeners(throttledMark);
 
@@ -771,6 +826,12 @@ export function useSession(
 		for (const off of cleanupsRef.current) off();
 		cleanupsRef.current = [];
 		transcriberRef.current?.stop();
+		// Await every in-flight click grab so no numbered screenshot is dropped
+		// from the assembled artifact, THEN stop the stream.
+		if (pendingGrabsRef.current.length > 0) {
+			await Promise.allSettled(pendingGrabsRef.current);
+			pendingGrabsRef.current = [];
+		}
 		grabberRef.current?.stop();
 
 		const audio = audioRef.current;
@@ -877,57 +938,63 @@ export function useSession(
 		});
 	}, []);
 
-	const submitIssue = useCallback(async (): Promise<void> => {
-		const binding = bindingRef.current;
-		const base = artifactRef.current;
-		const pending = pendingRef.current;
-		if (!binding.projectId) {
-			setError("No project selected — pick a target before filing.");
-			setPhase("error");
-			return;
-		}
-		if (!base || !pending) return;
-		setPhase("saving");
-		try {
-			// Persist any caption edits before the backend reads the artifact from disk.
-			const edited: CaptureArtifact = {
-				...base,
-				transcript: finalsRef.current,
-			};
-			// The hosted /issue path works without a stored artifact, so a failed
-			// upload (e.g. 413 too large) must not block filing — warn and continue.
-			let artifactRef: string | undefined;
-			try {
-				const saved = await client.saveArtifact({
-					artifact: edited,
-					audioBase64: pending.audioBase64,
-					screenshotsBase64: pending.screenshotsBase64,
-				});
-				// The stored-artifact ref lets the backend link the bug to its
-				// capture; empty when the fallback client has no server dir.
-				if (saved.dir) artifactRef = saved.dir;
-			} catch (err) {
-				setSaveWarning(
-					`Couldn't upload the capture to the server (${(err as Error).message}). Filing the issue without the hosted artifact.`,
-				);
+	const submitIssue = useCallback(
+		async (override?: SessionBinding): Promise<void> => {
+			const binding = override ?? bindingRef.current;
+			const base = artifactRef.current;
+			const pending = pendingRef.current;
+			if (!binding.projectId) {
+				setError("No project selected — pick a target before filing.");
+				setPhase("error");
+				return;
 			}
-			const transcript = transcriptText(finalsRef.current);
-			const result = await client.createIssue({
-				...(binding.workspaceId ? { targetId: binding.workspaceId } : {}),
-				sessionId: base.sessionId,
-				promptRef: renderPrompt(edited),
-				...(artifactRef !== undefined ? { artifactRef } : {}),
-				...(transcript ? { transcriptText: transcript } : {}),
-			});
-			setIssueUrl(result.url);
-			// Remove the persisted session state; blobs are kept for history.
-			removeSession();
-			setPhase("done");
-		} catch (err) {
-			setError(`Failed to file issue: ${(err as Error).message}`);
-			setPhase("error");
-		}
-	}, [client]);
+			if (!base || !pending) return;
+			setPhase("saving");
+			try {
+				// Persist any caption edits before the backend reads the artifact from disk.
+				const edited: CaptureArtifact = {
+					...base,
+					transcript: finalsRef.current,
+				};
+				// The hosted /issue path works without a stored artifact, so a failed
+				// upload (e.g. 413 too large) must not block filing — warn and continue.
+				let artifactRef: string | undefined;
+				try {
+					const saved = await client.saveArtifact({
+						artifact: edited,
+						audioBase64: pending.audioBase64,
+						screenshotsBase64: pending.screenshotsBase64,
+					});
+					// The stored-artifact ref lets the backend link the bug to its
+					// capture; empty when the fallback client has no server dir.
+					if (saved.dir) artifactRef = saved.dir;
+				} catch (err) {
+					setSaveWarning(
+						`Couldn't upload the capture to the server (${(err as Error).message}). Filing the issue without the hosted artifact.`,
+					);
+				}
+				const transcript = transcriptText(finalsRef.current);
+				const result = await client.createIssue({
+					...(binding.workspaceId ? { targetId: binding.workspaceId } : {}),
+					sessionId: base.sessionId,
+					prompt:
+						artifactRef !== undefined
+							? renderPrompt(edited, { artifactDir: artifactRef })
+							: renderPrompt(edited),
+					...(artifactRef !== undefined ? { artifactRef } : {}),
+					...(transcript ? { transcriptText: transcript } : {}),
+				});
+				setIssueUrl(result.url);
+				// Remove the persisted session state; blobs are kept for history.
+				removeSession();
+				setPhase("done");
+			} catch (err) {
+				setError(`Failed to file issue: ${(err as Error).message}`);
+				setPhase("error");
+			}
+		},
+		[client],
+	);
 
 	const reset = useCallback((): void => {
 		setPhase("idle");
@@ -942,6 +1009,12 @@ export function useSession(
 		setIssueUrl(undefined);
 		setNeedsKey(false);
 		setSaveWarning(undefined);
+		setScreenshotsUnavailable(false);
+		// Revoke click-preview object URLs and clear the strip.
+		for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+		objectUrlsRef.current = [];
+		clickPreviewsRef.current = [];
+		setClickPreviews([]);
 		// Remove the persisted session state; blobs are kept for history.
 		removeSession();
 	}, []);
@@ -969,6 +1042,7 @@ export function useSession(
 				recordingRef,
 				grabberRef,
 				screenshotModeRef,
+				clickCounterRef,
 				timerRef,
 				artifactRef,
 				setArtifact,
@@ -999,6 +1073,7 @@ export function useSession(
 			for (const off of cleanupsRef.current) off();
 			transcriberRef.current?.stop();
 			grabberRef.current?.stop();
+			for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
 		};
 	}, []);
 
@@ -1027,7 +1102,8 @@ export function useSession(
 		needsKey,
 		hasKey,
 		flashTick,
-		snapOnClick: snapOnClickState,
+		clickPreviews,
+		screenshotsUnavailable,
 		error,
 		saveWarning,
 		issueUrl,
@@ -1038,7 +1114,6 @@ export function useSession(
 		submitIssue,
 		reset,
 		provideKey,
-		setSnapOnClick,
 		voiceEnabled,
 		enableVoice,
 	};

@@ -65,7 +65,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
+	buildHealthPayload,
+	detectGhState,
+	detectTranscriptionState,
+} from "./service-preflight.mjs";
+import {
 	isOriginAllowed,
+	isValidScreenshotRef,
 	isValidSessionId,
 	parseAllowedOrigins,
 } from "./service-security.mjs";
@@ -283,12 +289,29 @@ async function handleArtifact(req, res) {
 	}
 
 	if (Array.isArray(body.screenshotsBase64)) {
-		body.screenshotsBase64.forEach((b64, i) => {
-			if (typeof b64 === "string" && b64.length > 0) {
-				const name = `screenshot-${String(i + 1).padStart(3, "0")}.png`;
-				writeFileSync(join(dir, name), Buffer.from(b64, "base64"));
+		const snapshots = Array.isArray(artifact.snapshots)
+			? artifact.snapshots
+			: [];
+		// Validate every non-empty image up front so a bad ref never leaves a
+		// half-written capture dir behind.
+		const toWrite = [];
+		for (let i = 0; i < body.screenshotsBase64.length; i++) {
+			const b64 = body.screenshotsBase64[i];
+			if (typeof b64 !== "string" || b64.length === 0) continue;
+			const ref = snapshots[i]?.screenshotRef;
+			if (!isValidScreenshotRef(ref)) {
+				sendJson(res, 400, {
+					error: `screenshot ${i} missing a valid screenshotRef (expected snap-NNNN.jpg)`,
+				});
+				return;
 			}
-		});
+			toWrite.push({ ref, b64 });
+		}
+		// screenshotRef IS the persisted filename: prompt, artifact JSON, JPEG, and
+		// issue-local path stay identical rather than inventing screenshot-NNN.png.
+		for (const { ref, b64 } of toWrite) {
+			writeFileSync(join(dir, ref), Buffer.from(b64, "base64"));
+		}
 	}
 
 	sendJson(res, 200, { dir, sessionId });
@@ -602,15 +625,60 @@ async function handleIssue(req, res, config) {
 	}
 }
 
+/** GET /health — self-diagnosing preflight. Never exposes tokens. */
+function handleHealth(res, config, ghState) {
+	sendJson(
+		res,
+		200,
+		buildHealthPayload({
+			issues: config.issueMode,
+			repos: config.targets.length,
+			gh: ghState,
+			transcription: detectTranscriptionState(process.env.ASSEMBLYAI_API_KEY),
+		}),
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 
 const config = buildConfig();
 
+// Fail fast: issue mode with no repository to file against is a misconfig, not
+// a degraded-but-usable state — refuse to start rather than accept issues we
+// can never route.
+if (config.issueMode && config.targets.length === 0) {
+	console.error(
+		"bugtoprompt: BUGTOPROMPT_ENABLE_ISSUES=1 but no repository is configured " +
+			"(set BUGTOPROMPT_REPOS or config.repos).",
+	);
+	process.exit(1);
+}
+
+// Resolve `gh` availability + auth exactly once at startup. Never surfaces a
+// token: we only report ready/missing/unauthenticated.
+const ghState = await detectGhState({
+	lookup: () =>
+		execFileAsync("gh", ["--version"]).then(
+			() => true,
+			() => false,
+		),
+	authStatus: () => execFileAsync("gh", ["auth", "status"]),
+});
+
 const server = createServer((req, res) => {
 	const origin = req.headers.origin;
 	res.bugCors = corsHeaders(origin);
+	// /health is a self-diagnosing preflight: answer before the CORS/auth guards
+	// so any local caller (extension popup, dev harness) can probe readiness.
+	if (
+		req.method === "GET" &&
+		new URL(req.url || "/", "http://localhost").pathname === "/health"
+	) {
+		handleHealth(res, config, ghState);
+		return;
+	}
 	// CSRF guard: a browser request from a disallowed Origin is rejected outright
 	// (a forged cross-site POST still executes server-side even if CORS hides the
 	// response, so we must refuse it, not just omit the ACAO header).

@@ -16,8 +16,10 @@ import type {
 	TranscriptSegment,
 } from "../schema";
 
-/** Which pages should capture screenshots. */
-export type ScreenshotMode = "perPage" | "onMark" | "off";
+/** Which pages should capture screenshots. "onClick" captures every eligible
+ *  page click (the local-development default); "perPage" snaps per navigation;
+ *  "onMark" only on explicit Mark; "off" is DOM/timeline-only. */
+export type ScreenshotMode = "onClick" | "perPage" | "onMark" | "off";
 /** Which output a capture was sent to. */
 export type OutputMode = "issue" | "clipboard" | "download";
 

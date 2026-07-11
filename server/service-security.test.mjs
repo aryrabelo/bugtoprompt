@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	isOriginAllowed,
+	isValidScreenshotRef,
 	isValidSessionId,
 	parseAllowedOrigins,
 } from "./service-security.mjs";
@@ -37,5 +38,27 @@ describe("isOriginAllowed", () => {
 	});
 	it("denies arbitrary cross-site origins", () => {
 		expect(isOriginAllowed("https://evil.com", allow)).toBe(false);
+	});
+});
+
+describe("isValidScreenshotRef", () => {
+	it("accepts bare snap-NNNN.jpg basenames", () => {
+		expect(isValidScreenshotRef("snap-0000.jpg")).toBe(true);
+		expect(isValidScreenshotRef("snap-0042.jpg")).toBe(true);
+	});
+	it("rejects path separators, other extensions, and junk", () => {
+		for (const bad of [
+			"",
+			"snap-0000.png",
+			"screenshots/snap-0000.jpg",
+			"../snap-0000.jpg",
+			"snap-12.jpg",
+			"snap-00000.jpg",
+			"screenshot-001.png",
+			null,
+			7,
+		]) {
+			expect(isValidScreenshotRef(bad)).toBe(false);
+		}
 	});
 });

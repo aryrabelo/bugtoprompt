@@ -75,6 +75,13 @@ export const captureEventSchema = z.object({
 	url: z.string().optional(),
 	/** Text the user highlighted (kind: "select"), captured on mouse-up. */
 	selectedText: z.string().optional(),
+	/** 1-based ordinal for a `click` (kind: "click"), matching the numbered
+	 *  marker drawn on its screenshot and the review-strip badge. Absent for
+	 *  older artifacts and for non-click events. */
+	clickNumber: z.number().optional(),
+	/** Screenshot ref captured for this click, when a frame was grabbed. Ties the
+	 *  timeline entry to its persisted image; absent when the grab was DOM-only. */
+	screenshotRef: z.string().optional(),
 });
 export type CaptureEvent = z.infer<typeof captureEventSchema>;
 

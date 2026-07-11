@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="popup.css" />
+		<title>BugToPrompt</title>
+	</head>
+	<body>
+		<main class="panel">
+			<header class="head">
+				<h1>BugToPrompt</h1>
+				<span id="status-pill" class="pill" data-tone="down">Checking…</span>
+				<button id="settings" type="button" class="settings" title="Settings" aria-label="Settings">⚙</button>
+			</header>
+			<p id="target" class="target"></p>
+			<section id="rows" class="rows"></section>
+			<button id="start" type="button" class="start" data-active="false">
+				Start capture
+			</button>
+			<p id="error" class="error" role="alert"></p>
+		</main>
+		<script src="popup.js"></script>
+	</body>
+</html>

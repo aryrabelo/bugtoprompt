@@ -159,6 +159,32 @@ describe("renderPrompt", () => {
 		expect(body).toContain("interactive snapshot only");
 	});
 
+	it("renders a numbered click with its screenshot ref inline in the caption", () => {
+		const art: CaptureArtifact = {
+			...BASE_ARTIFACT,
+			events: [
+				{
+					tMs: 800,
+					kind: "click",
+					elementName: "Save",
+					elementRole: "button",
+					selector: "#save-btn",
+					clickNumber: 1,
+					screenshotRef: "snap-0000.jpg",
+				},
+			],
+		};
+		const body = renderPrompt(art);
+		expect(body).toContain("🖱 click #1 <Save> (button) — `snap-0000.jpg`");
+	});
+
+	it("old artifact without clickNumber renders the click line without a number", () => {
+		// BASE_ARTIFACT's click has neither clickNumber nor screenshotRef.
+		const body = renderPrompt(BASE_ARTIFACT);
+		expect(body).toContain("🖱 click <Save> (button)");
+		expect(body).not.toContain("🖱 click #");
+	});
+
 	it("body ends with the CAPTURE_MARKER_PREFIX and sessionId", () => {
 		const body = renderPrompt(BASE_ARTIFACT);
 		expect(body).toContain(`${CAPTURE_MARKER_PREFIX} ses-test-001`);

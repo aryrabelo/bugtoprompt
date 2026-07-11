@@ -56,7 +56,7 @@ describe("createFetchClient", () => {
 		expect(JSON.parse(init.body as string)).toEqual({});
 	});
 
-	it("createIssue POSTs promptRef/artifactRef/transcriptText per server contract", async () => {
+	it("createIssue POSTs prompt/artifactRef/transcriptText per server contract", async () => {
 		fetchSpy.mockResolvedValue(
 			okResponse({ created: true, number: 7, url: "https://gh/7" }),
 		);
@@ -64,7 +64,7 @@ describe("createFetchClient", () => {
 		const client = createFetchClient(BASE);
 		await client.createIssue({
 			sessionId: "sess",
-			promptRef: "the prompt body",
+			prompt: "the prompt body",
 			artifactRef: "cap_sess/artifact.json",
 			transcriptText: "spoken words",
 			targetId: "t1",
@@ -74,12 +74,12 @@ describe("createFetchClient", () => {
 		expect(url).toBe("http://x/issue");
 		const body = JSON.parse(init.body as string) as Record<string, unknown>;
 		expect(body.sessionId).toBe("sess");
-		expect(body.promptRef).toBe("the prompt body");
+		expect(body.prompt).toBe("the prompt body");
 		expect(body.artifactRef).toBe("cap_sess/artifact.json");
 		expect(body.transcriptText).toBe("spoken words");
 		expect(body.targetId).toBe("t1");
-		// The server reads promptRef, not prompt — the old `prompt` field dropped data.
-		expect(body.prompt).toBeUndefined();
+		// The server reads `prompt` (the issue body); the old promptRef field never existed server-side.
+		expect(body.promptRef).toBeUndefined();
 	});
 
 	it("createIssue omits optional fields when not provided", async () => {
@@ -89,12 +89,12 @@ describe("createFetchClient", () => {
 
 		await createFetchClient(BASE).createIssue({
 			sessionId: "s",
-			promptRef: "body",
+			prompt: "body",
 		});
 
 		const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
 		const body = JSON.parse(init.body as string) as Record<string, unknown>;
-		expect(body.promptRef).toBe("body");
+		expect(body.prompt).toBe("body");
 		expect(body.artifactRef).toBeUndefined();
 		expect(body.transcriptText).toBeUndefined();
 		expect(body.targetId).toBeUndefined();

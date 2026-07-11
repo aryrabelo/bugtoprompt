@@ -310,4 +310,53 @@ describe("TargetPicker", () => {
 
 		expect(onChange).toHaveBeenCalledWith(undefined, undefined);
 	});
+
+	it("clears the selection via keyboard on the × button and returns focus to the input", async () => {
+		const client = makeClient();
+		const onChange = vi.fn();
+		render(
+			<TargetPicker
+				client={client}
+				projectId="p1"
+				value="1"
+				onChange={onChange}
+			/>,
+		);
+
+		const input = screen.getByRole("combobox");
+		fireEvent.focus(input);
+		await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+
+		const clearBtn = screen.getByLabelText("Clear selection");
+		// Keyboard users must be able to reach the button (tabIndex 0, not -1).
+		expect(clearBtn.getAttribute("tabindex")).toBe("0");
+		// Enter/Space on a <button> dispatch a click natively.
+		fireEvent.click(clearBtn);
+
+		expect(onChange).toHaveBeenCalledWith(undefined, undefined);
+		// Focus returns to the input after clearing.
+		expect(document.activeElement).toBe(input);
+	});
+
+	it("clears the selection when Escape is pressed with a value selected", async () => {
+		const client = makeClient();
+		const onChange = vi.fn();
+		render(
+			<TargetPicker
+				client={client}
+				projectId="p1"
+				value="1"
+				onChange={onChange}
+			/>,
+		);
+
+		const input = screen.getByRole("combobox");
+		fireEvent.focus(input);
+		await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+
+		fireEvent.keyDown(input, { key: "Escape" });
+
+		expect(onChange).toHaveBeenCalledWith(undefined, undefined);
+		expect(screen.queryAllByRole("option")).toHaveLength(0);
+	});
 });

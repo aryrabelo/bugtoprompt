@@ -1,0 +1,124 @@
+/* Compact dark recorder panel — visual reference is Jam.dev's row-based
+   recorder, not its branding. Single-column hierarchy, one dominant action. */
+:root {
+	color-scheme: dark;
+}
+* {
+	box-sizing: border-box;
+}
+body {
+	margin: 0;
+	font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+.panel {
+	width: 320px;
+	padding: 16px;
+	background: #16181d;
+	color: #e6e8ec;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+.head h1 {
+	font-size: 15px;
+	font-weight: 600;
+	margin: 0;
+}
+.settings {
+	background: transparent;
+	border: none;
+	color: #9aa1ac;
+	font-size: 14px;
+	cursor: pointer;
+	padding: 2px 4px;
+	border-radius: 4px;
+}
+.settings:hover {
+	color: #e6e8ec;
+	background: #22252c;
+}
+.pill {
+	font-size: 11px;
+	padding: 3px 8px;
+	border-radius: 999px;
+	border: 1px solid transparent;
+}
+.pill[data-tone="ok"] {
+	background: #0f2a1a;
+	color: #4ade80;
+	border-color: #1f5133;
+}
+.pill[data-tone="warn"] {
+	background: #2a230f;
+	color: #facc15;
+	border-color: #514319;
+}
+.pill[data-tone="down"] {
+	background: #2a1414;
+	color: #f87171;
+	border-color: #512020;
+}
+.target {
+	margin: 0;
+	font-size: 12px;
+	color: #9aa1ad;
+	word-break: break-all;
+}
+.rows {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px;
+	border: 1px solid #2a2e37;
+	border-radius: 8px;
+	background: #1b1e24;
+}
+.row-title {
+	font-size: 13px;
+	font-weight: 500;
+}
+.row-status {
+	font-size: 12px;
+	color: #9aa1ad;
+}
+.row[data-ready="true"] .row-status {
+	color: #4ade80;
+}
+.start {
+	width: 100%;
+	padding: 11px;
+	border: none;
+	border-radius: 8px;
+	background: #4f46e5;
+	color: #fff;
+	font-size: 14px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.start:hover {
+	background: #4338ca;
+}
+.start[data-active="true"] {
+	background: #dc2626;
+}
+.start:disabled {
+	background: #2a2e37;
+	color: #6b7280;
+	cursor: not-allowed;
+}
+.error {
+	margin: 0;
+	min-height: 14px;
+	font-size: 12px;
+	color: #f87171;
+}

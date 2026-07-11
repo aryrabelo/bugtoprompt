@@ -16,16 +16,16 @@ import {
 	ExternalLink,
 	Loader2,
 	Mic,
-	MousePointer2,
 	Square,
 	Trash2,
 	X,
 } from "lucide-react";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { type BugToPromptClient, createFetchClient } from "../client";
 import { promptTitle, renderPrompt, transcriptText } from "../render";
+import type { CaptureEvent, TranscriptSegment } from "../schema";
 import { Button } from "../ui/button";
 import {
 	createLocalFallbackClient,
@@ -321,7 +321,7 @@ function CaptureHistoryList({
 										void client
 											.createIssue({
 												sessionId: rec.id,
-												promptRef: rec.prompt,
+												prompt: rec.prompt,
 												...(transcriptText(rec.artifact.transcript)
 													? {
 															transcriptText: transcriptText(
@@ -416,6 +416,337 @@ function ErrorPanel({
 	);
 }
 
+// ---------------------------------------------------------------------------
+// CapabilityRow — one bordered idle-phase capability line (Jam-style row)
+// ---------------------------------------------------------------------------
+
+function CapabilityRow({
+	icon,
+	label,
+	status,
+	statusTone = "muted",
+	children,
+}: {
+	icon: ReactNode;
+	label: string;
+	status?: string;
+	statusTone?: "muted" | "on" | "off";
+	children?: ReactNode;
+}): ReactElement {
+	const tone =
+		statusTone === "on"
+			? "text-green-500"
+			: statusTone === "off"
+				? "text-muted-foreground"
+				: "text-muted-foreground";
+	return (
+		<div className="flex flex-col gap-1.5 rounded-sm border border-border px-2.5 py-2">
+			<div className="flex items-center justify-between gap-2">
+				<span className="flex items-center gap-1.5 font-medium">
+					{icon}
+					{label}
+				</span>
+				{status ? (
+					<span className={`text-[10px] ${tone}`}>{status}</span>
+				) : null}
+			</div>
+			{children}
+		</div>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// RecordingCard — compact recorder shown while recording (pure/deterministic)
+// ---------------------------------------------------------------------------
+
+export interface RecordingCardProps {
+	elapsedMs: number;
+	streaming: boolean;
+	clickCount: number;
+	/** Latest grabbed click screenshot, if any (from clickPreviews). */
+	latestThumb?: { clickNumber: number; url: string };
+	screenshotsUnavailable: boolean;
+	transcript: TranscriptSegment[];
+	partial: string;
+	needsKey: boolean;
+	onProvideKey: (key: string) => Promise<boolean>;
+	voiceEnabled: boolean;
+	onEnableVoice: () => void;
+	flashTick: number;
+	onMark: () => void;
+	onStop: () => void;
+}
+
+export function RecordingCard({
+	elapsedMs,
+	streaming,
+	clickCount,
+	latestThumb,
+	screenshotsUnavailable,
+	transcript,
+	partial,
+	needsKey,
+	onProvideKey,
+	voiceEnabled,
+	onEnableVoice,
+	flashTick,
+	onMark,
+	onStop,
+}: RecordingCardProps): ReactElement {
+	return (
+		<div data-testid="recording-card" className="flex flex-col gap-2.5">
+			{/* Elapsed + live status. aria-live announces rec-only → live flips. */}
+			<div aria-live="polite" className="flex items-center justify-between">
+				<span className="flex items-center gap-1.5 font-medium text-red-500 tabular-nums">
+					<CircleDot className="size-4 animate-pulse" /> {clock(elapsedMs)}
+				</span>
+				<span className="flex items-center gap-1.5 text-muted-foreground">
+					<span
+						aria-hidden="true"
+						className={`inline-block size-1.5 rounded-full ${
+							streaming ? "bg-green-500" : "bg-amber-500"
+						}`}
+					/>
+					<span className={streaming ? "text-green-500" : "text-amber-500"}>
+						{streaming ? "live" : "rec only"}
+					</span>
+				</span>
+			</div>
+
+			{/* Click count + latest numbered thumbnail. */}
+			<div className="flex items-center gap-2.5">
+				<span
+					key={flashTick}
+					data-testid="click-count"
+					className={`flex items-center gap-1.5 font-medium tabular-nums${
+						flashTick > 0 ? " snap-count-pulse" : ""
+					}`}
+				>
+					<Camera className="size-4" /> {clickCount} click
+					{clickCount === 1 ? "" : "s"}
+				</span>
+				{latestThumb ? (
+					<span
+						data-testid="latest-thumbnail"
+						className="relative ml-auto block w-12 shrink-0 overflow-hidden rounded-sm border border-border"
+					>
+						<img
+							src={latestThumb.url}
+							alt={`Latest click ${latestThumb.clickNumber}`}
+							className="block aspect-[2/3] w-full object-cover"
+						/>
+						<span className="absolute top-0.5 left-0.5 rounded-sm bg-foreground px-1 text-[9px] text-background tabular-nums">
+							{latestThumb.clickNumber}
+						</span>
+					</span>
+				) : null}
+			</div>
+
+			{screenshotsUnavailable ? (
+				<p role="status" className="text-[10px] text-amber-500">
+					Screenshots unavailable — recording clicks, DOM &amp; voice only.
+				</p>
+			) : null}
+
+			{needsKey ? <KeyPrompt onSave={onProvideKey} /> : null}
+
+			<div className="max-h-32 overflow-y-auto">
+				<CaptionEditor transcript={transcript} partial={partial} />
+			</div>
+
+			{/* Two equal actions: Mark + destructive Stop. */}
+			<div className="flex gap-2">
+				<Button
+					size="sm"
+					variant="secondary"
+					className="flex-1"
+					data-testid="mark"
+					onClick={onMark}
+				>
+					<Camera className="size-4" /> Mark
+				</Button>
+				<Button
+					size="sm"
+					variant="destructive"
+					className="flex-1"
+					data-testid="stop"
+					onClick={onStop}
+				>
+					<Square className="size-4" /> Stop
+				</Button>
+			</div>
+
+			{/* Voice row — cannot accidentally disable an active recording. */}
+			<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
+				<input
+					type="checkbox"
+					checked={voiceEnabled}
+					onChange={() => {
+						if (!voiceEnabled) onEnableVoice();
+					}}
+					disabled={voiceEnabled}
+					className="size-3 cursor-pointer accent-primary"
+				/>
+				<Mic className="size-3" />
+				Voice narration {voiceEnabled ? "(on)" : ""}
+			</label>
+		</div>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// ReviewPanel — expanded review layout (pure/deterministic)
+// ---------------------------------------------------------------------------
+
+export interface ReviewPanelProps {
+	transcript: TranscriptSegment[];
+	events?: CaptureEvent[];
+	clickPreviews: Array<{
+		clickNumber: number;
+		screenshotRef: string;
+		url: string;
+	}>;
+	onEditSegment: (index: number, text: string) => void;
+	saveWarning?: string;
+	lastAction: "none" | "copied" | "downloaded" | "copy-failed";
+	modes: OutputMode[];
+	primaryMode: OutputMode;
+	fileDisabled: boolean;
+	/** Late-binding target picker node (issue mode without a frozen projectId). */
+	targetPicker?: ReactNode;
+	needTargetHint: boolean;
+	onDiscard: () => void;
+	onCreateIssue: () => void;
+	onCopy: () => void;
+	onDownload: () => void;
+}
+
+export function ReviewPanel({
+	transcript,
+	events,
+	clickPreviews,
+	onEditSegment,
+	saveWarning,
+	lastAction,
+	modes,
+	primaryMode,
+	fileDisabled,
+	targetPicker,
+	needTargetHint,
+	onDiscard,
+	onCreateIssue,
+	onCopy,
+	onDownload,
+}: ReviewPanelProps): ReactElement {
+	return (
+		<div data-testid="review-panel" className="flex flex-col gap-2.5">
+			{/* Ordered numbered click strip — 400×600 scaled thumbnails. */}
+			{clickPreviews.length > 0 ? (
+				<ol
+					data-testid="click-strip"
+					className="flex flex-row gap-2 overflow-x-auto pb-1"
+				>
+					{clickPreviews.map((p) => (
+						<li
+							key={p.clickNumber}
+							data-testid="click-thumbnail"
+							className="relative block w-16 shrink-0 overflow-hidden rounded-sm border border-border"
+						>
+							<img
+								src={p.url}
+								alt={`Click ${p.clickNumber} screenshot`}
+								className="block aspect-[2/3] w-full object-cover"
+							/>
+							<span className="absolute top-0.5 left-0.5 rounded-sm bg-foreground px-1 text-[9px] text-background tabular-nums">
+								{p.clickNumber}
+							</span>
+						</li>
+					))}
+				</ol>
+			) : (
+				<p className="text-[10px] text-muted-foreground">
+					No screenshots captured.
+				</p>
+			)}
+
+			<div className="max-h-40 overflow-y-auto">
+				<CaptionEditor
+					transcript={transcript}
+					events={events}
+					editable
+					onEdit={onEditSegment}
+				/>
+			</div>
+
+			{saveWarning ? (
+				<p role="alert" className="text-yellow-500">
+					{saveWarning}
+				</p>
+			) : null}
+			{lastAction === "copy-failed" ? (
+				<p role="alert" className="text-destructive">
+					Failed to copy — check clipboard permissions.
+				</p>
+			) : lastAction === "copied" ? (
+				<p className="text-green-500">Copied to clipboard!</p>
+			) : lastAction === "downloaded" ? (
+				<p className="text-green-500">Downloaded!</p>
+			) : null}
+
+			{targetPicker}
+			{needTargetHint ? (
+				<p className="text-muted-foreground">
+					Select a project to file the issue.
+				</p>
+			) : null}
+
+			{/* Sticky action footer: Create GitHub issue primary; Copy/Download
+			    secondary; Discard low-emphasis destructive. */}
+			<div className="sticky bottom-0 flex flex-wrap items-center gap-2 border-border border-t bg-popover pt-2">
+				{modes.includes("issue") && (
+					<Button
+						size="sm"
+						variant={primaryMode === "issue" ? "default" : "secondary"}
+						disabled={fileDisabled}
+						data-testid="create-issue"
+						onClick={onCreateIssue}
+					>
+						<Bug className="size-4" /> Create GitHub issue
+					</Button>
+				)}
+				{modes.includes("clipboard") && (
+					<Button
+						size="sm"
+						variant={primaryMode === "clipboard" ? "default" : "secondary"}
+						data-testid="copy"
+						onClick={onCopy}
+					>
+						<ClipboardCopy className="size-4" /> Copy
+					</Button>
+				)}
+				{modes.includes("download") && (
+					<Button
+						size="sm"
+						variant={primaryMode === "download" ? "default" : "secondary"}
+						data-testid="download"
+						onClick={onDownload}
+					>
+						<Download className="size-4" /> Download
+					</Button>
+				)}
+				<button
+					type="button"
+					data-testid="discard"
+					onClick={onDiscard}
+					className="ml-auto rounded-sm px-1 text-[11px] text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					Discard
+				</button>
+			</div>
+		</div>
+	);
+}
+
 // OutputMode is defined in session-store; re-export here for backward compat.
 export type { OutputMode };
 
@@ -444,6 +775,14 @@ export interface BugToPromptProps {
 	screenshotMode?: ScreenshotMode;
 	/** Default state of the pre-record Voice narration toggle (the user can still change it before recording). Default: false — voice is opt-in. */
 	autoVoice?: boolean;
+	/** Open the capture panel immediately on mount instead of showing only the
+	 *  floating launcher. Used by the extension so activation gives instant
+	 *  visible feedback. Default: false. */
+	defaultOpen?: boolean;
+	/** Where the launcher/panel portals render. Defaults to document.body; the
+	 *  standalone/extension mount passes a Shadow DOM container so overlay CSS
+	 *  never collides with host-page stylesheets (e.g. Tailwind class names). */
+	portalTarget?: Element;
 	// --- injection points for testability ---
 	/** Override the clipboard implementation (default: navigator.clipboard). */
 	clipboard?: Pick<Clipboard, "writeText">;
@@ -462,6 +801,8 @@ export function BugToPrompt({
 	defaultMode,
 	screenshotMode: screenshotModeProp,
 	autoVoice = false,
+	defaultOpen = false,
+	portalTarget,
 	clipboard,
 	onDownload,
 }: BugToPromptProps): ReactElement | null {
@@ -474,7 +815,7 @@ export function BugToPrompt({
 			screenshotModeProp,
 		});
 
-	const [open, setOpen] = useState(false);
+	const [open, setOpen] = useState(defaultOpen);
 	const [pickedWs, setPickedWs] = useState<string | undefined>();
 	const [pickedBranch, setPickedBranch] = useState<string | undefined>();
 	// The binding is FROZEN at record-start: navigating the app (which moves the
@@ -495,6 +836,12 @@ export function BugToPrompt({
 		url: string;
 	} | null>(null);
 	const [wantVoice, setWantVoice] = useState(autoVoice);
+	// P0-2: late target selection during reviewing. The record-start binding is
+	// frozen; if it froze without a projectId (config resolved after start), the
+	// user can still pick a target here and this overrides the frozen binding.
+	const [reviewTarget, setReviewTarget] = useState<
+		{ id: string; branch?: string } | undefined
+	>();
 	// Dedup guard so the issue-done effect only records once per session.
 	const lastRecordedRef = useRef<string>("");
 	// P1-3: ref for moving focus into the panel when it opens.
@@ -517,12 +864,26 @@ export function BugToPrompt({
 	};
 	const binding = !idle && frozen ? frozen : liveBinding;
 
+	// P0-2: when the frozen binding lacks a projectId, a target picked during
+	// reviewing supplies the file target. projectId is config-global (never sent
+	// to the server — it only gates the button), so fall back to the picked id.
+	const reviewBinding: SessionBinding | undefined =
+		session.phase === "reviewing" && !binding.projectId && reviewTarget
+			? {
+					projectId: projectId ?? reviewTarget.id,
+					workspaceId: reviewTarget.id,
+					...(reviewTarget.branch ? { branch: reviewTarget.branch } : {}),
+				}
+			: undefined;
+	const fileBinding = reviewBinding ?? binding;
+
 	const discard = (): void => {
 		// Reviewing-phase discard: wipe screenshots so no partial history survives.
 		if (session.phase === "reviewing" && session.artifact) {
 			void clearShots(session.artifact.sessionId);
 		}
 		setFrozen(undefined);
+		setReviewTarget(undefined);
 		setLastAction("none");
 		setLastFiled(null);
 		session.reset();
@@ -627,6 +988,8 @@ export function BugToPrompt({
 
 	if (typeof document === "undefined") return null;
 
+	const portalHost = portalTarget ?? document.body;
+
 	if (!open) {
 		return createPortal(
 			<button
@@ -637,11 +1000,18 @@ export function BugToPrompt({
 			>
 				<Bug className="size-4" /> BugToPrompt
 			</button>,
-			document.body,
+			portalHost,
 		);
 	}
 
 	const recording = session.phase === "recording";
+	// Idle/recording use a compact 360px panel; review expands to 480px for the
+	// click strip. max-w keeps it inside small viewports.
+	const panelWidth = session.phase === "reviewing" ? "w-[480px]" : "w-90";
+	const latestPreview =
+		session.clickPreviews.length > 0
+			? session.clickPreviews[session.clickPreviews.length - 1]
+			: undefined;
 
 	const portal = createPortal(
 		// P1-3: role="dialog" + aria-modal give screen readers the panel's dialog
@@ -653,7 +1023,7 @@ export function BugToPrompt({
 			aria-modal="true"
 			aria-label="BugToPrompt"
 			data-bugtoprompt
-			className="fixed right-4 bottom-4 z-[9999] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-3 rounded-md border border-border bg-popover p-3 text-popover-foreground text-xs shadow-xl"
+			className={`fixed right-4 bottom-4 z-[9999] flex max-h-[calc(100vh-2rem)] ${panelWidth} max-w-[calc(100vw-2rem)] flex-col gap-3 overflow-y-auto rounded-md border border-border bg-popover p-3 text-popover-foreground text-xs shadow-xl`}
 		>
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-1.5 font-medium">
@@ -685,7 +1055,7 @@ export function BugToPrompt({
 					<div className="text-muted-foreground">
 						Target:{" "}
 						<span className="text-foreground">
-							{binding.branch ?? binding.workspaceId ?? "none"}
+							{binding.branch ?? binding.workspaceId ?? projectId ?? "none"}
 						</span>
 					</div>
 				)
@@ -693,37 +1063,49 @@ export function BugToPrompt({
 
 			{session.phase === "idle" ? (
 				<>
-					{showIdleKeyPrompt ? (
-						<KeyPrompt onSave={(key) => session.provideKey(key)} />
-					) : null}
-					{/* --- Capture history --- */}
-					<CaptureHistoryList
-						captures={captures}
-						clipboard={clipboard}
-						modes={modes}
-						projectId={projectId}
-						client={client}
-						lastFiled={lastFiled}
-						onDelete={() => setCaptures(listCaptures())}
-						onFiledUpdate={(filed) => setLastFiled(filed)}
-						onDownload={handleHistoryDownload}
+					{/* Three bordered capability rows (Jam-style). */}
+					<CapabilityRow
+						icon={<Camera className="size-3.5" />}
+						label="Capture every click"
+						status="on"
+						statusTone="on"
+					>
+						<p className="text-[10px] text-muted-foreground">
+							Every page click becomes a numbered 400×600 screenshot.
+						</p>
+					</CapabilityRow>
+					<CapabilityRow
+						icon={<Mic className="size-3.5" />}
+						label="Live voice transcription"
+						status={wantVoice ? "on" : "off"}
+						statusTone={wantVoice ? "on" : "off"}
+					>
+						{showIdleKeyPrompt ? (
+							<KeyPrompt onSave={(key) => session.provideKey(key)} />
+						) : (
+							<label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground">
+								<input
+									type="checkbox"
+									checked={wantVoice}
+									onChange={(e) => setWantVoice(e.currentTarget.checked)}
+									className="size-3 cursor-pointer accent-primary"
+								/>
+								Narrate the bug aloud (optional).
+							</label>
+						)}
+					</CapabilityRow>
+					<CapabilityRow
+						icon={<Bug className="size-3.5" />}
+						label="Create GitHub issue"
+						status={modes.includes("issue") ? "ready" : "unavailable"}
+						statusTone={modes.includes("issue") ? "on" : "off"}
 					/>
-					{/* --- Record action --- */}
-					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
-						<input
-							type="checkbox"
-							checked={wantVoice}
-							onChange={(e) => setWantVoice(e.currentTarget.checked)}
-							className="size-3 cursor-pointer accent-primary"
-						/>
-						<Mic className="size-3" />
-						Voice narration
-					</label>
-					<p className="text-[10px] text-muted-foreground">
-						Narrate the bug aloud — uses your microphone (optional).
-					</p>
+
+					{/* Dominant primary action. */}
 					<Button
 						size="sm"
+						className="w-full"
+						data-testid="start"
 						onClick={() => {
 							setFrozen(binding);
 							void session.start(binding).then(() => {
@@ -731,99 +1113,56 @@ export function BugToPrompt({
 							});
 						}}
 					>
-						<CircleDot className="size-4" /> Record
+						<CircleDot className="size-4" /> Start capture
 					</Button>
-					<p className="text-muted-foreground">
-						Click around or press Mark to capture. Enable voice narration after
-						starting to record.
-					</p>
+
+					{/* Capture history behind a disclosure so it never precedes the
+					    primary action. */}
+					<details data-testid="recent-captures">
+						<summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+							Recent captures
+						</summary>
+						<div className="mt-2">
+							<CaptureHistoryList
+								captures={captures}
+								clipboard={clipboard}
+								modes={modes}
+								projectId={projectId}
+								client={client}
+								lastFiled={lastFiled}
+								onDelete={() => setCaptures(listCaptures())}
+								onFiledUpdate={(filed) => setLastFiled(filed)}
+								onDownload={handleHistoryDownload}
+							/>
+						</div>
+					</details>
 				</>
 			) : null}
 
 			{recording ? (
-				<>
-					{/* P1-4: aria-live="polite" so recording start / streaming status
-					    changes (rec only → live) are announced to screen readers. */}
-					<div aria-live="polite" className="flex items-center justify-between">
-						<span className="flex items-center gap-1.5 font-medium text-red-500 tabular-nums">
-							<CircleDot className="size-4 animate-pulse" />{" "}
-							{clock(session.elapsedMs)}
-						</span>
-						<span
-							key={session.flashTick}
-							className={`flex items-center gap-1.5 text-muted-foreground${
-								session.flashTick > 0 ? " snap-count-pulse" : ""
-							}`}
-						>
-							{session.markCount} mark{session.markCount === 1 ? "" : "s"}
-							<span
-								aria-hidden="true"
-								className={`inline-block size-1.5 rounded-full ${
-									session.streaming ? "bg-green-500" : "bg-amber-500"
-								}`}
-							/>
-							<span
-								className={
-									session.streaming ? "text-green-500" : "text-amber-500"
+				<RecordingCard
+					elapsedMs={session.elapsedMs}
+					streaming={session.streaming}
+					clickCount={session.clickPreviews.length}
+					latestThumb={
+						latestPreview
+							? {
+									clickNumber: latestPreview.clickNumber,
+									url: latestPreview.url,
 								}
-							>
-								{session.streaming ? "live" : "rec only"}
-							</span>
-						</span>
-					</div>
-					{session.needsKey ? (
-						<KeyPrompt onSave={(key) => session.provideKey(key)} />
-					) : null}
-					<div className="max-h-32 overflow-y-auto">
-						<CaptionEditor
-							transcript={session.transcript}
-							partial={session.partial}
-						/>
-					</div>
-					<div className="flex gap-2">
-						<Button
-							size="sm"
-							variant="secondary"
-							className="flex-1"
-							onClick={() => void session.mark()}
-						>
-							<Camera className="size-4" /> Mark
-						</Button>
-						<Button
-							size="sm"
-							variant="destructive"
-							className="flex-1"
-							onClick={() => void session.stop()}
-						>
-							<Square className="size-4" /> Stop
-						</Button>
-					</div>
-					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
-						<input
-							type="checkbox"
-							checked={session.voiceEnabled}
-							onChange={() => {
-								if (!session.voiceEnabled) void session.enableVoice();
-							}}
-							disabled={session.voiceEnabled}
-							className="size-3 cursor-pointer accent-primary"
-						/>
-						<Mic className="size-3" />
-						Voice narration
-					</label>
-					<label className="flex cursor-pointer items-center gap-1.5 text-muted-foreground hover:text-foreground">
-						<input
-							type="checkbox"
-							checked={session.snapOnClick}
-							onChange={(e) =>
-								void session.setSnapOnClick(e.currentTarget.checked)
-							}
-							className="size-3 cursor-pointer accent-primary"
-						/>
-						<MousePointer2 className="size-3" />
-						Snap on click
-					</label>
-				</>
+							: undefined
+					}
+					screenshotsUnavailable={session.screenshotsUnavailable}
+					transcript={session.transcript}
+					partial={session.partial}
+					needsKey={session.needsKey}
+					onProvideKey={(key) => session.provideKey(key)}
+					voiceEnabled={session.voiceEnabled}
+					onEnableVoice={() => void session.enableVoice()}
+					flashTick={session.flashTick}
+					onMark={() => void session.mark()}
+					onStop={() => void session.stop()}
+				/>
 			) : null}
 
 			{session.phase === "saving" ? (
@@ -833,73 +1172,36 @@ export function BugToPrompt({
 			) : null}
 
 			{session.phase === "reviewing" ? (
-				<>
-					<div className="max-h-40 overflow-y-auto">
-						<CaptionEditor
-							transcript={session.transcript}
-							events={session.artifact?.events}
-							editable
-							onEdit={session.editSegment}
-						/>
-					</div>
-					<div className="text-muted-foreground">
-						{session.markCount} screenshot{session.markCount === 1 ? "" : "s"}{" "}
-						captured.
-					</div>
-					{session.saveWarning ? (
-						<p role="alert" className="text-yellow-500">
-							{session.saveWarning}
-						</p>
-					) : null}
-					{/* P0-1: show "copy failed" alert alongside the success confirmations. */}
-					{lastAction === "copy-failed" ? (
-						<p role="alert" className="text-destructive">
-							Failed to copy — check clipboard permissions.
-						</p>
-					) : lastAction === "copied" ? (
-						<p className="text-green-500">Copied to clipboard!</p>
-					) : lastAction === "downloaded" ? (
-						<p className="text-green-500">Downloaded!</p>
-					) : null}
-					<div className="flex flex-wrap gap-2">
-						<Button size="sm" variant="ghost" onClick={discard}>
-							Discard
-						</Button>
-						{modes.includes("issue") && (
-							<Button
-								size="sm"
-								variant={primaryMode === "issue" ? "default" : "secondary"}
-								disabled={!binding.projectId}
-								onClick={() => void session.submitIssue()}
-							>
-								File issue
-							</Button>
-						)}
-						{modes.includes("clipboard") && (
-							<Button
-								size="sm"
-								variant={primaryMode === "clipboard" ? "default" : "secondary"}
-								onClick={() => void handleClipboard()}
-							>
-								<ClipboardCopy className="size-4" /> Copy
-							</Button>
-						)}
-						{modes.includes("download") && (
-							<Button
-								size="sm"
-								variant={primaryMode === "download" ? "default" : "secondary"}
-								onClick={handleDownload}
-							>
-								<Download className="size-4" /> Download
-							</Button>
-						)}
-					</div>
-					{modes.includes("issue") && !binding.projectId ? (
-						<p className="text-muted-foreground">
-							Select a project to file the issue.
-						</p>
-					) : null}
-				</>
+				<ReviewPanel
+					transcript={session.transcript}
+					events={session.artifact?.events}
+					clickPreviews={session.clickPreviews}
+					onEditSegment={session.editSegment}
+					saveWarning={session.saveWarning}
+					lastAction={lastAction}
+					modes={modes}
+					primaryMode={primaryMode}
+					fileDisabled={!fileBinding.projectId}
+					needTargetHint={
+						modes.includes("issue") && !binding.projectId && !reviewTarget
+					}
+					targetPicker={
+						modes.includes("issue") && !binding.projectId ? (
+							<TargetPicker
+								client={client}
+								projectId={projectId}
+								value={reviewTarget?.id}
+								onChange={(id, b) =>
+									setReviewTarget(id ? { id, branch: b } : undefined)
+								}
+							/>
+						) : null
+					}
+					onDiscard={discard}
+					onCreateIssue={() => void session.submitIssue(reviewBinding)}
+					onCopy={() => void handleClipboard()}
+					onDownload={handleDownload}
+				/>
 			) : null}
 
 			{session.phase === "done" ? (
@@ -910,7 +1212,7 @@ export function BugToPrompt({
 				<ErrorPanel error={session.error} onReset={discard} />
 			) : null}
 		</div>,
-		document.body,
+		portalHost,
 	);
 	return (
 		<>

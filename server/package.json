@@ -1,6 +1,6 @@
 {
 	"name": "bugtoprompt-server",
-	"version": "0.1.0",
+	"version": "0.14.0-beta.5",
 	"description": "Local self-hosted broker for the BugToPrompt overlay — mints AssemblyAI streaming tokens so the API key never reaches the browser.",
 	"type": "module",
 	"license": "MIT",
@@ -13,10 +13,11 @@
 		"node": ">=18"
 	},
 	"bin": {
-		"bugtoprompt-server": "./github-issue-service.mjs"
+		"bugtoprompt-server": "github-issue-service.mjs"
 	},
 	"files": [
 		"github-issue-service.mjs",
+		"service-preflight.mjs",
 		"service-security.mjs",
 		"transcript-segments.mjs"
 	]

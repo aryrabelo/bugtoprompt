@@ -86,18 +86,22 @@ function useKeyboardNav({
 	open,
 	filtered,
 	highlighted,
+	value,
 	openList,
 	closeList,
 	pick,
+	clearSelection,
 	setHighlighted,
 	setQuery,
 }: {
 	open: boolean;
 	filtered: Target[];
 	highlighted: number;
+	value: string | undefined;
 	openList: () => void;
 	closeList: () => void;
 	pick: (opt: Target) => void;
+	clearSelection: () => void;
 	setHighlighted: React.Dispatch<React.SetStateAction<number>>;
 	setQuery: React.Dispatch<React.SetStateAction<string>>;
 }): (e: React.KeyboardEvent<HTMLInputElement>) => void {
@@ -127,8 +131,20 @@ function useKeyboardNav({
 		},
 		Escape: (e) => {
 			e.preventDefault();
+			// A selected value takes priority: Escape clears the selection so
+			// keyboard users have a mouse-free path to onChange(undefined).
+			if (value) {
+				clearSelection();
+			}
 			setQuery("");
 			closeList();
+		},
+		Backspace: (e) => {
+			// When the query is empty and a value is selected, Backspace clears
+			// the selection. Otherwise fall through to native text editing.
+			if (!(e.currentTarget.value === "" && value)) return;
+			e.preventDefault();
+			clearSelection();
 		},
 	};
 
@@ -184,13 +200,21 @@ export function TargetPicker({
 		closeList();
 	};
 
+	const clearSelection = () => {
+		onChange(undefined, undefined);
+		setQuery("");
+		inputRef.current?.focus();
+	};
+
 	const handleKeyDown = useKeyboardNav({
 		open,
 		filtered,
 		highlighted,
+		value,
 		openList,
 		closeList,
 		pick,
+		clearSelection,
 		setHighlighted,
 		setQuery,
 	});
@@ -238,15 +262,15 @@ export function TargetPicker({
 				{value && (
 					<button
 						type="button"
-						tabIndex={-1}
+						tabIndex={0}
 						aria-label="Clear selection"
 						className="px-1 text-muted-foreground hover:text-foreground"
 						onMouseDown={(e) => {
-							// Prevent the input blur → list-close from firing first.
+							// Prevent the input blur → list-close from firing first;
+							// the actual clear runs in onClick (fires for mouse + keyboard).
 							e.preventDefault();
-							onChange(undefined, undefined);
-							setQuery("");
 						}}
+						onClick={clearSelection}
 					>
 						<X className="size-3" />
 					</button>

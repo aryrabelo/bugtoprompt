@@ -1,6 +1,6 @@
 {
 	"name": "bugtoprompt",
-	"version": "0.13.6",
+	"version": "0.14.0-beta.5",
 	"description": "BugToPrompt — a portable bug-capture overlay that turns a bug into an AI-ready prompt",
 	"keywords": [
 		"react",
@@ -54,11 +54,14 @@
 		"build:css": "tailwindcss -i src/standalone.css -o dist/bugtoprompt.css --minify",
 		"build:standalone": "tsup --config tsup.standalone.config.ts",
 		"build": "npm run build:esm && npm run build:css && npm run build:standalone",
+		"build:extension": "npm run build && node extension/scripts/build.mjs",
+		"pack:extension": "npm run build:extension && node extension/scripts/pack.mjs",
 		"prepare": "lefthook install; npm run build",
 		"test": "vitest run",
 		"lint": "biome check .",
 		"typecheck": "tsc --noEmit",
-		"service:github": "node server/github-issue-service.mjs"
+		"service:github": "node server/github-issue-service.mjs",
+		"release:beta": "node scripts/release-beta.mjs"
 	},
 	"peerDependencies": {
 		"react": "^18 || ^19",

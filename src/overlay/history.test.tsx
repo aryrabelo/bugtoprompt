@@ -125,7 +125,7 @@ async function driveToClipboardFinish(clipboardWriteText: Mock): Promise<void> {
 	fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 	await act(async () => {
-		fireEvent.click(screen.getByRole("button", { name: /record/i }));
+		fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 	});
 	await act(async () => {
 		fireEvent.click(screen.getByRole("button", { name: /stop/i }));

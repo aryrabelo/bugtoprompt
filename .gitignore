@@ -6,3 +6,4 @@ dist
 .claude/
 .harness-mem/
 docs/superpowers/
+extension/*.zip

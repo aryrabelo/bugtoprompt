@@ -61,6 +61,7 @@ vi.mock("./snapshot/screenshot", () => ({
 vi.mock("../render", () => ({
 	renderPrompt: vi.fn().mockReturnValue("## mocked prompt"),
 	promptTitle: vi.fn().mockReturnValue("Test capture title"),
+	transcriptText: vi.fn().mockReturnValue(""),
 }));
 
 // ---------------------------------------------------------------------------
@@ -201,7 +202,7 @@ describe("createLocalFallbackClient", () => {
 	it("createIssue rejects with a helpful message", async () => {
 		const client = createLocalFallbackClient();
 		await expect(
-			client.createIssue({ sessionId: "s", promptRef: "x" }),
+			client.createIssue({ sessionId: "s", prompt: "x" }),
 		).rejects.toThrow("issue mode requires a backend");
 	});
 
@@ -249,7 +250,7 @@ describe("<BugToPrompt /> zero-config (no props)", () => {
 
 		// Start recording.
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 
 		// Stop recording → triggers saveArtifact on the fallback client.
@@ -312,7 +313,7 @@ describe("<BugToPrompt /> auto-config from server", () => {
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -325,7 +326,7 @@ describe("<BugToPrompt /> auto-config from server", () => {
 		// After config fetch the "issue" mode button must be present (even
 		// without projectId the button renders, just disabled).
 		expect(
-			screen.queryByRole("button", { name: /file issue/i }),
+			screen.queryByRole("button", { name: /create github issue/i }),
 		).not.toBeNull();
 	});
 });
@@ -349,7 +350,7 @@ describe("<BugToPrompt client={...} /> existing contract", () => {
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -361,7 +362,7 @@ describe("<BugToPrompt client={...} /> existing contract", () => {
 
 		// Default modes when client is explicit = ['issue'] → File Issue button visible.
 		expect(
-			screen.queryByRole("button", { name: /file issue/i }),
+			screen.queryByRole("button", { name: /create github issue/i }),
 		).not.toBeNull();
 	});
 });
@@ -401,7 +402,7 @@ describe("<BugToPrompt baseUrl /> adopts backend without a config probe", () => 
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { name: /record/i }));
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
 		});
 		await act(async () => {
 			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
@@ -414,7 +415,112 @@ describe("<BugToPrompt baseUrl /> adopts backend without a config probe", () => 
 		// Backend adopted from the explicit baseUrl → issue mode present even
 		// though the config probe 404'd (old behavior left it clipboard-only).
 		expect(
-			screen.queryByRole("button", { name: /file issue/i }),
+			screen.queryByRole("button", { name: /create github issue/i }),
 		).not.toBeNull();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P0-2: reviewing dead-end. The binding freezes at record-start; if config
+// (hence projectId) resolves AFTER that, the frozen binding has no projectId
+// so "File issue" is stuck disabled. Reviewing must offer a target picker that
+// enables filing once a target is selected (late binding).
+// ---------------------------------------------------------------------------
+
+describe("<BugToPrompt /> reviewing late target binding (P0-2)", () => {
+	it("shows a picker when the frozen binding has no projectId and enables File issue after selecting a target", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation((url: unknown) => {
+				if (typeof url === "string" && url.endsWith("/bugtoprompt/config")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								modes: ["issue", "clipboard"],
+								projectId: "p-srv",
+							}),
+					});
+				}
+				if (typeof url === "string" && url.includes("/targets?projectId=")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve([{ id: "t1", name: "Repo One", branch: "main" }]),
+					});
+				}
+				if (typeof url === "string" && url.endsWith("/artifact")) {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ dir: "", sessionId: "s1" }),
+					});
+				}
+				if (typeof url === "string" && url.endsWith("/issue")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								created: true,
+								number: 7,
+								url: "https://gh/7",
+							}),
+					});
+				}
+				// /streaming-token, /transcribe → reject (batch fallback path).
+				return Promise.reject(new Error("no backend for this endpoint"));
+			}),
+		);
+
+		// Zero-config (no projectId prop): projectId only arrives via the async
+		// server-config probe, i.e. AFTER the record-start freeze.
+		render(
+			<BugToPrompt
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /start capture/i }));
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /stop/i }));
+		});
+
+		await waitFor(() =>
+			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
+		);
+
+		// Frozen binding has no projectId → File issue starts disabled.
+		const fileButton = screen.getByRole("button", {
+			name: /create github issue/i,
+		}) as HTMLButtonElement;
+		expect(fileButton.disabled).toBe(true);
+
+		// The reviewing picker is offered and lists the configured target.
+		const combobox = screen.getByRole("combobox");
+		fireEvent.focus(combobox);
+		await waitFor(() =>
+			expect(screen.getAllByRole("option").length).toBeGreaterThan(0),
+		);
+
+		// Selecting the highlighted target (index 0) late-binds it.
+		await act(async () => {
+			fireEvent.keyDown(combobox, { key: "Enter" });
+		});
+
+		// File issue is now enabled — the dead-end is gone.
+		expect(fileButton.disabled).toBe(false);
+
+		// Filing now works: submitIssue must use the late-bound target, not the
+		// empty frozen binding (which would fail with "No project selected").
+		await act(async () => {
+			fireEvent.click(
+				screen.getByRole("button", { name: /create github issue/i }),
+			);
+		});
+		await waitFor(() =>
+			expect(screen.queryByText(/issue filed/i)).not.toBeNull(),
+		);
 	});
 });

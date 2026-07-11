@@ -23,9 +23,17 @@ declare global {
 			/** Host-provided async token minter (e.g. an extension background
 			 *  worker). Tried before the in-browser key mint; bypasses page CORS. */
 			mintStreamingToken?: () => Promise<string>;
-			/** Screenshot strategy. "perPage" re-prompts per navigation; "onMark"
-			 *  screenshots only on explicit Mark (default); "off" DOM-only snapshots. */
-			screenshotMode?: "perPage" | "onMark" | "off";
+			/** Screenshot strategy. "onClick" captures every eligible page click
+			 *  (local-development default); "perPage" re-prompts per navigation;
+			 *  "onMark" screenshots only on explicit Mark; "off" DOM-only snapshots. */
+			screenshotMode?: "onClick" | "perPage" | "onMark" | "off";
+			/** Default state of the pre-record Voice narration toggle. When true,
+			 *  voice narration is pre-armed at recording start (user can still
+			 *  change it before recording). Default: false. */
+			autoVoice?: boolean;
+			/** Open the capture panel immediately on mount (extension activation
+			 *  feedback) instead of only the floating launcher. Default: false. */
+			defaultOpen?: boolean;
 			/** When true, the standalone build will NOT auto-mount on load.
 			 *  Call window.BugToPrompt.mount() manually instead. */
 			manual?: boolean;
