@@ -88,5 +88,7 @@ for (const dir of [root, server]) {
 //    from package.json) and produce the distributable zip.
 run("npm", ["run", "pack:extension"], root);
 
-console.log(`\nReleased bugtoprompt + bugtoprompt-server ${version(root)}.`);
+console.log(
+	`\nReleased bugtoprompt (incl. sidecar server package) ${version(root)}.`,
+);
 console.log("Next: repin GerarPosts and reload the unpacked extension.");

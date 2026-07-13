@@ -1,14 +1,16 @@
-# bugtoprompt-server
+# bugtoprompt sidecar
 
 Local self-hosted broker for the [BugToPrompt](https://github.com/aryrabelo/bugtoprompt)
-bug-capture overlay. It mints short-lived AssemblyAI streaming tokens so the
-overlay can do live voice transcription **without the API key ever reaching the
-browser** — the key stays in this process.
+bug-capture overlay, shipped inside the `bugtoprompt` package (formerly the
+standalone `bugtoprompt-server` npm package; the hosted role moved to
+[bugtoprompt.com](https://bugtoprompt.com)). It mints short-lived AssemblyAI
+streaming tokens so the overlay can do live voice transcription **without the
+API key ever reaching the browser** — the key stays in this process.
 
 ## Run (no install)
 
 ```bash
-ASSEMBLYAI_API_KEY=<your-key> bunx bugtoprompt-server   # http://localhost:4127
+ASSEMBLYAI_API_KEY=<your-key> npx bugtoprompt   # http://localhost:4127
 ```
 
 Then point the overlay at it. In a Vite app:

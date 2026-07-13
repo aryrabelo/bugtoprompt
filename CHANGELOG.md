@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Migration: `bugtoprompt-server` was absorbed into the `bugtoprompt`
+  package.** The local sidecar now runs via `npx bugtoprompt` (same entry,
+  `server/github-issue-service.mjs`; env vars and endpoints unchanged). The
+  standalone `bugtoprompt-server` npm package will be deprecated; the hosted
+  role moved to [bugtoprompt.com](https://bugtoprompt.com). Docs and snippets
+  across the repo were updated accordingly.
+
 ## [0.13.2] - 2026-06-29
 
 ### Fixed
