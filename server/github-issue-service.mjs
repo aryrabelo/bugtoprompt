@@ -708,17 +708,27 @@ if (config.issueMode && config.targets.length === 0) {
 	process.exit(1);
 }
 
-// Resolve `gh` availability + auth exactly once at startup. Never surfaces a
-// token: we only report ready/missing/unauthenticated.
-const ghState = await detectGhState({
-	// Bound both awaited probes: a stalled `gh` must never hang startup before
-	// listen(), even when issue mode is disabled and capture endpoints are ready.
+// Resolve `gh` availability + auth in the BACKGROUND so a slow or hung
+// `gh auth status` never delays the HTTP listener — capture and transcription
+// work even when issue mode is off. Both probes are bounded by a timeout;
+// never surfaces a token, only ready/missing/unauthenticated (or pending).
+let ghState = "pending";
+const GH_PROBE_TIMEOUT_MS = 5_000;
+detectGhState({
 	lookup: () =>
-		execFileAsync("gh", ["--version"], { timeout: 5_000 }).then(
+		execFileAsync("gh", ["--version"], { timeout: GH_PROBE_TIMEOUT_MS }).then(
 			() => true,
 			() => false,
 		),
-	authStatus: () => execFileAsync("gh", ["auth", "status"], { timeout: 5_000 }),
+	// `--active` scopes the probe to the ACTIVE account: a valid active login is
+	// no longer reported as unauthenticated just because some other stale
+	// account/host configured on the machine has expired credentials.
+	authStatus: () =>
+		execFileAsync("gh", ["auth", "status", "--active"], {
+			timeout: GH_PROBE_TIMEOUT_MS,
+		}),
+}).then((state) => {
+	ghState = state;
 });
 
 // Resolve transcription provider once at startup. Local engine is preferred in
@@ -732,16 +742,32 @@ const transcriptionState = await detectTranscriptionState({
 	detectLocal: async () => localEngineReady,
 });
 
+/** True when no shared secret is configured, or the request presented it. */
+function presentsValidToken(req) {
+	const token = process.env.BUGTOPROMPT_TOKEN;
+	if (!token) return true;
+	const auth = req.headers.authorization || "";
+	const presented = auth.startsWith("Bearer ")
+		? auth.slice(7)
+		: req.headers["x-bugtoprompt-token"];
+	return presented === token;
+}
+
 const server = createServer((req, res) => {
 	const origin = req.headers.origin;
 	res.bugCors = corsHeaders(origin);
-	// /health is a self-diagnosing preflight: answer before the CORS/auth guards
-	// so any local caller (extension popup, dev harness) can probe readiness.
+	// /health answers before the CORS/auth guards so any local caller (extension
+	// popup, dev harness) can probe readiness. But when BUGTOPROMPT_TOKEN is set,
+	// unauthenticated callers get ONLY a minimal liveness response — repo count
+	// and gh/transcription readiness stay behind the token, honoring the
+	// "every non-OPTIONS request must present it" contract while keeping the
+	// discovery ping (ok:true) open.
 	if (
 		req.method === "GET" &&
 		new URL(req.url || "/", "http://localhost").pathname === "/health"
 	) {
-		handleHealth(res, config, ghState);
+		if (presentsValidToken(req)) handleHealth(res, config, ghState);
+		else sendJson(res, 200, { ok: true });
 		return;
 	}
 	// CSRF guard: a browser request from a disallowed Origin is rejected outright
@@ -753,16 +779,13 @@ const server = createServer((req, res) => {
 	}
 	// Optional shared-secret auth: when BUGTOPROMPT_TOKEN is set, every non-OPTIONS
 	// request must present it.
-	const token = process.env.BUGTOPROMPT_TOKEN;
-	if (token && req.method !== "OPTIONS") {
-		const auth = req.headers.authorization || "";
-		const presented = auth.startsWith("Bearer ")
-			? auth.slice(7)
-			: req.headers["x-bugtoprompt-token"];
-		if (presented !== token) {
-			sendJson(res, 401, { error: "unauthorized" });
-			return;
-		}
+	if (
+		process.env.BUGTOPROMPT_TOKEN &&
+		req.method !== "OPTIONS" &&
+		!presentsValidToken(req)
+	) {
+		sendJson(res, 401, { error: "unauthorized" });
+		return;
 	}
 	if (req.method === "OPTIONS") {
 		res.writeHead(204, res.bugCors);

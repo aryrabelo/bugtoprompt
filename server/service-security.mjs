@@ -7,7 +7,9 @@ export function isValidSessionId(s) {
 	return typeof s === "string" && /^cap_[A-Za-z0-9-]+$/.test(s);
 }
 
-/** A persisted screenshot filename is a bare `snap-NNNN.jpg` basename. Reject
+/** A persisted screenshot filename is a bare `snap-NNNN.jpg` basename with FOUR
+ *  OR MORE digits — the client mints `snap-${index.padStart(4,"0")}.jpg`, so a
+ *  session past 10000 marks legitimately yields `snap-10000.jpg`. Reject
  *  anything else (path separators, other extensions, invented names) BEFORE
  *  using it as a filesystem path, so the screenshotRef in the prompt, artifact
  *  JSON, JPEG, and issue-local path stay byte-identical. */
