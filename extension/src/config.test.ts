@@ -277,6 +277,20 @@ describe("isOutputMode + mode validation", () => {
 			saveConfig(chromeApi, { modes: ["bogus"] as never }),
 		).rejects.toThrow(/modes/);
 	});
+
+	it("saveConfig re-pins an orphaned defaultMode to the first retained mode", async () => {
+		const chromeApi = fakeChrome({ defaultMode: "issue" });
+		const merged = await saveConfig(chromeApi, { modes: ["clipboard"] });
+		expect(merged.modes).toEqual(["clipboard"]);
+		expect(merged.defaultMode).toBe("clipboard");
+	});
+
+	it("loadConfig re-pins a stored defaultMode absent from modes", async () => {
+		const cfg = await loadConfig(
+			fakeChrome({ modes: ["clipboard", "download"], defaultMode: "issue" }),
+		);
+		expect(cfg.defaultMode).toBe("clipboard");
+	});
 });
 
 describe("candidateBaseUrls trailing-slash canonicalization", () => {

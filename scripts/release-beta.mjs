@@ -65,10 +65,14 @@ run("npm", ["test", "--", "--run"], root);
 const alreadyPublished = (dir) => {
 	const { name } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
 	try {
-		execFileSync("npm", ["view", `${name}@${version(dir)}`, "version"], {
-			cwd: dir,
-			stdio: "pipe",
-		});
+		execFileSync(
+			"npm",
+			["view", `${name}@${version(dir)}`, "version", "--loglevel=error"],
+			{
+				cwd: dir,
+				stdio: "pipe",
+			},
+		);
 		return true;
 	} catch (err) {
 		const stderr = String(err?.stderr ?? err?.stdout ?? "");

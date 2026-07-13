@@ -342,6 +342,12 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 	) {
 		cfg.defaultMode = raw.defaultMode;
 	}
+	// A stored/patched defaultMode that isn't among the retained modes would
+	// leave the overlay with a hidden primary action — pin it to the first
+	// retained mode instead.
+	if (!cfg.modes.includes(cfg.defaultMode)) {
+		cfg.defaultMode = cfg.modes[0];
+	}
 	if (
 		raw.screenshotMode === "onClick" ||
 		raw.screenshotMode === "perPage" ||
@@ -386,6 +392,9 @@ export async function saveConfig(
 	}
 	const current = await loadConfig(chromeApi);
 	const merged: SyncConfig = { ...current, ...patch };
+	if (!merged.modes.includes(merged.defaultMode)) {
+		merged.defaultMode = merged.modes[0];
+	}
 	const payload: Record<string, unknown> = {
 		baseUrl: merged.baseUrl,
 		modes: merged.modes,

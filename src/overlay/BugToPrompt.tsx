@@ -1074,7 +1074,7 @@ export function BugToPrompt({
 							{screenshotMode === "onClick"
 								? "Every page click becomes a numbered 400×600 screenshot."
 								: screenshotMode === "perPage"
-									? "Click capture is off; one screenshot is taken per page."
+									? "Click capture is off; screenshots can be taken on in-page route changes."
 									: screenshotMode === "onMark"
 										? "Click capture is off; screenshots are taken when you mark."
 										: "Click screenshots are off for this session."}
@@ -1114,8 +1114,8 @@ export function BugToPrompt({
 						data-testid="start"
 						onClick={() => {
 							setFrozen(binding);
-							void session.start(binding).then(() => {
-								if (wantVoice) void session.enableVoice();
+							void session.start(binding).then((started) => {
+								if (started && wantVoice) void session.enableVoice();
 							});
 						}}
 					>

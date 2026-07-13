@@ -93,7 +93,7 @@ export interface UseSessionResult {
 	 *  upload failed but clipboard/download/issue still work). */
 	saveWarning?: string;
 	issueUrl?: string;
-	start(binding: SessionBinding): Promise<void>;
+	start(binding: SessionBinding): Promise<boolean>;
 	mark(): Promise<void>;
 	stop(): Promise<void>;
 	editSegment(index: number, text: string): void;
@@ -662,7 +662,7 @@ export function useSession(
 	}, [elapsed, schedulePersist]);
 
 	const start = useCallback(
-		async (binding: SessionBinding): Promise<void> => {
+		async (binding: SessionBinding): Promise<boolean> => {
 			// Kick off the display-capture request FIRST, inside the Start-capture
 			// user gesture and before any await, so getDisplayMedia is allowed. Only
 			// "off" skips screenshots entirely. Denial resolves a no-op grabber
@@ -724,7 +724,10 @@ export function useSession(
 					// bail before installing it on a dead session.
 					if (startGenerationRef.current !== generation) {
 						grabber.stop();
-						return;
+						// Signal the caller its continuation (e.g. enableVoice) must not
+						// run: this start() was superseded/unmounted, so any follow-up
+						// would leak a mic/transcriber onto a dead/replacement session.
+						return false;
 					}
 					grabberRef.current = grabber;
 					// Rebase the recording clock so the time the user spent choosing a
@@ -749,9 +752,11 @@ export function useSession(
 				// few seconds, 0 marks) still leaves a session for the next page to
 				// rehydrate. The debounced schedulePersist alone never fires here.
 				persistNow();
+				return true;
 			} catch (err) {
 				setError(`Could not start recording: ${(err as Error).message}`);
 				setPhase("error");
+				return false;
 			}
 		},
 		[elapsed, installListeners, mark, persistNow, refreshSnapshotEls],
@@ -983,9 +988,15 @@ export function useSession(
 					branch: binding.branch,
 					transcript: finalsRef.current,
 				};
+				// Publish the effective artifact locally too, so history JSON and the
+				// rendered branch metadata match the filed issue rather than the
+				// record-start target (parity with rehydrate/finalize which set both
+				// artifactRef.current and setArtifact together).
+				artifactRef.current = edited;
+				setArtifact(edited);
 				// The hosted /issue path works without a stored artifact, so a failed
 				// upload (e.g. 413 too large) must not block filing — warn and continue.
-				let artifactRef: string | undefined;
+				let artifactDir: string | undefined;
 				try {
 					const saved = await client.saveArtifact({
 						artifact: edited,
@@ -994,7 +1005,7 @@ export function useSession(
 					});
 					// The stored-artifact ref lets the backend link the bug to its
 					// capture; empty when the fallback client has no server dir.
-					if (saved.dir) artifactRef = saved.dir;
+					if (saved.dir) artifactDir = saved.dir;
 				} catch (err) {
 					setSaveWarning(
 						`Couldn't upload the capture to the server (${(err as Error).message}). Filing the issue without the hosted artifact.`,
@@ -1005,10 +1016,10 @@ export function useSession(
 					...(binding.workspaceId ? { targetId: binding.workspaceId } : {}),
 					sessionId: base.sessionId,
 					prompt:
-						artifactRef !== undefined
-							? renderPrompt(edited, { artifactDir: artifactRef })
+						artifactDir !== undefined
+							? renderPrompt(edited, { artifactDir })
 							: renderPrompt(edited),
-					...(artifactRef !== undefined ? { artifactRef } : {}),
+					...(artifactDir !== undefined ? { artifactRef: artifactDir } : {}),
 					...(transcript ? { transcriptText: transcript } : {}),
 				});
 				setIssueUrl(result.url);

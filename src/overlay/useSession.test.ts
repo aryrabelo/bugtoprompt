@@ -213,6 +213,63 @@ describe("useSession", () => {
 		expect(callArg.artifactRef).toBe("/tmp/cap");
 	});
 
+	it("(b3) submitIssue publishes the effective (overridden) target to local artifact state", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+
+		await act(async () => {
+			await result.current.start({ projectId: "proj" });
+		});
+		await act(async () => {
+			await result.current.stop();
+		});
+		// Late override selection at file-time: a different project/branch.
+		await act(async () => {
+			await result.current.submitIssue({
+				projectId: "proj2",
+				workspaceId: "ws2",
+				branch: "feat/late",
+			});
+		});
+
+		// Local history must reflect the filed target, not the record-start one.
+		expect(result.current.artifact?.projectId).toBe("proj2");
+		expect(result.current.artifact?.workspaceId).toBe("ws2");
+		expect(result.current.artifact?.branch).toBe("feat/late");
+		// The submit-time upload (the last saveArtifact) carries the edited artifact
+		// with the overridden target, not the record-start save.
+		const calls = (client.saveArtifact as Mock).mock.calls;
+		const savedArg = calls[calls.length - 1][0] as {
+			artifact: { projectId?: string; branch?: string };
+		};
+		expect(savedArg.artifact.projectId).toBe("proj2");
+		expect(savedArg.artifact.branch).toBe("feat/late");
+	});
+
+	it("(b4) a superseded start() resolves false so a chained enableVoice is skipped", async () => {
+		const client = makeFakeClient();
+		let resolveGrab: (g: typeof mockGrabber) => void = () => {};
+		const deferred = new Promise<typeof mockGrabber>((r) => {
+			resolveGrab = r;
+		});
+		// First start awaits a pending grabber; the second start (default resolved
+		// grabber) supersedes it before the first resolves.
+		(startScreenGrabber as Mock).mockReturnValueOnce(deferred);
+		const { result } = renderHook(() => useSession(client, "onClick"));
+
+		let firstStarted: boolean | undefined;
+		await act(async () => {
+			const p1 = result.current.start({});
+			await result.current.start({}); // supersede: generation bumps
+			resolveGrab(mockGrabber);
+			firstStarted = await p1;
+		});
+
+		// The stale start reports cancelled so the caller must not enableVoice.
+		expect(firstStarted).toBe(false);
+		expect(result.current.phase).toBe("recording");
+	});
+
 	it("(c) batch-fallback: transcribeBatch called when mintStreamingToken rejects", async () => {
 		const client = makeFakeClient({
 			mintStreamingToken: vi.fn().mockRejectedValue(new Error("no token")),

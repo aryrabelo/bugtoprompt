@@ -294,6 +294,7 @@ async function handleArtifact(req, res) {
 	// anything, so a rejected capture never leaves a partial capture dir behind
 	// (and never overwrites a prior capture with the same sessionId on a 400).
 	const toWrite = [];
+	const seenRefs = new Set();
 	if (Array.isArray(body.screenshotsBase64)) {
 		const snapshots = Array.isArray(artifact.snapshots)
 			? artifact.snapshots
@@ -308,6 +309,13 @@ async function handleArtifact(req, res) {
 				});
 				return;
 			}
+			if (seenRefs.has(ref)) {
+				sendJson(res, 400, {
+					error: `screenshot ${i} reuses screenshotRef ${ref}; each ref must be unique`,
+				});
+				return;
+			}
+			seenRefs.add(ref);
 			toWrite.push({ ref, b64 });
 		}
 	}

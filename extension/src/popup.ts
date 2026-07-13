@@ -242,7 +242,10 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	// Bound each sidecar probe so a stalled /health cannot freeze the popup
 	// (and its independent Start/Stop control) for the popup's whole lifetime.
 	const timedFetch: typeof fetch = (input, init) =>
-		fetch(input, { ...init, signal: AbortSignal.timeout(3000) });
+		fetch(input, {
+			...init,
+			signal: init?.signal ?? AbortSignal.timeout(3000),
+		});
 
 	const { baseUrl } = await discoverBaseUrl(
 		candidateBaseUrls(config.baseUrl, tab?.url),
@@ -269,12 +272,12 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	// race the overlay/tab state, so ignore clicks until the current one
 	// resolves. Rejections surface in errEl and always restore the button.
 	let toggling = false;
-	const doToggle = (): void => {
-		if (toggling) return;
+	const doToggle = (): Promise<void> => {
+		if (toggling) return Promise.resolve();
 		toggling = true;
 		errEl.textContent = "";
 		startBtn.disabled = true;
-		void (async () => {
+		return (async () => {
 			try {
 				const res = (await chromeApi.runtime?.sendMessage?.({
 					type: "btp:toggle",
@@ -324,7 +327,7 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 						return;
 					}
 					// Permission granted (and persisted by Chrome) — activate now.
-					doToggle();
+					await doToggle();
 				} catch (err) {
 					errEl.textContent =
 						err instanceof Error
