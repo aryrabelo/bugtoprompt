@@ -312,8 +312,9 @@ pnpm lint         # biome
 
 ## Migrating from `bugtoprompt-server`
 
-The standalone `bugtoprompt-server` npm package has been absorbed into the
-`bugtoprompt` package: the same sidecar now runs via `npx bugtoprompt`
+The standalone `bugtoprompt-server` npm package was discontinued and removed
+from npm: its local role was absorbed into the `bugtoprompt` package — the
+same sidecar now runs via `npx bugtoprompt`
 (entry: `server/github-issue-service.mjs`). The hosted role moved to
 [bugtoprompt.com](https://bugtoprompt.com). Update any scripts or docs that
 ran `npx`/`bunx bugtoprompt-server` to `npx bugtoprompt`; env vars and

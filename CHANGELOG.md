@@ -11,8 +11,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Migration: `bugtoprompt-server` was absorbed into the `bugtoprompt`
   package.** The local sidecar now runs via `npx bugtoprompt` (same entry,
   `server/github-issue-service.mjs`; env vars and endpoints unchanged). The
-  standalone `bugtoprompt-server` npm package will be deprecated; the hosted
-  role moved to [bugtoprompt.com](https://bugtoprompt.com). Docs and snippets
+  standalone `bugtoprompt-server` npm package was discontinued and removed
+  from npm; the hosted role moved to
+  [bugtoprompt.com](https://bugtoprompt.com). Docs and snippets
   across the repo were updated accordingly.
 
 ## [0.13.2] - 2026-06-29

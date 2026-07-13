@@ -1,9 +1,10 @@
 # bugtoprompt sidecar
 
 Local self-hosted broker for the [BugToPrompt](https://github.com/aryrabelo/bugtoprompt)
-bug-capture overlay, shipped inside the `bugtoprompt` package (formerly the
-standalone `bugtoprompt-server` npm package; the hosted role moved to
-[bugtoprompt.com](https://bugtoprompt.com)). It mints short-lived AssemblyAI
+bug-capture overlay, shipped inside the `bugtoprompt` package. The standalone
+`bugtoprompt-server` npm package was discontinued and removed from npm; the
+hosted role moved to
+[bugtoprompt.com](https://bugtoprompt.com). It mints short-lived AssemblyAI
 streaming tokens so the overlay can do live voice transcription **without the
 API key ever reaching the browser** — the key stays in this process.
 
