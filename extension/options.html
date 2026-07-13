@@ -33,11 +33,13 @@
 				<div id="bindings" class="bindings"></div>
 				<button id="add-binding" type="button" class="secondary">Add binding</button>
 				<p class="hint">
-					Heads up: the sidecar only trusts origins in its allowlist. For each
-					non-localhost site, start the sidecar with
-					<code>BUGTOPROMPT_ALLOWED_ORIGINS=https://&lt;host&gt;</code>
-					(comma-separate multiple) and restart it, or requests are blocked
-					(CORS 403).
+					Heads up: the sidecar only trusts exact origins (scheme + host +
+					port) in its allowlist. For each non-localhost site, start the
+					sidecar with
+					<code>BUGTOPROMPT_ALLOWED_ORIGINS=&lt;scheme&gt;://&lt;host&gt;[:&lt;port&gt;]</code>
+					&mdash; e.g. <code>https://app.example.com</code> or
+					<code>http://staging.example.com:8080</code> (comma-separate
+					multiple) and restart it, or requests are blocked (CORS 403).
 				</p>
 			</section>
 			<button id="save" type="button">Save</button>

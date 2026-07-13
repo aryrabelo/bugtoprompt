@@ -53,6 +53,11 @@ export function parseBindingRows(
 				error: `Invalid repo "${projectId}" for ${host}. Use owner/repo.`,
 			};
 		}
+		if (bindings.some((b) => b.host.toLowerCase() === host.toLowerCase())) {
+			return {
+				error: `Duplicate hostname "${host}". Use one repo binding per host.`,
+			};
+		}
 		bindings.push({ host, projectId });
 	}
 	return { bindings };

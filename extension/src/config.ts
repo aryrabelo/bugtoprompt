@@ -7,6 +7,14 @@
  */
 
 export type OutputMode = "issue" | "clipboard" | "download";
+
+const OUTPUT_MODES: readonly OutputMode[] = ["issue", "clipboard", "download"];
+/** Runtime guard: is `v` one of the documented output modes? */
+export function isOutputMode(v: unknown): v is OutputMode {
+	return (
+		typeof v === "string" && (OUTPUT_MODES as readonly string[]).includes(v)
+	);
+}
 export type ScreenshotMode = "onClick" | "perPage" | "onMark" | "off";
 
 /** Maps a page hostname to a GitHub repo. `host` is an exact hostname or a
@@ -198,6 +206,9 @@ const DEFAULT_SIDECAR_PORT = 4127;
 /** GerarPosts dev-stack convention: sidecar = web port + 3 (scripts/dev.ts). */
 const SIDECAR_PORT_OFFSET = 3;
 
+/** Per-candidate health probe timeout so a hung sidecar cannot block discovery. */
+const HEALTH_PROBE_TIMEOUT_MS = 2000;
+
 /**
  * Ordered sidecar candidates for auto-discovery: the configured URL first,
  * then the current tab's web port + 3 (the dev-stack convention, so a stack
@@ -210,7 +221,9 @@ export function candidateBaseUrls(
 ): string[] {
 	const out: string[] = [];
 	const push = (url: string): void => {
-		if (isLoopbackHttpUrl(url) && !out.includes(url)) out.push(url);
+		if (!isLoopbackHttpUrl(url)) return;
+		const origin = new URL(url).origin;
+		if (!out.includes(origin)) out.push(origin);
 	};
 	push(configured);
 	if (tabUrl && isSupportedUrl(tabUrl)) {
@@ -234,7 +247,9 @@ export async function discoverBaseUrl(
 ): Promise<{ baseUrl: string; healthy: boolean }> {
 	for (const baseUrl of candidates) {
 		try {
-			const res = await fetchImpl(`${baseUrl}/health`);
+			const res = await fetchImpl(`${baseUrl}/health`, {
+				signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+			});
 			if (!res.ok) continue;
 			const raw: unknown = await res.json();
 			if (
@@ -316,8 +331,9 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 	if (typeof raw.baseUrl === "string" && isLoopbackHttpUrl(raw.baseUrl)) {
 		cfg.baseUrl = raw.baseUrl;
 	}
-	if (Array.isArray(raw.modes) && raw.modes.length > 0) {
-		cfg.modes = raw.modes as OutputMode[];
+	if (Array.isArray(raw.modes)) {
+		const valid = raw.modes.filter(isOutputMode);
+		if (valid.length > 0) cfg.modes = valid;
 	}
 	if (
 		raw.defaultMode === "issue" ||
@@ -352,6 +368,14 @@ export async function saveConfig(
 ): Promise<SyncConfig> {
 	if (patch.baseUrl !== undefined && !isLoopbackHttpUrl(patch.baseUrl)) {
 		throw new Error("baseUrl must be a loopback HTTP origin");
+	}
+	if (
+		patch.modes !== undefined &&
+		(patch.modes.length === 0 || !patch.modes.every(isOutputMode))
+	) {
+		throw new Error(
+			"modes must be a non-empty list of issue|clipboard|download",
+		);
 	}
 	if (patch.siteBindings !== undefined) {
 		for (const b of patch.siteBindings) {

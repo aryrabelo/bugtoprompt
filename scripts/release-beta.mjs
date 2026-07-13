@@ -70,8 +70,17 @@ const alreadyPublished = (dir) => {
 			stdio: "pipe",
 		});
 		return true;
-	} catch {
-		return false;
+	} catch (err) {
+		const stderr = String(err?.stderr ?? err?.stdout ?? "");
+		// A missing package/version is the only case that legitimately means
+		// "not yet published". Transient/auth/registry errors must stay loud so
+		// a partial release is never silently treated as complete.
+		if (
+			/E404|404 Not Found|is not in this registry|no such package/i.test(stderr)
+		) {
+			return false;
+		}
+		throw err;
 	}
 };
 for (const dir of [root, server]) {

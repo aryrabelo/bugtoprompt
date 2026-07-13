@@ -1067,11 +1067,17 @@ export function BugToPrompt({
 					<CapabilityRow
 						icon={<Camera className="size-3.5" />}
 						label="Capture every click"
-						status="on"
-						statusTone="on"
+						status={screenshotMode === "onClick" ? "on" : "off"}
+						statusTone={screenshotMode === "onClick" ? "on" : "off"}
 					>
 						<p className="text-[10px] text-muted-foreground">
-							Every page click becomes a numbered 400×600 screenshot.
+							{screenshotMode === "onClick"
+								? "Every page click becomes a numbered 400×600 screenshot."
+								: screenshotMode === "perPage"
+									? "Click capture is off; one screenshot is taken per page."
+									: screenshotMode === "onMark"
+										? "Click capture is off; screenshots are taken when you mark."
+										: "Click screenshots are off for this session."}
 						</p>
 					</CapabilityRow>
 					<CapabilityRow

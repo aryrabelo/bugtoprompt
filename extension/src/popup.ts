@@ -70,19 +70,23 @@ export async function fetchHealth(
 		return null;
 	}
 	if (typeof raw !== "object" || raw === null) return null;
-	if (!("ok" in raw) || raw.ok !== true) return null;
-	const issues = "issues" in raw && raw.issues === true;
-	const repos = "repos" in raw && typeof raw.repos === "number" ? raw.repos : 0;
-	const gh =
-		"gh" in raw &&
-		(raw.gh === "ready" || raw.gh === "missing" || raw.gh === "unauthenticated")
-			? raw.gh
-			: "missing";
-	const transcription =
-		"transcription" in raw && raw.transcription === "ready"
-			? "ready"
-			: "unconfigured";
-	return { ok: true, issues, repos, gh, transcription };
+	const r = raw as Record<string, unknown>;
+	if (r.ok !== true) return null;
+	if (typeof r.issues !== "boolean") return null;
+	if (typeof r.repos !== "number") return null;
+	if (r.gh !== "ready" && r.gh !== "missing" && r.gh !== "unauthenticated") {
+		return null;
+	}
+	if (r.transcription !== "ready" && r.transcription !== "unconfigured") {
+		return null;
+	}
+	return {
+		ok: true,
+		issues: r.issues,
+		repos: r.repos,
+		gh: r.gh,
+		transcription: r.transcription,
+	};
 }
 
 export interface StatusPill {
@@ -92,7 +96,7 @@ export interface StatusPill {
 
 export function healthPill(health: HealthPayload | null): StatusPill {
 	if (!health) return { label: "Sidecar offline", tone: "down" };
-	if (health.gh !== "ready") {
+	if (health.issues && health.gh !== "ready") {
 		return { label: "Sidecar up · gh not ready", tone: "warn" };
 	}
 	return { label: "Sidecar ready", tone: "ok" };
@@ -128,13 +132,13 @@ export function buildRows(
 	const issueReady = health?.gh === "ready" && health.issues;
 	const issueStatus = !health
 		? "Sidecar offline"
-		: health.gh === "missing"
-			? "gh CLI missing"
-			: health.gh === "unauthenticated"
-				? "gh not authenticated"
-				: health.issues
-					? `${health.repos} repo(s)`
-					: "No repository configured";
+		: !health.issues
+			? "Issue filing disabled"
+			: health.gh === "missing"
+				? "gh CLI missing"
+				: health.gh === "unauthenticated"
+					? "gh not authenticated"
+					: `${health.repos} repo(s)`;
 	return [
 		{
 			key: "capture",
@@ -235,13 +239,18 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 			: kind === "loopback";
 	const mode = popupMode(kind, granted, active);
 
+	// Bound each sidecar probe so a stalled /health cannot freeze the popup
+	// (and its independent Start/Stop control) for the popup's whole lifetime.
+	const timedFetch: typeof fetch = (input, init) =>
+		fetch(input, { ...init, signal: AbortSignal.timeout(3000) });
+
 	const { baseUrl } = await discoverBaseUrl(
 		candidateBaseUrls(config.baseUrl, tab?.url),
-		fetch,
+		timedFetch,
 	);
 	targetEl.textContent = baseUrl;
 
-	const health = await fetchHealth(baseUrl, fetch);
+	const health = await fetchHealth(baseUrl, timedFetch);
 	renderPill(pillEl, healthPill(health));
 	renderRows(rowsEl, buildRows(config, health));
 
@@ -256,18 +265,33 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		errEl.textContent = offlineHint(pageOrigin(tab?.url));
 	}
 
+	// In-flight guard: a rapid second click while a toggle is settling would
+	// race the overlay/tab state, so ignore clicks until the current one
+	// resolves. Rejections surface in errEl and always restore the button.
+	let toggling = false;
 	const doToggle = (): void => {
+		if (toggling) return;
+		toggling = true;
 		errEl.textContent = "";
+		startBtn.disabled = true;
 		void (async () => {
-			const res = (await chromeApi.runtime?.sendMessage?.({
-				type: "btp:toggle",
-			})) as { active: boolean; error?: string } | undefined;
-			if (res?.error) {
-				errEl.textContent = res.error;
-				return;
+			try {
+				const res = (await chromeApi.runtime?.sendMessage?.({
+					type: "btp:toggle",
+				})) as { active: boolean; error?: string } | undefined;
+				if (res?.error) {
+					errEl.textContent = res.error;
+					return;
+				}
+				paint(res?.active === true);
+				if (res?.active) window.close();
+			} catch (err) {
+				errEl.textContent =
+					err instanceof Error ? err.message : "Toggle failed. Try again.";
+			} finally {
+				toggling = false;
+				startBtn.disabled = false;
 			}
-			paint(res?.active === true);
-			if (res?.active) window.close();
 		})();
 	};
 
@@ -282,20 +306,34 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	if (mode === "enable") {
 		startBtn.textContent = "Enable on this site";
 		startBtn.dataset.active = "false";
+		let enabling = false;
 		startBtn.addEventListener("click", () => {
+			if (enabling) return;
+			enabling = true;
 			errEl.textContent = "";
+			startBtn.disabled = true;
 			void (async () => {
-				if (!pattern) return;
-				const ok = await (chromeApi.permissions?.request({
-					origins: [pattern],
-				}) ?? Promise.resolve(false));
-				if (!ok) {
+				try {
+					if (!pattern) return;
+					const ok = await (chromeApi.permissions?.request({
+						origins: [pattern],
+					}) ?? Promise.resolve(false));
+					if (!ok) {
+						errEl.textContent =
+							"Permission denied. BugToPrompt needs access to this site to capture.";
+						return;
+					}
+					// Permission granted (and persisted by Chrome) — activate now.
+					doToggle();
+				} catch (err) {
 					errEl.textContent =
-						"Permission denied. BugToPrompt needs access to this site to capture.";
-					return;
+						err instanceof Error
+							? err.message
+							: "Failed to enable on this site.";
+				} finally {
+					enabling = false;
+					startBtn.disabled = false;
 				}
-				// Permission granted (and persisted by Chrome) — activate now.
-				doToggle();
 			})();
 		});
 		return;

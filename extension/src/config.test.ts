@@ -6,6 +6,7 @@ import {
 	DEFAULT_CONFIG,
 	discoverBaseUrl,
 	isLoopbackHttpUrl,
+	isOutputMode,
 	isSupportedUrl,
 	isValidBindingHost,
 	isValidProjectId,
@@ -251,5 +252,37 @@ describe("siteBindings persistence", () => {
 				siteBindings: [{ host: "bad host", projectId: "acme/x" }],
 			}),
 		).rejects.toThrow(/Invalid site binding/);
+	});
+});
+
+describe("isOutputMode + mode validation", () => {
+	it("guards documented modes only", () => {
+		expect(isOutputMode("issue")).toBe(true);
+		expect(isOutputMode("download")).toBe(true);
+		expect(isOutputMode("bogus")).toBe(false);
+		expect(isOutputMode(42)).toBe(false);
+	});
+
+	it("loadConfig drops invalid mode elements and falls back when none valid", async () => {
+		const cfg = await loadConfig(fakeChrome({ modes: ["issue", "bogus", 7] }));
+		expect(cfg.modes).toEqual(["issue"]);
+		const cfg2 = await loadConfig(fakeChrome({ modes: ["bogus"] }));
+		expect(cfg2.modes).toEqual(DEFAULT_CONFIG.modes);
+	});
+
+	it("saveConfig rejects empty or invalid modes", async () => {
+		const chromeApi = fakeChrome();
+		await expect(saveConfig(chromeApi, { modes: [] })).rejects.toThrow(/modes/);
+		await expect(
+			saveConfig(chromeApi, { modes: ["bogus"] as never }),
+		).rejects.toThrow(/modes/);
+	});
+});
+
+describe("candidateBaseUrls trailing-slash canonicalization", () => {
+	it("normalizes a configured URL with a trailing slash to its origin", () => {
+		expect(candidateBaseUrls("http://127.0.0.1:4127/", undefined)).toEqual([
+			"http://127.0.0.1:4127",
+		]);
 	});
 });

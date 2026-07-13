@@ -290,25 +290,14 @@ async function handleArtifact(req, res) {
 		sendJson(res, 400, { error: "invalid sessionId" });
 		return;
 	}
-	const dir = join(CAPTURES_ROOT, sessionId);
-	mkdirSync(dir, { recursive: true });
-
-	writeFileSync(join(dir, "artifact.json"), JSON.stringify(artifact, null, 2));
-
-	if (typeof body.audioBase64 === "string" && body.audioBase64.length > 0) {
-		writeFileSync(
-			join(dir, "audio.webm"),
-			Buffer.from(body.audioBase64, "base64"),
-		);
-	}
-
+	// Validate the FULL screenshot payload BEFORE creating the dir or writing
+	// anything, so a rejected capture never leaves a partial capture dir behind
+	// (and never overwrites a prior capture with the same sessionId on a 400).
+	const toWrite = [];
 	if (Array.isArray(body.screenshotsBase64)) {
 		const snapshots = Array.isArray(artifact.snapshots)
 			? artifact.snapshots
 			: [];
-		// Validate every non-empty image up front so a bad ref never leaves a
-		// half-written capture dir behind.
-		const toWrite = [];
 		for (let i = 0; i < body.screenshotsBase64.length; i++) {
 			const b64 = body.screenshotsBase64[i];
 			if (typeof b64 !== "string" || b64.length === 0) continue;
@@ -321,11 +310,24 @@ async function handleArtifact(req, res) {
 			}
 			toWrite.push({ ref, b64 });
 		}
-		// screenshotRef IS the persisted filename: prompt, artifact JSON, JPEG, and
-		// issue-local path stay identical rather than inventing screenshot-NNN.png.
-		for (const { ref, b64 } of toWrite) {
-			writeFileSync(join(dir, ref), Buffer.from(b64, "base64"));
-		}
+	}
+
+	const dir = join(CAPTURES_ROOT, sessionId);
+	mkdirSync(dir, { recursive: true });
+
+	writeFileSync(join(dir, "artifact.json"), JSON.stringify(artifact, null, 2));
+
+	if (typeof body.audioBase64 === "string" && body.audioBase64.length > 0) {
+		writeFileSync(
+			join(dir, "audio.webm"),
+			Buffer.from(body.audioBase64, "base64"),
+		);
+	}
+
+	// screenshotRef IS the persisted filename: prompt, artifact JSON, JPEG, and
+	// issue-local path stay identical rather than inventing screenshot-NNN.png.
+	for (const { ref, b64 } of toWrite) {
+		writeFileSync(join(dir, ref), Buffer.from(b64, "base64"));
 	}
 
 	sendJson(res, 200, { dir, sessionId });
@@ -701,12 +703,14 @@ if (config.issueMode && config.targets.length === 0) {
 // Resolve `gh` availability + auth exactly once at startup. Never surfaces a
 // token: we only report ready/missing/unauthenticated.
 const ghState = await detectGhState({
+	// Bound both awaited probes: a stalled `gh` must never hang startup before
+	// listen(), even when issue mode is disabled and capture endpoints are ready.
 	lookup: () =>
-		execFileAsync("gh", ["--version"]).then(
+		execFileAsync("gh", ["--version"], { timeout: 5_000 }).then(
 			() => true,
 			() => false,
 		),
-	authStatus: () => execFileAsync("gh", ["auth", "status"]),
+	authStatus: () => execFileAsync("gh", ["auth", "status"], { timeout: 5_000 }),
 });
 
 // Resolve transcription provider once at startup. Local engine is preferred in

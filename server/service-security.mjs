@@ -12,7 +12,9 @@ export function isValidSessionId(s) {
  *  using it as a filesystem path, so the screenshotRef in the prompt, artifact
  *  JSON, JPEG, and issue-local path stay byte-identical. */
 export function isValidScreenshotRef(s) {
-	return typeof s === "string" && /^snap-[0-9]{4}\.jpg$/.test(s);
+	return (
+		typeof s === "string" && /^snap-(?:[0-9]{4}|[1-9][0-9]{4,})\.jpg$/.test(s)
+	);
 }
 
 /** Parse BUGTOPROMPT_ALLOWED_ORIGINS (comma-separated exact origins) into a Set. */

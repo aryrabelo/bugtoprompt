@@ -433,6 +433,11 @@ export function useSession(
 	/** True only while the session is actively recording; guards the click handler
 	 *  from misfiring if React's concurrent-mode defers the cleanup slightly. */
 	const recordingRef = useRef(false);
+	/** Bumped on every start() and on unmount. start() captures its value before
+	 *  awaiting the display chooser and re-checks it after; a mismatch means the
+	 *  hook was superseded or unmounted during the await, so the freshly acquired
+	 *  grabber must be stopped instead of installed on a dead session. */
+	const startGenerationRef = useRef(0);
 	/** Shared signal for the mount-once rehydrate effect; start() sets
 	 *  cancelled=true to abort a concurrent rehydration so it cannot override
 	 *  the new recording phase. */
@@ -583,7 +588,7 @@ export function useSession(
 				clickPreviewsRef.current = [
 					...clickPreviewsRef.current,
 					{ clickNumber, screenshotRef, url },
-				];
+				].sort((a, b) => a.clickNumber - b.clickNumber);
 				setClickPreviews(clickPreviewsRef.current);
 				setFlashTick((n) => n + 1);
 				schedulePersist();
@@ -700,6 +705,10 @@ export function useSession(
 			// session was being rehydrated asynchronously, its pending setPhase call
 			// must not override the recording phase we are about to set.
 			rehydrateSignalRef.current.cancelled = true;
+			// Mark this start() as the current generation so the post-await guard
+			// below can detect a supersede (another start) or unmount that happened
+			// while the display chooser was open.
+			const generation = ++startGenerationRef.current;
 
 			// Everything past here is wrapped so an unexpected failure (e.g. the
 			// screen grabber throwing) surfaces as a visible error instead of a
@@ -710,7 +719,19 @@ export function useSession(
 				grabberRef.current = undefined;
 				if (grabberPromise) {
 					const grabber = await grabberPromise;
+					// The hook was superseded (another start) or unmounted while the
+					// display chooser was open — stop the freshly acquired stream and
+					// bail before installing it on a dead session.
+					if (startGenerationRef.current !== generation) {
+						grabber.stop();
+						return;
+					}
 					grabberRef.current = grabber;
+					// Rebase the recording clock so the time the user spent choosing a
+					// display is not counted as elapsed recording with no activity.
+					startEpochRef.current = Date.now();
+					startPerfRef.current =
+						typeof performance !== "undefined" ? performance.now() : 0;
 					setScreenshotsUnavailable(!grabber.available);
 				}
 				refreshSnapshotEls();
@@ -951,9 +972,15 @@ export function useSession(
 			if (!base || !pending) return;
 			setPhase("saving");
 			try {
-				// Persist any caption edits before the backend reads the artifact from disk.
+				// Persist caption edits AND the effective target (a late override
+				// selection) before the backend reads the artifact from disk, so the
+				// uploaded/rendered metadata matches the chosen project/branch rather
+				// than the target frozen at record-start.
 				const edited: CaptureArtifact = {
 					...base,
+					projectId: binding.projectId,
+					workspaceId: binding.workspaceId,
+					branch: binding.branch,
 					transcript: finalsRef.current,
 				};
 				// The hosted /issue path works without a stored artifact, so a failed
@@ -1068,6 +1095,9 @@ export function useSession(
 	// ---------------------------------------------------------------------------
 	useEffect(() => {
 		return () => {
+			// Invalidate any in-flight start() awaiting the display chooser so its
+			// post-await guard stops the acquired grabber instead of leaking it.
+			startGenerationRef.current++;
 			clearTimeout(persistTimerRef.current);
 			clearInterval(timerRef.current);
 			for (const off of cleanupsRef.current) off();

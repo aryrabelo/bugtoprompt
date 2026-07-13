@@ -103,7 +103,11 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 			});
 		} else {
 			const mev = ev as MouseEvent;
-			emit(target, tMs, "click", { point: { x: mev.clientX, y: mev.clientY } });
+			if (mev.button === 0) {
+				emit(target, tMs, "click", {
+					point: { x: mev.clientX, y: mev.clientY },
+				});
+			}
 		}
 	};
 	// `mousedown`/`mouseup` cover mouse clicks AND drag-selections; a bare

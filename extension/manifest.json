@@ -35,22 +35,11 @@
 			"run_at": "document_idle"
 		}
 	],
-	"web_accessible_resources": [
-		{
-			"resources": ["bugtoprompt.global.js"],
-			"matches": [
-				"http://localhost/*",
-				"http://127.0.0.1/*",
-				"http://*/*",
-				"https://*/*"
-			]
-		}
-	],
 	"commands": {
 		"toggle-capture": {
 			"suggested_key": {
-				"default": "Ctrl+Shift+B",
-				"mac": "Command+Shift+B"
+				"default": "Ctrl+Shift+Y",
+				"mac": "Command+Shift+Y"
 			},
 			"description": "Toggle BugToPrompt capture on the active tab"
 		}

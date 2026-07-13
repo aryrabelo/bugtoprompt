@@ -45,6 +45,8 @@ describe("isValidScreenshotRef", () => {
 	it("accepts bare snap-NNNN.jpg basenames", () => {
 		expect(isValidScreenshotRef("snap-0000.jpg")).toBe(true);
 		expect(isValidScreenshotRef("snap-0042.jpg")).toBe(true);
+		// padStart(4) emits 5+ digits for long captures (index >= 10000).
+		expect(isValidScreenshotRef("snap-10000.jpg")).toBe(true);
 	});
 	it("rejects path separators, other extensions, and junk", () => {
 		for (const bad of [
