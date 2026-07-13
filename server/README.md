@@ -11,7 +11,9 @@ API key ever reaching the browser** — the key stays in this process.
 ## Run (no install)
 
 ```bash
-ASSEMBLYAI_API_KEY=<your-key> npx bugtoprompt   # http://localhost:4127
+npx bugtoprompt   # http://localhost:4127
+# optional — enables AssemblyAI streaming + batch transcription (BYO key):
+# ASSEMBLYAI_API_KEY=<your-key> npx bugtoprompt
 ```
 
 Then point the overlay at it. In a Vite app:
@@ -29,16 +31,19 @@ mixed-content blocking.
 |---|---|---|
 | `GET`  | `/bugtoprompt/config` | advertised modes / projectId — its `200` activates the overlay's backend mode |
 | `POST` | `/streaming-token` | mint a 300s AssemblyAI streaming token (`{ token, expiresAt }`) |
-| `POST` | `/transcribe` | AssemblyAI batch transcript of a saved capture |
+| `POST` | `/transcribe` | batch transcript of a saved capture — local parakeet CLI by default (`parakeet-mlx`, `uvx parakeet-mlx`, or `BUGTOPROMPT_PARAKEET_CMD`); AssemblyAI when `ASSEMBLYAI_API_KEY` is set |
 | `POST` | `/artifact` | persist `artifact.json` + audio + screenshots |
 | `GET`  | `/targets` | configured repos as targets |
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
+
+`GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
+`local` means no AssemblyAI key is set and the parakeet CLI path will be used.
 
 ## Configuration (env)
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ASSEMBLYAI_API_KEY` | — | required for transcription; without it `/streaming-token` and `/transcribe` return `501` |
+| `ASSEMBLYAI_API_KEY` | — | optional; enables AssemblyAI streaming + batch transcription. Without it `/transcribe` falls back to the local parakeet path and only `/streaming-token` returns `501` (streaming is opt-in) |
 | `BUGTOPROMPT_HOST` | `127.0.0.1` | bind address; set to `0.0.0.0` to expose beyond localhost (add auth + TLS) |
 | `BUGTOPROMPT_PORT` | `4127` | listen port |
 | `BUGTOPROMPT_REPOS` | — | comma-separated repos as targets: `owner/repo[#branch]` |
