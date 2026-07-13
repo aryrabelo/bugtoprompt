@@ -37,13 +37,13 @@ mixed-content blocking.
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
 
 `GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
-`local` means no AssemblyAI key is set and the parakeet CLI path will be used.
+`local` means no AssemblyAI key is set and a local parakeet CLI was found.
 
 ## Configuration (env)
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ASSEMBLYAI_API_KEY` | — | optional; enables AssemblyAI streaming + batch transcription. Without it `/transcribe` falls back to the local parakeet path and only `/streaming-token` returns `501` (streaming is opt-in) |
+| `ASSEMBLYAI_API_KEY` | — | optional; enables AssemblyAI streaming + batch transcription. Without it `/transcribe` uses the local parakeet path (`501` with an install hint if no local CLI is found) and `/streaming-token` returns `501` (streaming is opt-in) |
 | `BUGTOPROMPT_HOST` | `127.0.0.1` | bind address; set to `0.0.0.0` to expose beyond localhost (add auth + TLS) |
 | `BUGTOPROMPT_PORT` | `4127` | listen port |
 | `BUGTOPROMPT_REPOS` | — | comma-separated repos as targets: `owner/repo[#branch]` |
