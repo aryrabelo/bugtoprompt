@@ -62,6 +62,25 @@ describe("fetchHealth", () => {
 			),
 		).toBeNull();
 	});
+
+	it("passes an abort signal when a timeout is given", async () => {
+		const payload: HealthPayload = {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "ready",
+			transcription: "unconfigured",
+		};
+		const fetchImpl = vi.fn(async () => jsonResponse(payload));
+		await fetchHealth(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+			2000,
+		);
+		const [url, opts] = fetchImpl.mock.calls[0] as [string, RequestInit?];
+		expect(url).toBe("http://127.0.0.1:4127/health");
+		expect(opts?.signal).toBeInstanceOf(AbortSignal);
+	});
 });
 
 describe("healthPill", () => {

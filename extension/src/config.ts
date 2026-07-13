@@ -206,9 +206,6 @@ const DEFAULT_SIDECAR_PORT = 4127;
 /** GerarPosts dev-stack convention: sidecar = web port + 3 (scripts/dev.ts). */
 const SIDECAR_PORT_OFFSET = 3;
 
-/** Per-candidate health probe timeout so a hung sidecar cannot block discovery. */
-const HEALTH_PROBE_TIMEOUT_MS = 2000;
-
 /**
  * Ordered sidecar candidates for auto-discovery: the configured URL first,
  * then the current tab's web port + 3 (the dev-stack convention, so a stack

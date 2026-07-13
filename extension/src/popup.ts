@@ -60,10 +60,21 @@ export interface HealthPayload {
 export async function fetchHealth(
 	baseUrl: string,
 	fetchImpl: typeof fetch,
+	timeoutMs?: number,
 ): Promise<HealthPayload | null> {
 	let raw: unknown;
 	try {
-		const res = await fetchImpl(`${baseUrl}/health`);
+		// Bound the probe so a hung /health never keeps the popup spinning; the
+		// button is already wired independently of this result.
+		const signal =
+			typeof timeoutMs === "number" &&
+			typeof AbortSignal !== "undefined" &&
+			typeof AbortSignal.timeout === "function"
+				? AbortSignal.timeout(timeoutMs)
+				: undefined;
+		const res = await (signal
+			? fetchImpl(`${baseUrl}/health`, { signal })
+			: fetchImpl(`${baseUrl}/health`));
 		if (!res.ok) return null;
 		raw = await res.json();
 	} catch {
@@ -239,34 +250,10 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 			: kind === "loopback";
 	const mode = popupMode(kind, granted, active);
 
-	// Bound each sidecar probe so a stalled /health cannot freeze the popup
-	// (and its independent Start/Stop control) for the popup's whole lifetime.
-	const timedFetch: typeof fetch = (input, init) =>
-		fetch(input, {
-			...init,
-			signal: init?.signal ?? AbortSignal.timeout(3000),
-		});
-
-	const { baseUrl } = await discoverBaseUrl(
-		candidateBaseUrls(config.baseUrl, tab?.url),
-		timedFetch,
-	);
-	targetEl.textContent = baseUrl;
-
-	const health = await fetchHealth(baseUrl, timedFetch);
-	renderPill(pillEl, healthPill(health));
-	renderRows(rowsEl, buildRows(config, health));
-
 	const paint = (isActive: boolean): void => {
 		startBtn.textContent = isActive ? "Stop capture" : "Start capture";
 		startBtn.dataset.active = String(isActive);
 	};
-
-	// When the sidecar can't be reached for a bound non-localhost site, the most
-	// common cause is its origin allowlist — surface the exact env fix.
-	if (!health && kind === "http" && (granted || active)) {
-		errEl.textContent = offlineHint(pageOrigin(tab?.url));
-	}
 
 	// In-flight guard: a rapid second click while a toggle is settling would
 	// race the overlay/tab state, so ignore clicks until the current one
@@ -306,6 +293,9 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		return;
 	}
 
+	// Wire the primary action BEFORE the sidecar probe so capture stays usable
+	// even if discovery or /health hangs — clipboard/download capture needs no
+	// sidecar.
 	if (mode === "enable") {
 		startBtn.textContent = "Enable on this site";
 		startBtn.dataset.active = "false";
@@ -339,11 +329,33 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 				}
 			})();
 		});
-		return;
+	} else {
+		paint(active);
+		startBtn.addEventListener("click", doToggle);
 	}
 
-	paint(active);
-	startBtn.addEventListener("click", doToggle);
+	// Sidecar discovery + health decorate the pill/capability rows only; they run
+	// after the button is wired so a slow endpoint never blocks capture. Each
+	// probe is bounded so a stalled /health cannot freeze the popup either.
+	const HEALTH_TIMEOUT_MS = 4000;
+	const timedFetch: typeof fetch = (input, init) =>
+		fetch(input, {
+			...init,
+			signal: init?.signal ?? AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+		});
+	const { baseUrl } = await discoverBaseUrl(
+		candidateBaseUrls(config.baseUrl, tab?.url),
+		timedFetch,
+	);
+	targetEl.textContent = baseUrl;
+	const health = await fetchHealth(baseUrl, timedFetch, HEALTH_TIMEOUT_MS);
+	renderPill(pillEl, healthPill(health));
+	renderRows(rowsEl, buildRows(config, health));
+	// When the sidecar can't be reached for a bound non-localhost site, the most
+	// common cause is its origin allowlist — surface the exact env fix.
+	if (!health && kind === "http" && (granted || active)) {
+		errEl.textContent = offlineHint(pageOrigin(tab?.url));
+	}
 }
 
 declare const chrome: ChromeLike;
