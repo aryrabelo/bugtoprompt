@@ -80,6 +80,15 @@ describe("loadConfig / saveConfig", () => {
 		expect(cfg.screenshotMode).toBe("onMark");
 	});
 
+	it("drops invalid modes entries, keeping defaults when none survive", async () => {
+		const partial = await loadConfig(
+			fakeChrome({ modes: ["issue", "bogus", 3] }),
+		);
+		expect(partial.modes).toEqual(["issue"]);
+		const allBad = await loadConfig(fakeChrome({ modes: ["nope", 1] }));
+		expect(allBad.modes).toEqual(DEFAULT_CONFIG.modes);
+	});
+
 	it("saves a valid baseUrl and rejects a remote one", async () => {
 		const chromeApi = fakeChrome();
 		const merged = await saveConfig(chromeApi, {
@@ -109,6 +118,13 @@ describe("candidateBaseUrls (sidecar auto-discovery order)", () => {
 		).toEqual(["http://127.0.0.1:4127"]);
 		expect(candidateBaseUrls("http://127.0.0.1:9999", undefined)).toEqual([
 			"http://127.0.0.1:9999",
+			"http://127.0.0.1:4127",
+		]);
+	});
+
+	it("normalizes a trailing-slash configured URL to its origin", () => {
+		expect(candidateBaseUrls("http://localhost:4127/", undefined)).toEqual([
+			"http://localhost:4127",
 			"http://127.0.0.1:4127",
 		]);
 	});
@@ -252,6 +268,19 @@ describe("siteBindings persistence", () => {
 				siteBindings: [{ host: "bad host", projectId: "acme/x" }],
 			}),
 		).rejects.toThrow(/Invalid site binding/);
+	});
+
+	it("normalizes whitespace and dedupes bindings on save", async () => {
+		const chromeApi = fakeChrome();
+		const merged = await saveConfig(chromeApi, {
+			siteBindings: [
+				{ host: "  app.example.com  ", projectId: " acme/app " },
+				{ host: "app.example.com", projectId: "acme/other" },
+			],
+		});
+		expect(merged.siteBindings).toEqual([
+			{ host: "app.example.com", projectId: "acme/other" },
+		]);
 	});
 });
 

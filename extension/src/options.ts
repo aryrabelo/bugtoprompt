@@ -75,12 +75,14 @@ function addBindingRow(container: HTMLElement, binding?: SiteBinding): void {
 	host.type = "text";
 	host.className = "binding-host";
 	host.placeholder = "app.example.com";
+	host.setAttribute("aria-label", "Site hostname");
 	host.value = binding?.host ?? "";
 
 	const repo = document.createElement("input");
 	repo.type = "text";
 	repo.className = "binding-repo";
 	repo.placeholder = "owner/repo";
+	repo.setAttribute("aria-label", "GitHub repository (owner/repo)");
 	repo.value = binding?.projectId ?? "";
 
 	const remove = document.createElement("button");

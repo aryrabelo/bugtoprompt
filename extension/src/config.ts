@@ -244,11 +244,12 @@ export function candidateBaseUrls(
 export async function discoverBaseUrl(
 	candidates: string[],
 	fetchImpl: typeof fetch,
+	timeoutMs = 2000,
 ): Promise<{ baseUrl: string; healthy: boolean }> {
 	for (const baseUrl of candidates) {
 		try {
 			const res = await fetchImpl(`${baseUrl}/health`, {
-				signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS),
+				signal: AbortSignal.timeout(timeoutMs),
 			});
 			if (!res.ok) continue;
 			const raw: unknown = await res.json();
@@ -395,6 +396,7 @@ export async function saveConfig(
 	if (!merged.modes.includes(merged.defaultMode)) {
 		merged.defaultMode = merged.modes[0];
 	}
+	merged.siteBindings = normalizeBindings(merged.siteBindings);
 	const payload: Record<string, unknown> = {
 		baseUrl: merged.baseUrl,
 		modes: merged.modes,
