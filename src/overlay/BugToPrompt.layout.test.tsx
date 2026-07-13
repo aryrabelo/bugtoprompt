@@ -87,7 +87,12 @@ afterEach(() => {
 describe("idle layout hierarchy", () => {
 	it("shows three bordered capability rows, a full-width primary, and history behind a disclosure that follows the primary", () => {
 		render(
-			<BugToPrompt client={makeFakeClient()} projectId="p" modes={["issue"]} />,
+			<BugToPrompt
+				client={makeFakeClient()}
+				projectId="p"
+				modes={["issue"]}
+				screenshotMode="onClick"
+			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
 
@@ -124,10 +129,15 @@ describe("idle layout hierarchy", () => {
 
 	it("exposes a stable ordered idle structure (fixture harness)", () => {
 		render(
-			<BugToPrompt client={makeFakeClient()} projectId="p" modes={["issue"]} />,
+			<BugToPrompt
+				client={makeFakeClient()}
+				projectId="p"
+				modes={["issue"]}
+				screenshotMode="onClick"
+			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
-		const dialog = screen.getByRole("dialog");
+		expect(screen.getByRole("dialog")).toBeTruthy();
 		// Deterministic hierarchy: the three capability rows are present and the
 		// primary + history disclosure follow.
 		expect(screen.getByText(/capture every click/i)).toBeTruthy();

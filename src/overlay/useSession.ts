@@ -84,6 +84,10 @@ export interface UseSessionResult {
 		screenshotRef: string;
 		url: string;
 	}>;
+	/** Total numbered clicks recorded in the current session (onClick mode),
+	 *  including clicks whose screenshot grab failed. Drives the recording click
+	 *  counter so DOM-only clicks aren't undercounted vs clickPreviews. */
+	clickCount: number;
 	/** True when a screenshot mode was requested but the display stream could not
 	 *  be acquired (denied/unavailable). Recording continues; the UI shows one
 	 *  non-blocking "Screenshots unavailable" notice. */
@@ -227,6 +231,10 @@ interface RehydrateBag {
 	grabberRef: { current: ScreenGrabber | undefined };
 	screenshotModeRef: { current: ScreenshotMode };
 	clickCounterRef: { current: number };
+	objectUrlsRef: { current: string[] };
+	clickPreviewsRef: {
+		current: Array<{ clickNumber: number; screenshotRef: string; url: string }>;
+	};
 	// ReturnType<typeof setInterval> is an allowed exception per ts-no-return-type
 	timerRef: { current: ReturnType<typeof setInterval> | undefined };
 	artifactRef: { current: CaptureArtifact | undefined };
@@ -237,6 +245,10 @@ interface RehydrateBag {
 	setPhase: (v: SessionPhase) => void;
 	setElapsedMs: (v: number) => void;
 	setStreaming: (v: boolean) => void;
+	setClickPreviews: (
+		v: Array<{ clickNumber: number; screenshotRef: string; url: string }>,
+	) => void;
+	setClickCount: (v: number) => void;
 	// stable callbacks
 	mark: () => Promise<void>;
 	installListeners: (throttledMark: () => void) => void;
@@ -350,6 +362,36 @@ async function rehydrateSession(
 	if (signal.cancelled) return;
 	bag.shotBlobsRef.current = blobs;
 
+	// Rebuild click-screenshot previews so the review strip / latest thumbnail
+	// survive a reload. A persisted click carries clickNumber + screenshotRef on
+	// its event; the matching blob lives at the snapshot index sharing that
+	// screenshotRef. Only clicks (clickNumber set) enter the strip.
+	const blobByRef = new Map<string, Blob>();
+	session.snapshots.forEach((s, i) => {
+		const b = blobs[i];
+		if (s.screenshotRef && b) blobByRef.set(s.screenshotRef, b);
+	});
+	const previews = session.events
+		.filter(
+			(e): e is CaptureEvent & { clickNumber: number; screenshotRef: string } =>
+				e.clickNumber !== undefined &&
+				e.screenshotRef !== undefined &&
+				blobByRef.has(e.screenshotRef),
+		)
+		.map((e) => {
+			const url = URL.createObjectURL(blobByRef.get(e.screenshotRef) as Blob);
+			bag.objectUrlsRef.current.push(url);
+			return {
+				clickNumber: e.clickNumber,
+				screenshotRef: e.screenshotRef,
+				url,
+			};
+		})
+		.sort((a, b) => a.clickNumber - b.clickNumber);
+	bag.clickPreviewsRef.current = previews;
+	bag.setClickPreviews(previews);
+	bag.setClickCount(bag.clickCounterRef.current);
+
 	// Align the performance-relative start with the original wall-clock epoch
 	// so elapsed() remains meaningful across a page reload.
 	bag.startPerfRef.current =
@@ -384,6 +426,10 @@ export function useSession(
 	const [clickPreviews, setClickPreviews] = useState<
 		Array<{ clickNumber: number; screenshotRef: string; url: string }>
 	>([]);
+	// Numbered click count (onClick mode), including clicks whose screenshot grab
+	// failed (DOM-only) — decoupled from clickPreviews, which holds only clicks
+	// with a successful screenshot blob.
+	const [clickCount, setClickCount] = useState(0);
 	const [screenshotsUnavailable, setScreenshotsUnavailable] = useState(false);
 	const [voiceEnabled, setVoiceEnabled] = useState(false);
 	const [error, setError] = useState<string>();
@@ -555,6 +601,7 @@ export function useSession(
 			if (screenshotModeRef.current !== "onClick") return;
 			const clickNumber = ++clickCounterRef.current;
 			ev.clickNumber = clickNumber;
+			setClickCount(clickNumber);
 			const snap = captureInteractiveSnapshot(window);
 			latestEls.current = snap.interactiveElements;
 			const index = snapshotsRef.current.length;
@@ -610,8 +657,11 @@ export function useSession(
 						eventsRef.current.push(ev);
 						schedulePersist();
 						// Route-change auto-snap keeps its own throttle; no click point →
-						// whole-frame fallback framing.
-						if (ev.kind === "route") throttledMark();
+						// whole-frame fallback framing. "onMark" screenshots only on an
+						// explicit Mark, so route changes must not auto-snap there.
+						if (ev.kind === "route" && screenshotModeRef.current !== "onMark") {
+							throttledMark();
+						}
 					},
 					elapsedMs: elapsed,
 					resolveRef,
@@ -689,6 +739,7 @@ export function useSession(
 			objectUrlsRef.current = [];
 			clickPreviewsRef.current = [];
 			setClickPreviews([]);
+			setClickCount(0);
 			eventsRef.current = [];
 			snapshotsRef.current = [];
 			shotBlobsRef.current = [];
@@ -1053,6 +1104,7 @@ export function useSession(
 		objectUrlsRef.current = [];
 		clickPreviewsRef.current = [];
 		setClickPreviews([]);
+		setClickCount(0);
 		// Remove the persisted session state; blobs are kept for history.
 		removeSession();
 	}, []);
@@ -1081,6 +1133,8 @@ export function useSession(
 				grabberRef,
 				screenshotModeRef,
 				clickCounterRef,
+				objectUrlsRef,
+				clickPreviewsRef,
 				timerRef,
 				artifactRef,
 				setArtifact,
@@ -1089,6 +1143,8 @@ export function useSession(
 				setPhase,
 				setElapsedMs,
 				setStreaming,
+				setClickPreviews,
+				setClickCount,
 				mark,
 				installListeners,
 				elapsed,
@@ -1144,6 +1200,7 @@ export function useSession(
 		hasKey,
 		flashTick,
 		clickPreviews,
+		clickCount,
 		screenshotsUnavailable,
 		error,
 		saveWarning,
