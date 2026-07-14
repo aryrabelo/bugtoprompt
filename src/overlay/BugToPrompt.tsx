@@ -214,16 +214,22 @@ function useAutoConfig({
 		projectIdProp ?? (clientProp !== undefined ? undefined : auto.projectId);
 
 	// screenshotMode priority: explicit prop > window.__BUGTOPROMPT__ > server
-	// config > default "onMark".
+	// config > default "onMark". Global/server values arrive as runtime data
+	// (only type-cast), so unknown strings are normalized to "onMark" — the
+	// same effective behavior useSession applies (any value ≠ "off" captures
+	// route/manual marks) — instead of rendering "off" copy for an active mode.
 	const globalScreenshotMode =
 		typeof window !== "undefined"
 			? (window.__BUGTOPROMPT__?.screenshotMode as ScreenshotMode | undefined)
 			: undefined;
+	const rawScreenshotMode =
+		screenshotModeProp ?? globalScreenshotMode ?? auto.screenshotMode;
 	const screenshotMode: ScreenshotMode =
-		screenshotModeProp ??
-		globalScreenshotMode ??
-		auto.screenshotMode ??
-		"onMark";
+		rawScreenshotMode === "onClick" ||
+		rawScreenshotMode === "perPage" ||
+		rawScreenshotMode === "off"
+			? rawScreenshotMode
+			: "onMark";
 
 	return { client, modes, projectId, screenshotMode, hasBackend: auto.backend };
 }
