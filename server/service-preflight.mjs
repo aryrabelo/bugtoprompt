@@ -32,15 +32,16 @@ export async function detectGhState({ lookup, authStatus }) {
 
 /**
  * Resolve transcription readiness from the selected provider.
- * Local engine takes precedence; AssemblyAI key is the cloud fallback.
+ * The local engine takes precedence and is reported as "local" so /health
+ * distinguishes the LITE default from the BYO AssemblyAI cloud path ("ready").
  *
  * @param {object} input
  * @param {string | undefined} input.apiKey
  * @param {() => Promise<boolean>} input.detectLocal
- * @returns {Promise<"ready" | "unconfigured">}
+ * @returns {Promise<"ready" | "local" | "unconfigured">}
  */
 export async function detectTranscriptionState({ apiKey, detectLocal }) {
-	if (await detectLocal()) return "ready";
+	if (await detectLocal()) return "local";
 	if (typeof apiKey === "string" && apiKey.length > 0) return "ready";
 	return "unconfigured";
 }
@@ -53,7 +54,7 @@ export async function detectTranscriptionState({ apiKey, detectLocal }) {
  * @param {boolean} input.issues
  * @param {number} input.repos
  * @param {"ready" | "missing" | "unauthenticated"} input.gh
- * @param {"ready" | "unconfigured"} input.transcription
+ * @param {"ready" | "local" | "unconfigured"} input.transcription
  */
 export function buildHealthPayload({ issues, repos, gh, transcription }) {
 	return {
