@@ -82,6 +82,7 @@ import {
 	buildHealthPayload,
 	detectGhState,
 	detectTranscriptionState,
+	publishedGhState,
 } from "./service-preflight.mjs";
 import {
 	isOriginAllowed,
@@ -685,7 +686,7 @@ function handleHealth(res, config, ghState) {
 		buildHealthPayload({
 			issues: config.issueMode,
 			repos: config.targets.length,
-			gh: ghState,
+			gh: publishedGhState(ghState),
 			transcription: transcriptionState,
 		}),
 	);

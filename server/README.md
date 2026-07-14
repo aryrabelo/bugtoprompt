@@ -31,6 +31,8 @@ mixed-content blocking.
 | `GET`  | `/targets` | configured repos as targets |
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
 
+`GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
+`local` means no AssemblyAI key is set and a local parakeet CLI was found.
 ## Configuration (env)
 
 | Variable | Default | Notes |

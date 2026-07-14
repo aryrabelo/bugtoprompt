@@ -65,18 +65,32 @@ export async function fetchHealth(
 	let raw: unknown;
 	try {
 		// Bound the probe so a hung /health never keeps the popup spinning; the
-		// button is already wired independently of this result.
-		const signal =
-			typeof timeoutMs === "number" &&
-			typeof AbortSignal !== "undefined" &&
-			typeof AbortSignal.timeout === "function"
-				? AbortSignal.timeout(timeoutMs)
-				: undefined;
-		const res = await (signal
-			? fetchImpl(`${baseUrl}/health`, { signal })
-			: fetchImpl(`${baseUrl}/health`));
-		if (!res.ok) return null;
-		raw = await res.json();
+		// button is already wired independently of this result. Prefer
+		// AbortSignal.timeout (Chrome 124+); fall back to an AbortController timer
+		// on older Chrome so the probe stays bounded there too.
+		let signal: AbortSignal | undefined;
+		let timer: number | undefined;
+		if (typeof timeoutMs === "number") {
+			if (
+				typeof AbortSignal !== "undefined" &&
+				typeof AbortSignal.timeout === "function"
+			) {
+				signal = AbortSignal.timeout(timeoutMs);
+			} else if (typeof AbortController !== "undefined") {
+				const ctrl = new AbortController();
+				timer = setTimeout(() => ctrl.abort(), timeoutMs);
+				signal = ctrl.signal;
+			}
+		}
+		try {
+			const res = await (signal
+				? fetchImpl(`${baseUrl}/health`, { signal })
+				: fetchImpl(`${baseUrl}/health`));
+			if (!res.ok) return null;
+			raw = await res.json();
+		} finally {
+			clearTimeout(timer);
+		}
 	} catch {
 		return null;
 	}
@@ -299,34 +313,36 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	if (mode === "enable") {
 		startBtn.textContent = "Enable on this site";
 		startBtn.dataset.active = "false";
-		let enabling = false;
 		startBtn.addEventListener("click", () => {
-			if (enabling) return;
-			enabling = true;
+			// Extend the same re-entry guard across permission acquisition so a
+			// double-click can't launch concurrent permissions.request() calls
+			// (the second rejection would otherwise go unhandled).
+			if (toggling) return;
+			toggling = true;
+			startBtn.disabled = true;
 			errEl.textContent = "";
 			startBtn.disabled = true;
 			void (async () => {
+				let ok = false;
 				try {
 					if (!pattern) return;
-					const ok = await (chromeApi.permissions?.request({
+					ok = await (chromeApi.permissions?.request({
 						origins: [pattern],
 					}) ?? Promise.resolve(false));
 					if (!ok) {
 						errEl.textContent =
 							"Permission denied. BugToPrompt needs access to this site to capture.";
-						return;
 					}
-					// Permission granted (and persisted by Chrome) — activate now.
-					await doToggle();
-				} catch (err) {
+				} catch {
 					errEl.textContent =
-						err instanceof Error
-							? err.message
-							: "Failed to enable on this site.";
+						"Permission denied. BugToPrompt needs access to this site to capture.";
 				} finally {
-					enabling = false;
+					toggling = false;
 					startBtn.disabled = false;
 				}
+				// Permission granted (and persisted by Chrome) — activate now.
+				// doToggle re-guards on `toggling`, released above.
+				if (ok) void doToggle();
 			})();
 		});
 	} else {
@@ -352,8 +368,9 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	renderPill(pillEl, healthPill(health));
 	renderRows(rowsEl, buildRows(config, health));
 	// When the sidecar can't be reached for a bound non-localhost site, the most
-	// common cause is its origin allowlist — surface the exact env fix.
-	if (!health && kind === "http" && (granted || active)) {
+	// common cause is its origin allowlist — surface the exact env fix. Never
+	// clobber a newer toggle/injection error the user just triggered.
+	if (!health && kind === "http" && (granted || active) && !errEl.textContent) {
 		errEl.textContent = offlineHint(pageOrigin(tab?.url));
 	}
 }

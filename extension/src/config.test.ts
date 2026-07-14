@@ -14,6 +14,7 @@ import {
 	normalizeBindings,
 	originPattern,
 	resolveProjectId,
+	type SyncConfig,
 	saveConfig,
 } from "./config";
 
@@ -98,6 +99,26 @@ describe("loadConfig / saveConfig", () => {
 		await expect(
 			saveConfig(chromeApi, { baseUrl: "http://evil.com" }),
 		).rejects.toThrow(/loopback/);
+	});
+
+	it("rejects empty or invalid modes at save time", async () => {
+		const chromeApi = fakeChrome();
+		await expect(saveConfig(chromeApi, { modes: [] })).rejects.toThrow(/modes/);
+		await expect(
+			saveConfig(chromeApi, {
+				modes: ["issue", "bogus"] as unknown as SyncConfig["modes"],
+			}),
+		).rejects.toThrow(/modes/);
+	});
+
+	it("canonicalizes a trailing-slash baseUrl to its origin before storing", async () => {
+		const chromeApi = fakeChrome();
+		const merged = await saveConfig(chromeApi, {
+			baseUrl: "http://127.0.0.1:4127/",
+		});
+		expect(merged.baseUrl).toBe("http://127.0.0.1:4127");
+		const reloaded = await loadConfig(chromeApi);
+		expect(reloaded.baseUrl).toBe("http://127.0.0.1:4127");
 	});
 });
 

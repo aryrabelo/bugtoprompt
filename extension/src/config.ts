@@ -394,6 +394,9 @@ export async function saveConfig(
 		merged.defaultMode = merged.modes[0];
 	}
 	merged.siteBindings = normalizeBindings(merged.siteBindings);
+	// Store the canonical origin (no trailing slash) so the persisted value
+	// matches what discovery/candidateBaseUrls produce via URL.origin.
+	merged.baseUrl = new URL(merged.baseUrl).origin;
 	const payload: Record<string, unknown> = {
 		baseUrl: merged.baseUrl,
 		modes: merged.modes,

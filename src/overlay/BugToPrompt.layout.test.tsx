@@ -145,6 +145,30 @@ describe("idle layout hierarchy", () => {
 		expect(screen.getByTestId("start")).toBeTruthy();
 		expect(screen.getByTestId("recent-captures")).toBeTruthy();
 	});
+
+	it("degrades an unknown host-config screenshotMode to onMark instead of crashing", () => {
+		// Deliberately invalid host config: the runtime guard under test must
+		// degrade an unknown screenshotMode; the cast is the only way to write
+		// a value outside the declared global union.
+		const bogusHostConfig = {
+			screenshotMode: "bogus-mode",
+		} as unknown as NonNullable<Window["__BUGTOPROMPT__"]>;
+		window.__BUGTOPROMPT__ = bogusHostConfig;
+		try {
+			render(
+				<BugToPrompt
+					client={makeFakeClient()}
+					projectId="p"
+					modes={["issue"]}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+			// Falls back to the onMark capability copy rather than throwing.
+			expect(screen.getByText(/capture on mark/i)).toBeTruthy();
+		} finally {
+			delete window.__BUGTOPROMPT__;
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

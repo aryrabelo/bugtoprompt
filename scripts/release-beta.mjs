@@ -71,16 +71,20 @@ const alreadyPublished = (dir) => {
 		);
 		return true;
 	} catch (err) {
-		const stderr = String(err?.stderr ?? err?.stdout ?? "");
-		// A missing package/version is the only case that legitimately means
-		// "not yet published". Transient/auth/registry errors must stay loud so
-		// a partial release is never silently treated as complete.
+		// Only a genuine "version not on the registry" (npm E404) means we should
+		// proceed to publish. Auth/registry/network failures are INCONCLUSIVE:
+		// treating them as "not published" would let a retry republish over an
+		// existing version (or publish on a broken session). Abort instead.
+		const stderr = String(err?.stderr ?? "");
 		if (
-			/E404|404 Not Found|is not in this registry|no such package/i.test(stderr)
+			/E404|404 Not Found|is not in this registry|No match found/i.test(stderr)
 		) {
 			return false;
 		}
-		throw err;
+		throw new Error(
+			`Inconclusive registry lookup for ${name}@${version(dir)} — aborting to ` +
+				`avoid a duplicate/broken publish:\n${stderr || err?.message || err}`,
+		);
 	}
 };
 if (alreadyPublished(root)) {

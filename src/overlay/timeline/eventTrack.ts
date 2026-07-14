@@ -101,7 +101,9 @@ export function installEventTrack(opts: EventTrackOptions): () => void {
 			emit(target, tMs, "select", {
 				selectedText: selected.slice(0, MAX_SELECTED),
 			});
-		} else {
+		} else if ((ev as MouseEvent).button === 0) {
+			// Only primary-button releases count as clicks; right/middle releases
+			// must not inflate clickCount or screenshot ordinals.
 			const mev = ev as MouseEvent;
 			if (mev.button === 0) {
 				emit(target, tMs, "click", {

@@ -60,7 +60,7 @@ const CAPTURE_ROW_COPY: Record<
 	},
 	perPage: {
 		label: "Capture on navigation",
-		desc: "Each page navigation captures a whole-frame screenshot.",
+		desc: "Captures a whole-frame screenshot as you navigate when screen sharing is available.",
 		on: true,
 	},
 	onMark: {
@@ -250,13 +250,17 @@ function useAutoConfig({
 		typeof window !== "undefined"
 			? (window.__BUGTOPROMPT__?.screenshotMode as ScreenshotMode | undefined)
 			: undefined;
-	const rawScreenshotMode =
-		screenshotModeProp ?? globalScreenshotMode ?? auto.screenshotMode;
+	const resolvedScreenshotMode =
+		screenshotModeProp ??
+		globalScreenshotMode ??
+		auto.screenshotMode ??
+		"onMark";
+	// External sources (window.__BUGTOPROMPT__, server config) are untrusted at
+	// runtime, so an unknown mode falls back to "onMark" instead of crashing the
+	// render when it indexes CAPTURE_ROW_COPY.
 	const screenshotMode: ScreenshotMode =
-		rawScreenshotMode === "onClick" ||
-		rawScreenshotMode === "perPage" ||
-		rawScreenshotMode === "off"
-			? rawScreenshotMode
+		resolvedScreenshotMode in CAPTURE_ROW_COPY
+			? resolvedScreenshotMode
 			: "onMark";
 
 	return { client, modes, projectId, screenshotMode, hasBackend: auto.backend };
