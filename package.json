@@ -33,6 +33,7 @@
 		"dist",
 		"bin/bugtoprompt.mjs",
 		"server/github-issue-service.mjs",
+		"server/local-transcribe.mjs",
 		"server/service-preflight.mjs",
 		"server/service-security.mjs",
 		"server/transcript-segments.mjs"
