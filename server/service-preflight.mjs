@@ -31,16 +31,18 @@ export async function detectGhState({ lookup, authStatus }) {
 }
 
 /**
- * Resolve transcription readiness from the presence of an AssemblyAI key.
- * Missing credentials are non-fatal — capture, issues, and clipboard stay live.
+ * Resolve transcription readiness from the selected provider.
+ * Local engine takes precedence; AssemblyAI key is the cloud fallback.
  *
- * @param {string | undefined} apiKey
- * @returns {"ready" | "unconfigured"}
+ * @param {object} input
+ * @param {string | undefined} input.apiKey
+ * @param {() => Promise<boolean>} input.detectLocal
+ * @returns {Promise<"ready" | "unconfigured">}
  */
-export function detectTranscriptionState(apiKey) {
-	return typeof apiKey === "string" && apiKey.length > 0
-		? "ready"
-		: "unconfigured";
+export async function detectTranscriptionState({ apiKey, detectLocal }) {
+	if (await detectLocal()) return "ready";
+	if (typeof apiKey === "string" && apiKey.length > 0) return "ready";
+	return "unconfigured";
 }
 
 /**

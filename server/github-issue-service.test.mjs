@@ -60,12 +60,35 @@ describe("detectGhState", () => {
 });
 
 describe("detectTranscriptionState", () => {
-	it("is 'ready' with a non-empty key", () => {
-		expect(detectTranscriptionState("aai-key")).toBe("ready");
+	it("is 'ready' with a non-empty key", async () => {
+		const state = await detectTranscriptionState({
+			apiKey: "aai-key",
+			detectLocal: async () => false,
+		});
+		expect(state).toBe("ready");
 	});
-	it("is 'unconfigured' when the key is missing/empty (non-fatal)", () => {
-		expect(detectTranscriptionState(undefined)).toBe("unconfigured");
-		expect(detectTranscriptionState("")).toBe("unconfigured");
+
+	it("is 'ready' when local engine is available", async () => {
+		const state = await detectTranscriptionState({
+			apiKey: undefined,
+			detectLocal: async () => true,
+		});
+		expect(state).toBe("ready");
+	});
+
+	it("is 'unconfigured' when the key is missing/empty and local is unavailable", async () => {
+		expect(
+			await detectTranscriptionState({
+				apiKey: undefined,
+				detectLocal: async () => false,
+			}),
+		).toBe("unconfigured");
+		expect(
+			await detectTranscriptionState({
+				apiKey: "",
+				detectLocal: async () => false,
+			}),
+		).toBe("unconfigured");
 	});
 });
 

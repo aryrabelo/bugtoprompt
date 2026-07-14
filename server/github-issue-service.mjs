@@ -12,7 +12,8 @@
  *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode
  *   GET  /targets?projectId=...     → configured repos as Target[]
  *   POST /artifact                  → persist artifact.json + audio + screenshots
- *   POST /transcribe                → AssemblyAI batch transcript of saved audio
+ *   POST /transcribe                → batch transcript of saved audio (local or
+ *                                       AssemblyAI, see BUGTOPROMPT_TRANSCRIBE)
  *   POST /streaming-token           → mint an AssemblyAI temp token (best-effort)
  *   POST /issue                     → `gh issue create` against the chosen repo
  *
@@ -53,9 +54,16 @@
  *                                            Keys: repos, projectId, issueMode,
  *                                            defaultMode, screenshotMode, env.
  * ASSEMBLYAI_API_KEY          (none)         AssemblyAI API key. Required for
- *                                            POST /streaming-token and
- *                                            POST /transcribe; those endpoints
- *                                            return 501 when the key is absent.
+ *                                            POST /streaming-token. For
+ *                                            POST /transcribe, local mode is
+ *                                            used when parakeet-mlx is available;
+ *                                            otherwise this key is required.
+ * BUGTOPROMPT_TRANSCRIBE      auto           Provider: "local", "assemblyai", or
+ *                                            "auto" (local if available, else
+ *                                            AssemblyAI key, else unconfigured).
+ * BUGTOPROMPT_VOCAB           (none)         Path to JSON file merged over the
+ *                                            built-in vocabulary for local
+ *                                            transcription corrections.
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { execFile } from "node:child_process";
@@ -64,6 +72,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import {
+	detectLocalEngine,
+	LOCAL_TRANSCRIBE_TIMEOUT_MS,
+	localTranscribe,
+	resolveTranscribeProvider,
+} from "./local-transcribe.mjs";
 import {
 	buildHealthPayload,
 	detectGhState,
@@ -340,12 +354,36 @@ async function handleTranscribe(req, res) {
 		return;
 	}
 
-	const key = process.env.ASSEMBLYAI_API_KEY;
-	if (!key) {
-		console.error("[transcribe] ASSEMBLYAI_API_KEY not configured");
-		sendJson(res, 501, { error: "ASSEMBLYAI_API_KEY not configured" });
+	if (transcriptionProvider === "unconfigured") {
+		console.error("[transcribe] transcription not configured");
+		sendJson(res, 501, { error: "transcription not configured" });
 		return;
 	}
+
+	if (transcriptionProvider === "local") {
+		try {
+			console.log(`[transcribe] local start session=${sessionId}`);
+			const transcript = await localTranscribe(audioPath, {
+				execFile: execFileAsync,
+				timeoutMs: LOCAL_TRANSCRIBE_TIMEOUT_MS,
+			});
+			console.log(
+				`[transcribe] local completed session=${sessionId} segments=${transcript.length}`,
+			);
+			persistTranscript(sessionId, transcript);
+			sendJson(res, 200, { transcript });
+		} catch (err) {
+			console.error(
+				`[transcribe] local failed session=${sessionId} ${String(err)}`,
+			);
+			sendJson(res, 502, {
+				error: `local transcription failed: ${String(err)}`,
+			});
+		}
+		return;
+	}
+
+	const key = process.env.ASSEMBLYAI_API_KEY;
 
 	try {
 		const audio = readFileSync(audioPath);
@@ -508,11 +546,15 @@ function persistTranscript(sessionId, transcript) {
 
 async function handleStreamingToken(req, res) {
 	await readJsonBody(req);
-	const key = process.env.ASSEMBLYAI_API_KEY;
-	if (!key) {
+	if (transcriptionProvider === "local") {
+		sendJson(res, 501, { error: "streaming not available in local mode" });
+		return;
+	}
+	if (transcriptionProvider === "unconfigured") {
 		sendJson(res, 501, { error: "ASSEMBLYAI_API_KEY not configured" });
 		return;
 	}
+	const key = process.env.ASSEMBLYAI_API_KEY;
 	try {
 		const expiresInSeconds = 300;
 		const upstream = await fetch(
@@ -634,7 +676,7 @@ function handleHealth(res, config, ghState) {
 			issues: config.issueMode,
 			repos: config.targets.length,
 			gh: ghState,
-			transcription: detectTranscriptionState(process.env.ASSEMBLYAI_API_KEY),
+			transcription: transcriptionState,
 		}),
 	);
 }
@@ -665,6 +707,17 @@ const ghState = await detectGhState({
 			() => false,
 		),
 	authStatus: () => execFileAsync("gh", ["auth", "status"]),
+});
+
+// Resolve transcription provider once at startup. Local engine is preferred in
+// auto/local mode; AssemblyAI key is required for cloud-only mode.
+const localEngineReady = await detectLocalEngine(execFileAsync);
+const transcriptionProvider = resolveTranscribeProvider(process.env, {
+	localReady: localEngineReady,
+});
+const transcriptionState = await detectTranscriptionState({
+	apiKey: process.env.ASSEMBLYAI_API_KEY,
+	detectLocal: async () => localEngineReady,
 });
 
 const server = createServer((req, res) => {
