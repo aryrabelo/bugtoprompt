@@ -102,17 +102,31 @@ JSON
 	env.PATH = `${binDir}:${env.PATH}`;
 	env.BUGTOPROMPT_PORT = String(port);
 	child = spawn(process.execPath, [SERVICE], { cwd: workDir, env });
+	let spawnError = null;
+	let stderrBuf = "";
+	child.on("error", (err) => {
+		spawnError = err;
+	});
+	child.stderr.on("data", (chunk) => {
+		stderrBuf += String(chunk);
+	});
+	child.stdout.resume(); // drain so the child never blocks on a full pipe
 
 	// Wait for readiness by polling /health.
 	const deadline = Date.now() + 15_000;
 	for (;;) {
+		if (spawnError) throw new Error(`server failed to spawn: ${spawnError}`);
 		try {
 			const res = await fetch(`${baseUrl}/health`);
 			if (res.ok) break;
 		} catch {
 			// not listening yet
 		}
-		if (Date.now() > deadline) throw new Error("server never became ready");
+		if (Date.now() > deadline) {
+			throw new Error(
+				`server never became ready; stderr:\n${stderrBuf || "(empty)"}`,
+			);
+		}
 		await new Promise((r) => setTimeout(r, 100));
 	}
 }, 20_000);
