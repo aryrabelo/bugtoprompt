@@ -1,5 +1,7 @@
 import "fake-indexeddb/auto";
 
+import { deferred } from "./overlay/util/deferred";
+
 /**
  * Test environment polyfills — runs before every test file in the jsdom
  * environment. Patches `Blob.prototype.arrayBuffer` when jsdom ships a Blob
@@ -11,7 +13,7 @@ if (
 	typeof Blob.prototype.arrayBuffer !== "function"
 ) {
 	Blob.prototype.arrayBuffer = function (this: Blob): Promise<ArrayBuffer> {
-		const { promise, resolve, reject } = Promise.withResolvers<ArrayBuffer>();
+		const { promise, resolve, reject } = deferred<ArrayBuffer>();
 		const reader = new FileReader();
 		reader.onload = () => resolve(reader.result as ArrayBuffer);
 		reader.onerror = () => reject(new Error("FileReader error"));
