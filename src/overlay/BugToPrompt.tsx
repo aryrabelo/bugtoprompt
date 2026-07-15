@@ -60,7 +60,7 @@ const CAPTURE_ROW_COPY: Record<
 	},
 	perPage: {
 		label: "Capture on navigation",
-		desc: "Captures a whole-frame screenshot as you navigate when screen sharing is available.",
+		desc: "Captures a whole-frame screenshot on in-page route changes when screen sharing is available.",
 		on: true,
 	},
 	onMark: {
@@ -265,10 +265,12 @@ function useAutoConfig({
 	// External sources (window.__BUGTOPROMPT__, server config) are untrusted at
 	// runtime, so an unknown mode falls back to "onMark" instead of crashing the
 	// render when it indexes CAPTURE_ROW_COPY.
-	const screenshotMode: ScreenshotMode =
-		resolvedScreenshotMode in CAPTURE_ROW_COPY
-			? resolvedScreenshotMode
-			: "onMark";
+	const screenshotMode: ScreenshotMode = Object.hasOwn(
+		CAPTURE_ROW_COPY,
+		resolvedScreenshotMode,
+	)
+		? resolvedScreenshotMode
+		: "onMark";
 
 	return {
 		client,

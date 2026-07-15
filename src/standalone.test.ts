@@ -66,6 +66,10 @@ it("mount() creates a shadow host with scoped styles and the overlay inside", as
 	) as HTMLElement | null;
 	expect(host?.style.getPropertyValue("all")).toBe("initial");
 	expect(host?.style.getPropertyPriority("all")).toBe("important");
+	expect(host?.style.getPropertyValue("direction")).toBe("ltr");
+	expect(host?.style.getPropertyPriority("direction")).toBe("important");
+	expect(host?.style.getPropertyValue("unicode-bidi")).toBe("isolate");
+	expect(host?.style.getPropertyPriority("unicode-bidi")).toBe("important");
 });
 
 it("unmount() removes the shadow host entirely", async () => {
