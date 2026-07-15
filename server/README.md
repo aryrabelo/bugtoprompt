@@ -29,7 +29,7 @@ mixed-content blocking.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET`  | `/bugtoprompt/config` | advertised modes / projectId — its `200` activates the overlay's backend mode |
+| `GET`  | `/bugtoprompt/config` | advertised modes / projectId / `transcriptionProvider` (`"assemblyai" \| "local" \| "unconfigured"`) — its `200` activates the overlay's backend mode |
 | `POST` | `/streaming-token` | mint a 300s AssemblyAI streaming token (`{ token, expiresAt }`) |
 | `POST` | `/transcribe` | batch transcript of a saved capture — local parakeet CLI by default (`parakeet-mlx`, `uvx parakeet-mlx`, or `BUGTOPROMPT_PARAKEET_CMD`); AssemblyAI when `ASSEMBLYAI_API_KEY` is set |
 | `POST` | `/artifact` | persist `artifact.json` + audio + screenshots |
