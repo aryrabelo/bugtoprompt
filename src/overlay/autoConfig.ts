@@ -13,6 +13,9 @@ export interface BugToPromptServerConfig {
 	projectId?: string;
 	env?: "dev" | "prod";
 	screenshotMode?: ScreenshotMode;
+	/** Which backend serves POST /transcribe — "assemblyai" (cloud, BYO key),
+	 *  "local" (parakeet CLI, no key needed), or "unconfigured" (neither). */
+	transcriptionProvider?: "assemblyai" | "local" | "unconfigured";
 }
 
 /**

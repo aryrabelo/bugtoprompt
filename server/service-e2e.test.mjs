@@ -8,6 +8,7 @@
 //   2. POST /streaming-token → 501 with a clear error (streaming is the
 //      optional AssemblyAI opt-in, never required).
 //   3. GET /health → transcription "local".
+//   4. GET /bugtoprompt/config → transcriptionProvider "local" (issue #13).
 import { spawn } from "node:child_process";
 import {
 	chmodSync,
@@ -175,5 +176,12 @@ describe("sidecar LITE defaults (no ASSEMBLYAI_API_KEY, e2e)", () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.transcription).toBe("local");
+	});
+
+	it("GET /bugtoprompt/config reports the active transcription provider", async () => {
+		const res = await fetch(`${baseUrl}/bugtoprompt/config`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.transcriptionProvider).toBe("local");
 	});
 });
