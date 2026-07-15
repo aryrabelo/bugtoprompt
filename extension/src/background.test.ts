@@ -135,8 +135,8 @@ describe("ensureOverlay injection order & idempotency", () => {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, DEFAULT_CONFIG);
 		expect(h.page(1).ops).toEqual([
-			"inject-config",
 			"probe",
+			"inject-config",
 			"inject-js",
 			"mount",
 		]);
@@ -289,8 +289,7 @@ describe("activate / deactivate / toggle", () => {
 		vi.mocked(scripting.executeScript).mockRejectedValueOnce(
 			new Error("Cannot access a chrome:// URL"),
 		);
-		const res = await deactivateTab(h.chromeApi, 52);
-		expect(res.active).toBe(false);
+		await expect(deactivateTab(h.chromeApi, 52)).rejects.toThrow();
 		expect(await isTabActive(h.chromeApi, 52)).toBe(false);
 	});
 
@@ -319,8 +318,8 @@ describe("document-ready reinjection", () => {
 		h.page(7).ops = [];
 		await handleDocumentReady(h.chromeApi, 7, "http://localhost:3000/");
 		expect(h.page(7).ops).toEqual([
-			"inject-config",
 			"probe",
+			"inject-config",
 			"inject-js",
 			"mount",
 		]);
@@ -334,11 +333,12 @@ describe("document-ready reinjection", () => {
 			DEFAULT_CONFIG,
 		);
 		h.page(71).ops = [];
-		// The tab stays session-active, but the new document is unattachable, so
-		// MAIN-world injection must be skipped (it would reject).
+		// The active tab navigated to an unattachable page: MAIN-world injection
+		// is skipped AND the stale active flag is cleared, so the tab is never
+		// left reported active with no overlay (see handleDocumentReady).
 		await handleDocumentReady(h.chromeApi, 71, "chrome://settings");
 		expect(h.page(71).ops).toEqual([]);
-		expect(await isTabActive(h.chromeApi, 71)).toBe(true);
+		expect(await isTabActive(h.chromeApi, 71)).toBe(false);
 	});
 
 	it("does nothing for an inactive tab", async () => {

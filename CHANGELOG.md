@@ -15,6 +15,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from npm; the hosted role moved to
   [bugtoprompt.com](https://bugtoprompt.com). Docs and snippets
   across the repo were updated accordingly.
+- **Extension ↔ sidecar identity finalized (`0.14.0-beta.6`).** The MV3
+  extension now consistently targets the local `bugtoprompt` sidecar (auto-
+  discovery via `GET /health`, tab-port+3 convention) with zero references to
+  the discontinued `bugtoprompt-server` name — locked by a guard test. The
+  extension's Vitest suite is now wired into the repo test gate (it previously
+  never ran in CI).
 
 ## [0.13.2] - 2026-06-29
 
