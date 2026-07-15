@@ -157,12 +157,18 @@ export function buildRows(
 					: "On mark";
 	const voiceReady =
 		health?.transcription === "ready" || health?.transcription === "local";
+	const voiceMode =
+		health?.transcription === "local"
+			? config.autoVoice
+				? "Ready · local · armed"
+				: "Ready · local · manual"
+			: config.autoVoice
+				? "Ready · armed"
+				: "Ready · manual";
 	const voiceStatus = !health
 		? "Sidecar offline"
 		: voiceReady
-			? config.autoVoice
-				? "Ready · armed"
-				: "Ready · manual"
+			? voiceMode
 			: "Not configured";
 	const issueReady = health?.gh === "ready" && health.issues;
 	const issueStatus = !health
