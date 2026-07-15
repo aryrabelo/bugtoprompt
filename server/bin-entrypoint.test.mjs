@@ -52,6 +52,6 @@ describe("bugtoprompt bin entrypoint", () => {
 		expect(typeof body.issues).toBe("boolean");
 		expect(typeof body.repos).toBe("number");
 		expect(["ready", "unauthenticated", "missing"]).toContain(body.gh);
-		expect(["ready", "unconfigured"]).toContain(body.transcription);
+		expect(["ready", "local", "unconfigured"]).toContain(body.transcription);
 	}, 15_000);
 });

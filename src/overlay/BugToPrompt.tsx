@@ -908,15 +908,21 @@ export function BugToPrompt({
 	};
 	const binding = !idle && frozen ? frozen : liveBinding;
 
-	// P0-2: when the frozen binding lacks a projectId, a target picked during
-	// reviewing supplies the file target. projectId is config-global (never sent
-	// to the server — it only gates the button), so fall back to the picked id.
+	// P0-2: when the frozen binding lacks a projectId, build the file target from
+	// the resolved projectId as soon as it is available — independent of whether
+	// a target was picked. Filing must not stay blocked forever when
+	// listTargets() fails/empty (no reviewTarget ever). workspaceId/branch are
+	// added only when a target was actually selected. Note: reviewTarget can
+	// never be set while projectId is undefined — TargetPicker itself requires
+	// a truthy projectId to fetch targets (see useTargetOptions) — so gating on
+	// projectId alone (not reviewTarget) loses no reachable case. projectId is
+	// config-global (never sent to the server — it only gates the button).
 	const reviewBinding: SessionBinding | undefined =
-		session.phase === "reviewing" && !binding.projectId && reviewTarget
+		session.phase === "reviewing" && !binding.projectId && projectId
 			? {
-					projectId: projectId ?? reviewTarget.id,
-					workspaceId: reviewTarget.id,
-					...(reviewTarget.branch ? { branch: reviewTarget.branch } : {}),
+					projectId,
+					...(reviewTarget?.id ? { workspaceId: reviewTarget.id } : {}),
+					...(reviewTarget?.branch ? { branch: reviewTarget.branch } : {}),
 				}
 			: undefined;
 	const fileBinding = reviewBinding ?? binding;
