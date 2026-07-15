@@ -70,6 +70,7 @@
 		"lint": "biome check .",
 		"check:node-compat": "node scripts/check-node-compat.mjs",
 		"typecheck": "tsc --noEmit",
+		"typecheck:extension": "tsc --noEmit -p extension/tsconfig.json",
 		"service:github": "node server/github-issue-service.mjs",
 		"release:beta": "node scripts/release-beta.mjs"
 	},
