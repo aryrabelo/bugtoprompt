@@ -60,29 +60,58 @@ export interface HealthPayload {
 export async function fetchHealth(
 	baseUrl: string,
 	fetchImpl: typeof fetch,
+	timeoutMs?: number,
 ): Promise<HealthPayload | null> {
 	let raw: unknown;
 	try {
-		const res = await fetchImpl(`${baseUrl}/health`);
-		if (!res.ok) return null;
-		raw = await res.json();
+		// Bound the probe so a hung /health never keeps the popup spinning; the
+		// button is already wired independently of this result. Prefer
+		// AbortSignal.timeout (Chrome 124+); fall back to an AbortController timer
+		// on older Chrome so the probe stays bounded there too.
+		let signal: AbortSignal | undefined;
+		let timer: number | undefined;
+		if (typeof timeoutMs === "number") {
+			if (
+				typeof AbortSignal !== "undefined" &&
+				typeof AbortSignal.timeout === "function"
+			) {
+				signal = AbortSignal.timeout(timeoutMs);
+			} else if (typeof AbortController !== "undefined") {
+				const ctrl = new AbortController();
+				timer = setTimeout(() => ctrl.abort(), timeoutMs);
+				signal = ctrl.signal;
+			}
+		}
+		try {
+			const res = await (signal
+				? fetchImpl(`${baseUrl}/health`, { signal })
+				: fetchImpl(`${baseUrl}/health`));
+			if (!res.ok) return null;
+			raw = await res.json();
+		} finally {
+			clearTimeout(timer);
+		}
 	} catch {
 		return null;
 	}
 	if (typeof raw !== "object" || raw === null) return null;
-	if (!("ok" in raw) || raw.ok !== true) return null;
-	const issues = "issues" in raw && raw.issues === true;
-	const repos = "repos" in raw && typeof raw.repos === "number" ? raw.repos : 0;
-	const gh =
-		"gh" in raw &&
-		(raw.gh === "ready" || raw.gh === "missing" || raw.gh === "unauthenticated")
-			? raw.gh
-			: "missing";
-	const transcription =
-		"transcription" in raw && raw.transcription === "ready"
-			? "ready"
-			: "unconfigured";
-	return { ok: true, issues, repos, gh, transcription };
+	const r = raw as Record<string, unknown>;
+	if (r.ok !== true) return null;
+	if (typeof r.issues !== "boolean") return null;
+	if (typeof r.repos !== "number") return null;
+	if (r.gh !== "ready" && r.gh !== "missing" && r.gh !== "unauthenticated") {
+		return null;
+	}
+	if (r.transcription !== "ready" && r.transcription !== "unconfigured") {
+		return null;
+	}
+	return {
+		ok: true,
+		issues: r.issues,
+		repos: r.repos,
+		gh: r.gh,
+		transcription: r.transcription,
+	};
 }
 
 export interface StatusPill {
@@ -92,7 +121,7 @@ export interface StatusPill {
 
 export function healthPill(health: HealthPayload | null): StatusPill {
 	if (!health) return { label: "Sidecar offline", tone: "down" };
-	if (health.gh !== "ready") {
+	if (health.issues && health.gh !== "ready") {
 		return { label: "Sidecar up · gh not ready", tone: "warn" };
 	}
 	return { label: "Sidecar ready", tone: "ok" };
@@ -128,13 +157,13 @@ export function buildRows(
 	const issueReady = health?.gh === "ready" && health.issues;
 	const issueStatus = !health
 		? "Sidecar offline"
-		: health.gh === "missing"
-			? "gh CLI missing"
-			: health.gh === "unauthenticated"
-				? "gh not authenticated"
-				: health.issues
-					? `${health.repos} repo(s)`
-					: "No repository configured";
+		: !health.issues
+			? "Issue filing disabled"
+			: health.gh === "missing"
+				? "gh CLI missing"
+				: health.gh === "unauthenticated"
+					? "gh not authenticated"
+					: `${health.repos} repo(s)`;
 	return [
 		{
 			key: "capture",
@@ -235,39 +264,38 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 			: kind === "loopback";
 	const mode = popupMode(kind, granted, active);
 
-	const { baseUrl } = await discoverBaseUrl(
-		candidateBaseUrls(config.baseUrl, tab?.url),
-		fetch,
-	);
-	targetEl.textContent = baseUrl;
-
-	const health = await fetchHealth(baseUrl, fetch);
-	renderPill(pillEl, healthPill(health));
-	renderRows(rowsEl, buildRows(config, health));
-
 	const paint = (isActive: boolean): void => {
 		startBtn.textContent = isActive ? "Stop capture" : "Start capture";
 		startBtn.dataset.active = String(isActive);
 	};
 
-	// When the sidecar can't be reached for a bound non-localhost site, the most
-	// common cause is its origin allowlist — surface the exact env fix.
-	if (!health && kind === "http" && (granted || active)) {
-		errEl.textContent = offlineHint(pageOrigin(tab?.url));
-	}
-
-	const doToggle = (): void => {
+	// In-flight guard: a rapid second click while a toggle is settling would
+	// race the overlay/tab state, so ignore clicks until the current one
+	// resolves. Rejections surface in errEl and always restore the button.
+	let toggling = false;
+	const doToggle = (): Promise<void> => {
+		if (toggling) return Promise.resolve();
+		toggling = true;
 		errEl.textContent = "";
-		void (async () => {
-			const res = (await chromeApi.runtime?.sendMessage?.({
-				type: "btp:toggle",
-			})) as { active: boolean; error?: string } | undefined;
-			if (res?.error) {
-				errEl.textContent = res.error;
-				return;
+		startBtn.disabled = true;
+		return (async () => {
+			try {
+				const res = (await chromeApi.runtime?.sendMessage?.({
+					type: "btp:toggle",
+				})) as { active: boolean; error?: string } | undefined;
+				if (res?.error) {
+					errEl.textContent = res.error;
+					return;
+				}
+				paint(res?.active === true);
+				if (res?.active) window.close();
+			} catch (err) {
+				errEl.textContent =
+					err instanceof Error ? err.message : "Toggle failed. Try again.";
+			} finally {
+				toggling = false;
+				startBtn.disabled = false;
 			}
-			paint(res?.active === true);
-			if (res?.active) window.close();
 		})();
 	};
 
@@ -279,30 +307,72 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		return;
 	}
 
+	// Wire the primary action BEFORE the sidecar probe so capture stays usable
+	// even if discovery or /health hangs — clipboard/download capture needs no
+	// sidecar.
 	if (mode === "enable") {
 		startBtn.textContent = "Enable on this site";
 		startBtn.dataset.active = "false";
 		startBtn.addEventListener("click", () => {
+			// Extend the same re-entry guard across permission acquisition so a
+			// double-click can't launch concurrent permissions.request() calls
+			// (the second rejection would otherwise go unhandled).
+			if (toggling) return;
+			toggling = true;
+			startBtn.disabled = true;
 			errEl.textContent = "";
+			startBtn.disabled = true;
 			void (async () => {
-				if (!pattern) return;
-				const ok = await (chromeApi.permissions?.request({
-					origins: [pattern],
-				}) ?? Promise.resolve(false));
-				if (!ok) {
+				let ok = false;
+				try {
+					if (!pattern) return;
+					ok = await (chromeApi.permissions?.request({
+						origins: [pattern],
+					}) ?? Promise.resolve(false));
+					if (!ok) {
+						errEl.textContent =
+							"Permission denied. BugToPrompt needs access to this site to capture.";
+					}
+				} catch {
 					errEl.textContent =
 						"Permission denied. BugToPrompt needs access to this site to capture.";
-					return;
+				} finally {
+					toggling = false;
+					startBtn.disabled = false;
 				}
 				// Permission granted (and persisted by Chrome) — activate now.
-				doToggle();
+				// doToggle re-guards on `toggling`, released above.
+				if (ok) void doToggle();
 			})();
 		});
-		return;
+	} else {
+		paint(active);
+		startBtn.addEventListener("click", doToggle);
 	}
 
-	paint(active);
-	startBtn.addEventListener("click", doToggle);
+	// Sidecar discovery + health decorate the pill/capability rows only; they run
+	// after the button is wired so a slow endpoint never blocks capture. Each
+	// probe is bounded so a stalled /health cannot freeze the popup either.
+	const HEALTH_TIMEOUT_MS = 4000;
+	const timedFetch: typeof fetch = (input, init) =>
+		fetch(input, {
+			...init,
+			signal: init?.signal ?? AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+		});
+	const { baseUrl } = await discoverBaseUrl(
+		candidateBaseUrls(config.baseUrl, tab?.url),
+		timedFetch,
+	);
+	targetEl.textContent = baseUrl;
+	const health = await fetchHealth(baseUrl, timedFetch, HEALTH_TIMEOUT_MS);
+	renderPill(pillEl, healthPill(health));
+	renderRows(rowsEl, buildRows(config, health));
+	// When the sidecar can't be reached for a bound non-localhost site, the most
+	// common cause is its origin allowlist — surface the exact env fix. Never
+	// clobber a newer toggle/injection error the user just triggered.
+	if (!health && kind === "http" && (granted || active) && !errEl.textContent) {
+		errEl.textContent = offlineHint(pageOrigin(tab?.url));
+	}
 }
 
 declare const chrome: ChromeLike;

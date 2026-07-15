@@ -3,7 +3,7 @@
 	"name": "BugToPrompt",
 	"version": "0.14.0",
 	"version_name": "0.14.0-beta.2",
-	"description": "Capture a local-dev bug into an AI-ready prompt: numbered click screenshots, voice narration, and one-click GitHub issues via the local sidecar.",
+	"description": "Capture a local-dev bug as an AI-ready prompt: numbered click screenshots, voice narration, and one-click GitHub issues.",
 	"action": {
 		"default_popup": "popup.html",
 		"default_title": "BugToPrompt",
@@ -35,22 +35,11 @@
 			"run_at": "document_idle"
 		}
 	],
-	"web_accessible_resources": [
-		{
-			"resources": ["bugtoprompt.global.js"],
-			"matches": [
-				"http://localhost/*",
-				"http://127.0.0.1/*",
-				"http://*/*",
-				"https://*/*"
-			]
-		}
-	],
 	"commands": {
 		"toggle-capture": {
 			"suggested_key": {
-				"default": "Ctrl+Shift+B",
-				"mac": "Command+Shift+B"
+				"default": "Ctrl+Shift+Y",
+				"mac": "Command+Shift+Y"
 			},
 			"description": "Toggle BugToPrompt capture on the active tab"
 		}
