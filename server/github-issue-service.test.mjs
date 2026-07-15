@@ -70,12 +70,20 @@ describe("detectTranscriptionState", () => {
 		expect(state).toBe("ready");
 	});
 
-	it("is 'ready' when local engine is available", async () => {
+	it("is 'local' when the local engine is available (LITE default)", async () => {
 		const state = await detectTranscriptionState({
 			apiKey: undefined,
 			detectLocal: async () => true,
 		});
-		expect(state).toBe("ready");
+		expect(state).toBe("local");
+	});
+
+	it("prefers 'local' over the key when both are available", async () => {
+		const state = await detectTranscriptionState({
+			apiKey: "aai-key",
+			detectLocal: async () => true,
+		});
+		expect(state).toBe("local");
 	});
 
 	it("is 'unconfigured' when the key is missing/empty and local is unavailable", async () => {
