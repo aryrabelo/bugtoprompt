@@ -60,7 +60,7 @@ const CAPTURE_ROW_COPY: Record<
 	},
 	perPage: {
 		label: "Capture on navigation",
-		desc: "Captures a whole-frame screenshot as you navigate when screen sharing is available.",
+		desc: "Captures a whole-frame screenshot on in-page route changes when screen sharing is available.",
 		on: true,
 	},
 	onMark: {
@@ -176,6 +176,7 @@ interface AutoConfigResult {
 	modes: OutputMode[];
 	projectId: string | undefined;
 	screenshotMode: ScreenshotMode;
+	transcriptionProvider: "assemblyai" | "local" | "unconfigured" | undefined;
 	hasBackend: boolean;
 }
 
@@ -197,6 +198,11 @@ function useAutoConfig({
 		modes: modesProp ?? (["clipboard", "download"] as OutputMode[]),
 		projectId: projectIdProp,
 		screenshotMode: undefined as ScreenshotMode | undefined,
+		transcriptionProvider: undefined as
+			| "assemblyai"
+			| "local"
+			| "unconfigured"
+			| undefined,
 		// Whether the zero-config probe discovered a real backend. When true we
 		// never nag for an AssemblyAI key — the server mints streaming tokens.
 		backend: false,
@@ -223,6 +229,7 @@ function useAutoConfig({
 						(["issue", "clipboard", "download"] as OutputMode[]),
 					projectId: projectIdProp ?? cfg?.projectId,
 					screenshotMode: cfg?.screenshotMode,
+					transcriptionProvider: cfg?.transcriptionProvider,
 					backend: true,
 				});
 			}
@@ -258,12 +265,21 @@ function useAutoConfig({
 	// External sources (window.__BUGTOPROMPT__, server config) are untrusted at
 	// runtime, so an unknown mode falls back to "onMark" instead of crashing the
 	// render when it indexes CAPTURE_ROW_COPY.
-	const screenshotMode: ScreenshotMode =
-		resolvedScreenshotMode in CAPTURE_ROW_COPY
-			? resolvedScreenshotMode
-			: "onMark";
+	const screenshotMode: ScreenshotMode = Object.hasOwn(
+		CAPTURE_ROW_COPY,
+		resolvedScreenshotMode,
+	)
+		? resolvedScreenshotMode
+		: "onMark";
 
-	return { client, modes, projectId, screenshotMode, hasBackend: auto.backend };
+	return {
+		client,
+		modes,
+		projectId,
+		screenshotMode,
+		transcriptionProvider: auto.transcriptionProvider,
+		hasBackend: auto.backend,
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -850,14 +866,20 @@ export function BugToPrompt({
 	clipboard,
 	onDownload,
 }: BugToPromptProps): ReactElement | null {
-	const { client, modes, projectId, screenshotMode, hasBackend } =
-		useAutoConfig({
-			clientProp,
-			baseUrl,
-			modesProp,
-			projectIdProp,
-			screenshotModeProp,
-		});
+	const {
+		client,
+		modes,
+		projectId,
+		screenshotMode,
+		transcriptionProvider,
+		hasBackend,
+	} = useAutoConfig({
+		clientProp,
+		baseUrl,
+		modesProp,
+		projectIdProp,
+		screenshotModeProp,
+	});
 
 	const [open, setOpen] = useState(defaultOpen);
 	const [pickedWs, setPickedWs] = useState<string | undefined>();
@@ -900,6 +922,15 @@ export function BugToPrompt({
 	// A host that injects an explicit `client` (e.g. the host application) is never asked.
 	const showIdleKeyPrompt =
 		idle && clientProp === undefined && !hasBackend && !hasConfiguredKey();
+	// Surface which transcription path is actually active (deferred from #13):
+	// "unconfigured"/undefined (fallback client, or config not yet resolved)
+	// keeps the base label unchanged rather than implying a path that isn't set.
+	const voiceLabel =
+		transcriptionProvider === "local"
+			? "Live voice transcription (local)"
+			: transcriptionProvider === "assemblyai"
+				? "Live voice transcription (cloud)"
+				: "Live voice transcription";
 
 	const liveBinding: SessionBinding = {
 		...(projectId ? { projectId } : {}),
@@ -1126,7 +1157,7 @@ export function BugToPrompt({
 					</CapabilityRow>
 					<CapabilityRow
 						icon={<Mic className="size-3.5" />}
-						label="Live voice transcription"
+						label={voiceLabel}
 						status={wantVoice ? "on" : "off"}
 						statusTone={wantVoice ? "on" : "off"}
 					>
