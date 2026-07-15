@@ -9,6 +9,7 @@ export default defineConfig({
 			"src/**/*.test.tsx",
 			"extension/src/**/*.test.ts",
 			"server/**/*.test.mjs",
+			"scripts/**/*.test.mjs",
 		],
 	},
 });
