@@ -1,6 +1,8 @@
 // Security helpers for the reference issue service. Pure + side-effect-free so
 // they are unit-testable without booting the HTTP server.
 
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+
 /** Client session ids are minted as `cap_<uuid>` (see src/overlay/useSession.ts).
  *  Reject anything else BEFORE using it in a filesystem path (path-traversal guard). */
 export function isValidSessionId(s) {
@@ -44,4 +46,18 @@ export function isOriginAllowed(origin, allowSet) {
 	} catch {
 		return false;
 	}
+}
+
+/** Constant-time shared-secret compare (double-HMAC pattern). Both values are
+ *  HMAC-SHA256'd under a fresh random per-call key, so the final comparison is
+ *  always over fixed-length digests: no early exit, no length leak, and never
+ *  a RangeError from timingSafeEqual on attacker-controlled input lengths.
+ *  Fails closed when either side is missing or not a string. */
+export function timingSafeTokenEqual(presented, expected) {
+	if (typeof presented !== "string" || typeof expected !== "string")
+		return false;
+	const key = randomBytes(32);
+	const a = createHmac("sha256", key).update(presented).digest();
+	const b = createHmac("sha256", key).update(expected).digest();
+	return timingSafeEqual(a, b);
 }
