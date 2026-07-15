@@ -52,6 +52,34 @@ describe("fetchHealth", () => {
 				bad as unknown as typeof fetch,
 			),
 		).toBeNull();
+
+		// ok:true but required fields missing/invalid — reject, don't invent defaults.
+		const partial = vi.fn(async () => jsonResponse({ ok: true }));
+		expect(
+			await fetchHealth(
+				"http://127.0.0.1:4127",
+				partial as unknown as typeof fetch,
+			),
+		).toBeNull();
+	});
+
+	it("passes an abort signal when a timeout is given", async () => {
+		const payload: HealthPayload = {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "ready",
+			transcription: "unconfigured",
+		};
+		const fetchImpl = vi.fn(async () => jsonResponse(payload));
+		await fetchHealth(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+			2000,
+		);
+		const [url, opts] = fetchImpl.mock.calls[0] as [string, RequestInit?];
+		expect(url).toBe("http://127.0.0.1:4127/health");
+		expect(opts?.signal).toBeInstanceOf(AbortSignal);
 	});
 });
 
@@ -61,12 +89,22 @@ describe("healthPill", () => {
 		expect(
 			healthPill({
 				ok: true,
-				issues: false,
+				issues: true,
 				repos: 0,
 				gh: "unauthenticated",
 				transcription: "unconfigured",
 			}).tone,
 		).toBe("warn");
+		// Issue filing disabled → gh irrelevant, not flagged as unhealthy.
+		expect(
+			healthPill({
+				ok: true,
+				issues: false,
+				repos: 0,
+				gh: "missing",
+				transcription: "unconfigured",
+			}).tone,
+		).toBe("ok");
 		expect(
 			healthPill({
 				ok: true,
@@ -105,10 +143,10 @@ describe("buildRows", () => {
 		expect(byKey.issue.ready).toBe(false);
 	});
 
-	it("surfaces gh states for the issue row", () => {
+	it("surfaces gh states for the issue row when filing is enabled", () => {
 		const missing = buildRows(DEFAULT_CONFIG, {
 			ok: true,
-			issues: false,
+			issues: true,
 			repos: 0,
 			gh: "missing",
 			transcription: "unconfigured",
@@ -116,6 +154,19 @@ describe("buildRows", () => {
 		expect(missing.find((r) => r.key === "issue")?.status).toBe(
 			"gh CLI missing",
 		);
+	});
+
+	it("labels disabled issue filing instead of a gh/repo fault", () => {
+		const disabled = buildRows(DEFAULT_CONFIG, {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "missing",
+			transcription: "unconfigured",
+		});
+		const row = disabled.find((r) => r.key === "issue");
+		expect(row?.status).toBe("Issue filing disabled");
+		expect(row?.ready).toBe(false);
 	});
 });
 

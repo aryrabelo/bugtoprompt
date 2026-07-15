@@ -6,6 +6,7 @@ import {
 	DEFAULT_CONFIG,
 	discoverBaseUrl,
 	isLoopbackHttpUrl,
+	isOutputMode,
 	isSupportedUrl,
 	isValidBindingHost,
 	isValidProjectId,
@@ -13,6 +14,7 @@ import {
 	normalizeBindings,
 	originPattern,
 	resolveProjectId,
+	type SyncConfig,
 	saveConfig,
 } from "./config";
 
@@ -79,6 +81,15 @@ describe("loadConfig / saveConfig", () => {
 		expect(cfg.screenshotMode).toBe("onMark");
 	});
 
+	it("drops invalid modes entries, keeping defaults when none survive", async () => {
+		const partial = await loadConfig(
+			fakeChrome({ modes: ["issue", "bogus", 3] }),
+		);
+		expect(partial.modes).toEqual(["issue"]);
+		const allBad = await loadConfig(fakeChrome({ modes: ["nope", 1] }));
+		expect(allBad.modes).toEqual(DEFAULT_CONFIG.modes);
+	});
+
 	it("saves a valid baseUrl and rejects a remote one", async () => {
 		const chromeApi = fakeChrome();
 		const merged = await saveConfig(chromeApi, {
@@ -88,6 +99,26 @@ describe("loadConfig / saveConfig", () => {
 		await expect(
 			saveConfig(chromeApi, { baseUrl: "http://evil.com" }),
 		).rejects.toThrow(/loopback/);
+	});
+
+	it("rejects empty or invalid modes at save time", async () => {
+		const chromeApi = fakeChrome();
+		await expect(saveConfig(chromeApi, { modes: [] })).rejects.toThrow(/modes/);
+		await expect(
+			saveConfig(chromeApi, {
+				modes: ["issue", "bogus"] as unknown as SyncConfig["modes"],
+			}),
+		).rejects.toThrow(/modes/);
+	});
+
+	it("canonicalizes a trailing-slash baseUrl to its origin before storing", async () => {
+		const chromeApi = fakeChrome();
+		const merged = await saveConfig(chromeApi, {
+			baseUrl: "http://127.0.0.1:4127/",
+		});
+		expect(merged.baseUrl).toBe("http://127.0.0.1:4127");
+		const reloaded = await loadConfig(chromeApi);
+		expect(reloaded.baseUrl).toBe("http://127.0.0.1:4127");
 	});
 });
 
@@ -108,6 +139,13 @@ describe("candidateBaseUrls (sidecar auto-discovery order)", () => {
 		).toEqual(["http://127.0.0.1:4127"]);
 		expect(candidateBaseUrls("http://127.0.0.1:9999", undefined)).toEqual([
 			"http://127.0.0.1:9999",
+			"http://127.0.0.1:4127",
+		]);
+	});
+
+	it("normalizes a trailing-slash configured URL to its origin", () => {
+		expect(candidateBaseUrls("http://localhost:4127/", undefined)).toEqual([
+			"http://localhost:4127",
 			"http://127.0.0.1:4127",
 		]);
 	});
@@ -251,5 +289,64 @@ describe("siteBindings persistence", () => {
 				siteBindings: [{ host: "bad host", projectId: "acme/x" }],
 			}),
 		).rejects.toThrow(/Invalid site binding/);
+	});
+
+	it("normalizes whitespace and dedupes bindings on save", async () => {
+		const chromeApi = fakeChrome();
+		const merged = await saveConfig(chromeApi, {
+			siteBindings: [
+				{ host: "  app.example.com  ", projectId: " acme/app " },
+				{ host: "app.example.com", projectId: "acme/other" },
+			],
+		});
+		expect(merged.siteBindings).toEqual([
+			{ host: "app.example.com", projectId: "acme/other" },
+		]);
+	});
+});
+
+describe("isOutputMode + mode validation", () => {
+	it("guards documented modes only", () => {
+		expect(isOutputMode("issue")).toBe(true);
+		expect(isOutputMode("download")).toBe(true);
+		expect(isOutputMode("bogus")).toBe(false);
+		expect(isOutputMode(42)).toBe(false);
+	});
+
+	it("loadConfig drops invalid mode elements and falls back when none valid", async () => {
+		const cfg = await loadConfig(fakeChrome({ modes: ["issue", "bogus", 7] }));
+		expect(cfg.modes).toEqual(["issue"]);
+		const cfg2 = await loadConfig(fakeChrome({ modes: ["bogus"] }));
+		expect(cfg2.modes).toEqual(DEFAULT_CONFIG.modes);
+	});
+
+	it("saveConfig rejects empty or invalid modes", async () => {
+		const chromeApi = fakeChrome();
+		await expect(saveConfig(chromeApi, { modes: [] })).rejects.toThrow(/modes/);
+		await expect(
+			saveConfig(chromeApi, { modes: ["bogus"] as never }),
+		).rejects.toThrow(/modes/);
+	});
+
+	it("saveConfig re-pins an orphaned defaultMode to the first retained mode", async () => {
+		const chromeApi = fakeChrome({ defaultMode: "issue" });
+		const merged = await saveConfig(chromeApi, { modes: ["clipboard"] });
+		expect(merged.modes).toEqual(["clipboard"]);
+		expect(merged.defaultMode).toBe("clipboard");
+	});
+
+	it("loadConfig re-pins a stored defaultMode absent from modes", async () => {
+		const cfg = await loadConfig(
+			fakeChrome({ modes: ["clipboard", "download"], defaultMode: "issue" }),
+		);
+		expect(cfg.defaultMode).toBe("clipboard");
+	});
+});
+
+describe("candidateBaseUrls trailing-slash canonicalization", () => {
+	it("normalizes a configured URL with a trailing slash to its origin", () => {
+		expect(candidateBaseUrls("http://127.0.0.1:4127/", undefined)).toEqual([
+			"http://127.0.0.1:4127",
+		]);
 	});
 });

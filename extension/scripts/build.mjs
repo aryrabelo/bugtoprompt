@@ -56,16 +56,25 @@ await build({
 	outDir: dist,
 });
 
-// Stamp the manifest version from package.json so it never drifts: Chrome's
-// `version` must be dotted integers (strip the prerelease suffix), while
-// `version_name` carries the full beta string.
+// Stamp the manifest version from package.json so it never drifts. Chrome's
+// `version` must be dotted integers and each successive beta needs a distinct,
+// increasing value so the Web Store accepts sequential uploads and clients
+// auto-update. Strip the prerelease label and encode the beta counter in
+// Chrome's optional fourth component: `0.14.0-beta.5` → `0.14.0.5`.
+// Versioning rule: the eventual stable release drops the fourth component and
+// bumps the base (e.g. ships as `0.14.1`), so it always outranks every
+// `0.14.0.N` beta. `version_name` carries the full human-readable string.
 const pkgVersion = JSON.parse(
 	readFileSync(join(root, "package.json"), "utf8"),
 ).version;
 const manifest = JSON.parse(
 	readFileSync(join(extDir, "manifest.json"), "utf8"),
 );
-manifest.version = pkgVersion.split("-")[0];
+const [versionBase, prerelease] = pkgVersion.split("-");
+const betaCounter = prerelease?.match(/beta\.(\d+)$/);
+manifest.version = betaCounter
+	? `${versionBase}.${betaCounter[1]}`
+	: versionBase;
 manifest.version_name = pkgVersion;
 writeFileSync(
 	join(dist, "manifest.json"),

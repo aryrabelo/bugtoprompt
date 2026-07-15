@@ -7,6 +7,14 @@
  */
 
 export type OutputMode = "issue" | "clipboard" | "download";
+
+const OUTPUT_MODES: readonly OutputMode[] = ["issue", "clipboard", "download"];
+/** Runtime guard: is `v` one of the documented output modes? */
+export function isOutputMode(v: unknown): v is OutputMode {
+	return (
+		typeof v === "string" && (OUTPUT_MODES as readonly string[]).includes(v)
+	);
+}
 export type ScreenshotMode = "onClick" | "perPage" | "onMark" | "off";
 
 /** Maps a page hostname to a GitHub repo. `host` is an exact hostname or a
@@ -210,7 +218,9 @@ export function candidateBaseUrls(
 ): string[] {
 	const out: string[] = [];
 	const push = (url: string): void => {
-		if (isLoopbackHttpUrl(url) && !out.includes(url)) out.push(url);
+		if (!isLoopbackHttpUrl(url)) return;
+		const origin = new URL(url).origin;
+		if (!out.includes(origin)) out.push(origin);
 	};
 	push(configured);
 	if (tabUrl && isSupportedUrl(tabUrl)) {
@@ -231,10 +241,13 @@ export function candidateBaseUrls(
 export async function discoverBaseUrl(
 	candidates: string[],
 	fetchImpl: typeof fetch,
+	timeoutMs = 2000,
 ): Promise<{ baseUrl: string; healthy: boolean }> {
 	for (const baseUrl of candidates) {
 		try {
-			const res = await fetchImpl(`${baseUrl}/health`);
+			const res = await fetchImpl(`${baseUrl}/health`, {
+				signal: AbortSignal.timeout(timeoutMs),
+			});
 			if (!res.ok) continue;
 			const raw: unknown = await res.json();
 			if (
@@ -316,8 +329,9 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 	if (typeof raw.baseUrl === "string" && isLoopbackHttpUrl(raw.baseUrl)) {
 		cfg.baseUrl = raw.baseUrl;
 	}
-	if (Array.isArray(raw.modes) && raw.modes.length > 0) {
-		cfg.modes = raw.modes as OutputMode[];
+	if (Array.isArray(raw.modes)) {
+		const valid = raw.modes.filter(isOutputMode);
+		if (valid.length > 0) cfg.modes = valid;
 	}
 	if (
 		raw.defaultMode === "issue" ||
@@ -325,6 +339,12 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 		raw.defaultMode === "download"
 	) {
 		cfg.defaultMode = raw.defaultMode;
+	}
+	// A stored/patched defaultMode that isn't among the retained modes would
+	// leave the overlay with a hidden primary action — pin it to the first
+	// retained mode instead.
+	if (!cfg.modes.includes(cfg.defaultMode)) {
+		cfg.defaultMode = cfg.modes[0];
 	}
 	if (
 		raw.screenshotMode === "onClick" ||
@@ -353,6 +373,14 @@ export async function saveConfig(
 	if (patch.baseUrl !== undefined && !isLoopbackHttpUrl(patch.baseUrl)) {
 		throw new Error("baseUrl must be a loopback HTTP origin");
 	}
+	if (
+		patch.modes !== undefined &&
+		(patch.modes.length === 0 || !patch.modes.every(isOutputMode))
+	) {
+		throw new Error(
+			"modes must be a non-empty list of issue|clipboard|download",
+		);
+	}
 	if (patch.siteBindings !== undefined) {
 		for (const b of patch.siteBindings) {
 			if (!isValidBindingHost(b.host) || !isValidProjectId(b.projectId)) {
@@ -362,6 +390,13 @@ export async function saveConfig(
 	}
 	const current = await loadConfig(chromeApi);
 	const merged: SyncConfig = { ...current, ...patch };
+	if (!merged.modes.includes(merged.defaultMode)) {
+		merged.defaultMode = merged.modes[0];
+	}
+	merged.siteBindings = normalizeBindings(merged.siteBindings);
+	// Store the canonical origin (no trailing slash) so the persisted value
+	// matches what discovery/candidateBaseUrls produce via URL.origin.
+	merged.baseUrl = new URL(merged.baseUrl).origin;
 	const payload: Record<string, unknown> = {
 		baseUrl: merged.baseUrl,
 		modes: merged.modes,

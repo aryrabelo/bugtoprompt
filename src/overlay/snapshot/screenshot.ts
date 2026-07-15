@@ -280,8 +280,9 @@ export async function startScreenGrabber(): Promise<ScreenGrabber> {
 				canvas.width = dw;
 				canvas.height = dh;
 				ctx.drawImage(video, 0, 0, frameW, frameH, 0, 0, dw, dh);
-				blob = await encodeCanvas(canvas, [quality]);
-				if (blob && blob.size <= TARGET_MAX_BYTES) break;
+				const step = await encodeCanvas(canvas, [quality]);
+				if (step) blob = step;
+				if (step && step.size <= TARGET_MAX_BYTES) break;
 			}
 			return blob ? { blob, method: "getDisplayMedia" } : null;
 		},

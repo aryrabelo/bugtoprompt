@@ -31,6 +31,8 @@ mixed-content blocking.
 | `GET`  | `/targets` | configured repos as targets |
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
 
+`GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
+`local` means no AssemblyAI key is set and a local parakeet CLI was found.
 ## Configuration (env)
 
 | Variable | Default | Notes |
@@ -42,7 +44,7 @@ mixed-content blocking.
 | `BUGTOPROMPT_PROJECT_ID` | `bugtoprompt` | advertised projectId |
 | `BUGTOPROMPT_ENABLE_ISSUES` | `0` | set `1` to enable `/issue` (needs the `gh` CLI authenticated) |
 | `BUGTOPROMPT_ALLOWED_ORIGINS` | — | comma-separated extra origins; localhost & Tauri are auto-trusted |
-| `BUGTOPROMPT_TOKEN` | — | optional shared secret (`Authorization: Bearer <token>`) required on every non-OPTIONS request |
+| `BUGTOPROMPT_TOKEN` | — | optional shared secret (`Authorization: Bearer <token>`) required on every non-OPTIONS request except `GET /health`, which stays unauthenticated for liveness/discovery but returns only `{ ok: true }` when a token is set |
 | `BUGTOPROMPT_SCREENSHOT_MODE` | — | passed through to the client via `/bugtoprompt/config` |
 | `BUGTOPROMPT_ENV` | — | environment label (e.g. `staging`) passed through via `/bugtoprompt/config` |
 | `BUGTOPROMPT_CONFIG` | — | inline JSON or path to a JSON config file; merged before env overrides |

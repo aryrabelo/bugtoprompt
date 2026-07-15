@@ -8,6 +8,7 @@ import {
 	buildHealthPayload,
 	detectGhState,
 	detectTranscriptionState,
+	publishedGhState,
 } from "./service-preflight.mjs";
 
 describe("detectGhState", () => {
@@ -127,5 +128,17 @@ describe("buildHealthPayload", () => {
 		});
 		expect(payload.issues).toBe(false);
 		expect(payload.ok).toBe(true);
+	});
+});
+
+describe("publishedGhState", () => {
+	it("maps the transient 'pending' sentinel to 'unauthenticated'", () => {
+		expect(publishedGhState("pending")).toBe("unauthenticated");
+	});
+
+	it("passes contract states through unchanged", () => {
+		expect(publishedGhState("ready")).toBe("ready");
+		expect(publishedGhState("missing")).toBe("missing");
+		expect(publishedGhState("unauthenticated")).toBe("unauthenticated");
 	});
 });
