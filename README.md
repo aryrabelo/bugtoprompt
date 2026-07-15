@@ -128,7 +128,7 @@ The package ships a zero-dependency Node broker that implements the full
 ```bash
 node server/github-issue-service.mjs
 # or, after publishing:
-# ASSEMBLYAI_API_KEY=<key> bunx bugtoprompt-server
+# ASSEMBLYAI_API_KEY=<key> npx bugtoprompt
 ```
 
 Key environment variables:
@@ -309,6 +309,16 @@ pnpm test         # vitest (jsdom)
 pnpm build        # tsup → dist (ESM + .d.ts) for index/schema/render/client
 pnpm lint         # biome
 ```
+
+## Migrating from `bugtoprompt-server`
+
+The standalone `bugtoprompt-server` npm package was discontinued and removed
+from npm: its local role was absorbed into the `bugtoprompt` package — the
+same sidecar now runs via `npx bugtoprompt`
+(entry: `server/github-issue-service.mjs`). The hosted role moved to
+[bugtoprompt.com](https://bugtoprompt.com). Update any scripts or docs that
+ran `npx`/`bunx bugtoprompt-server` to `npx bugtoprompt`; env vars and
+endpoints are unchanged.
 
 ## License
 
