@@ -70,6 +70,9 @@ vi.mock("../render", () => ({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// A prior test may leave a persisted session (e.g. reviewing phase) in
+	// localStorage — clear it so each test starts from the idle phase.
+	localStorage.clear();
 	mockAudioStop = vi.fn().mockResolvedValue({
 		blob: new Blob([]),
 		mimeType: "audio/webm",
@@ -81,6 +84,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	localStorage.clear();
 	vi.unstubAllGlobals();
 	// Remove any meta tags added during tests.
 	for (const el of document.querySelectorAll('meta[name="bugtoprompt-base"]')) {
@@ -328,6 +332,77 @@ describe("<BugToPrompt /> auto-config from server", () => {
 		expect(
 			screen.queryByRole("button", { name: /create github issue/i }),
 		).not.toBeNull();
+	});
+
+	it.each([
+		["local", "(local)"],
+		["assemblyai", "(cloud)"],
+	] as const)('transcriptionProvider "%s" from server config appends "%s" to the voice row label', async (transcriptionProvider, suffix) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation((url: unknown) => {
+				if (typeof url === "string" && url.endsWith("/bugtoprompt/config")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								modes: ["clipboard"],
+								transcriptionProvider,
+							}),
+					});
+				}
+				return Promise.reject(new Error("no backend for this endpoint"));
+			}),
+		);
+
+		render(
+			<BugToPrompt
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+
+		await waitFor(() =>
+			expect(
+				screen.getByText(
+					new RegExp(
+						`live voice transcription.*${suffix.replace(/[()]/g, "\\$&")}`,
+						"i",
+					),
+				),
+			).toBeTruthy(),
+		);
+	});
+
+	it("unconfigured transcriptionProvider leaves the voice row label unsuffixed", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockImplementation((url: unknown) => {
+				if (typeof url === "string" && url.endsWith("/bugtoprompt/config")) {
+					return Promise.resolve({
+						ok: true,
+						json: () =>
+							Promise.resolve({
+								modes: ["clipboard"],
+								transcriptionProvider: "unconfigured",
+							}),
+					});
+				}
+				return Promise.reject(new Error("no backend for this endpoint"));
+			}),
+		);
+
+		render(
+			<BugToPrompt
+				clipboard={{ writeText: vi.fn().mockResolvedValue(undefined) }}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+
+		await waitFor(() =>
+			expect(screen.getByText(/live voice transcription/i)).toBeTruthy(),
+		);
+		expect(screen.queryByText(/\(local\)|\(cloud\)/i)).toBeNull();
 	});
 });
 
