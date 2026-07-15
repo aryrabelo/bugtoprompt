@@ -102,8 +102,12 @@ export function mount(opts?: Partial<BugToPromptProps>): () => void {
 	_host.setAttribute("data-bugtoprompt-host", "");
 	// Reset all author-facing styles on the host so hostile host-page rules
 	// (e.g. `body > div { overflow: hidden }`) can neither clip nor reposition
-	// the fixed overlay that renders through this zero-dimension host.
+	// the fixed overlay that renders through this zero-dimension host. `all`
+	// per spec excludes direction/unicode-bidi, so isolate those explicitly to
+	// keep the English overlay LTR even on RTL or bidi-overriding host pages.
 	_host.style.setProperty("all", "initial", "important");
+	_host.style.setProperty("direction", "ltr", "important");
+	_host.style.setProperty("unicode-bidi", "isolate", "important");
 	const shadow = _host.attachShadow({ mode: "open" });
 	const style = document.createElement("style");
 	style.setAttribute("data-bugtoprompt-style", "");
