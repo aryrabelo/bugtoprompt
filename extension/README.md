@@ -2,7 +2,7 @@
 
 Thin MV3 extension that injects the BugToPrompt overlay on `localhost` /
 `127.0.0.1` pages. GitHub issues and transcription go through the local
-sidecar (`bugtoprompt-server`).
+sidecar (the `bugtoprompt` package).
 
 ## Install (load unpacked)
 
@@ -26,7 +26,7 @@ Chrome cannot install this automatically — it is a 1-minute manual step:
 ## Requirements
 
 - The sidecar must be running for issues/voice: it starts automatically with
-  `bun run dev` in GerarPosts, or standalone via `npx bugtoprompt-server`
+  `bun run dev` in GerarPosts, or standalone via `npx bugtoprompt`
   (see `../server/`).
 - Options page: sidecar URL (loopback only) and screenshot mode.
 

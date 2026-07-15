@@ -1,14 +1,19 @@
-# bugtoprompt-server
+# bugtoprompt sidecar
 
 Local self-hosted broker for the [BugToPrompt](https://github.com/aryrabelo/bugtoprompt)
-bug-capture overlay. It mints short-lived AssemblyAI streaming tokens so the
-overlay can do live voice transcription **without the API key ever reaching the
-browser** — the key stays in this process.
+bug-capture overlay, shipped inside the `bugtoprompt` package. The standalone
+`bugtoprompt-server` npm package was discontinued and removed from npm; the
+hosted role moved to
+[bugtoprompt.com](https://bugtoprompt.com). It mints short-lived AssemblyAI
+streaming tokens so the overlay can do live voice transcription **without the
+API key ever reaching the browser** — the key stays in this process.
 
 ## Run (no install)
 
 ```bash
-ASSEMBLYAI_API_KEY=<your-key> bunx bugtoprompt-server   # http://localhost:4127
+npx bugtoprompt   # http://localhost:4127
+# optional — enables AssemblyAI streaming + batch transcription (BYO key):
+# ASSEMBLYAI_API_KEY=<your-key> npx bugtoprompt
 ```
 
 Then point the overlay at it. In a Vite app:
@@ -25,7 +30,7 @@ mixed-content blocking.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/bugtoprompt/config` | advertised modes / projectId — its `200` activates the overlay's backend mode |
-| `GET`  | `/health` | preflight status (`{ ok, issues, repos, gh, transcription }`); `transcription` is `"ready"` (local `parakeet-mlx` OR AssemblyAI key available) or `"unconfigured"` (neither) |
+| `GET`  | `/health` | preflight status (`{ ok, issues, repos, gh, transcription }`); `transcription` is `"local"` (local `parakeet-mlx` engine found — preferred), `"ready"` (AssemblyAI key, no local engine) or `"unconfigured"` (neither) |
 | `POST` | `/streaming-token` | mint a 300s AssemblyAI streaming token (`{ token, expiresAt }`) |
 | `POST` | `/transcribe` | batch transcript of a saved capture (local `parakeet-mlx` or AssemblyAI, see `BUGTOPROMPT_TRANSCRIBE`) |
 | `POST` | `/artifact` | persist `artifact.json` + audio + screenshots |
@@ -33,7 +38,9 @@ mixed-content blocking.
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
 
 `GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
-`local` means no AssemblyAI key is set and a local parakeet CLI was found.
+`local` means a local parakeet CLI was found (preferred even when an
+AssemblyAI key is also set).
+
 ## Configuration (env)
 
 | Variable | Default | Notes |
