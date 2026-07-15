@@ -80,7 +80,7 @@ export async function fetchHealth(
 				signal = AbortSignal.timeout(timeoutMs);
 			} else if (typeof AbortController !== "undefined") {
 				const ctrl = new AbortController();
-				timer = setTimeout(() => ctrl.abort(), timeoutMs);
+				timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
 				signal = ctrl.signal;
 			}
 		}
@@ -92,7 +92,7 @@ export async function fetchHealth(
 			if (!res.ok) return null;
 			raw = await res.json();
 		} finally {
-			clearTimeout(timer);
+			window.clearTimeout(timer);
 		}
 	} catch {
 		return null;

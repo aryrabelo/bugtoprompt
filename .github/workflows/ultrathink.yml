@@ -25,6 +25,7 @@ jobs:
       - name: Typecheck and test
         run: |
           pnpm typecheck
+          pnpm typecheck:extension
           pnpm test
       - name: Build
         run: pnpm build

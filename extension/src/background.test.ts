@@ -408,8 +408,10 @@ describe("resilience regressions", () => {
 		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
 		if (!exec) throw new Error("scripting missing");
 		// Fail the bundle JS injection so ensureOverlay rejects mid-activation.
-		exec.mockImplementation(async (inj: Record<string, unknown>) => {
-			const files = inj.files as string[] | undefined;
+		exec.mockImplementation(async (inj) => {
+			const files = (inj as Record<string, unknown>).files as
+				| string[]
+				| undefined;
 			if (files?.some((f) => f.includes("bugtoprompt.global.js"))) {
 				throw new Error("frame removed");
 			}

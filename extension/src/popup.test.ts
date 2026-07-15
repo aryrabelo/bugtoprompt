@@ -96,7 +96,10 @@ describe("fetchHealth", () => {
 			fetchImpl as unknown as typeof fetch,
 			2000,
 		);
-		const [url, opts] = fetchImpl.mock.calls[0] as [string, RequestInit?];
+		const [url, opts] = fetchImpl.mock.calls[0] as unknown as [
+			string,
+			RequestInit?,
+		];
 		expect(url).toBe("http://127.0.0.1:4127/health");
 		expect(opts?.signal).toBeInstanceOf(AbortSignal);
 	});
