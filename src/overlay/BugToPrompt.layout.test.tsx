@@ -169,6 +169,29 @@ describe("idle layout hierarchy", () => {
 			delete window.__BUGTOPROMPT__;
 		}
 	});
+
+	it("degrades a prototype-inherited screenshotMode key ('toString') to onMark instead of leaking Object.prototype", () => {
+		// A prototype-inherited key ("toString") passes a naive `in` check and
+		// indexes Object.prototype, whose .label/.on/.desc are undefined; the
+		// guard under test must degrade it to onMark.
+		const bogusHostConfig = {
+			screenshotMode: "toString",
+		} as unknown as NonNullable<Window["__BUGTOPROMPT__"]>;
+		window.__BUGTOPROMPT__ = bogusHostConfig;
+		try {
+			render(
+				<BugToPrompt
+					client={makeFakeClient()}
+					projectId="p"
+					modes={["issue"]}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
+			expect(screen.getByText(/capture on mark/i)).toBeTruthy();
+		} finally {
+			delete window.__BUGTOPROMPT__;
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

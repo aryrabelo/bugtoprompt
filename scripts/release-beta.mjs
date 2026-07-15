@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isVersionNotFound } from "./lib/npm-view-not-found.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -71,14 +72,13 @@ const alreadyPublished = (dir) => {
 		);
 		return true;
 	} catch (err) {
-		// Only a genuine "version not on the registry" (npm E404) means we should
-		// proceed to publish. Auth/registry/network failures are INCONCLUSIVE:
-		// treating them as "not published" would let a retry republish over an
-		// existing version (or publish on a broken session). Abort instead.
+		// Only npm's version-specific "No match found for version X" 404 means the
+		// requested version is genuinely unpublished, so publishing is safe. The
+		// root package is known to exist (see header), so a package-level 404
+		// (wrong name/registry/auth) — or any other error — is INCONCLUSIVE and
+		// must abort rather than republish over an existing version (issue #26).
 		const stderr = String(err?.stderr ?? "");
-		if (
-			/E404|404 Not Found|is not in this registry|No match found/i.test(stderr)
-		) {
+		if (isVersionNotFound(stderr, version(dir))) {
 			return false;
 		}
 		throw new Error(
