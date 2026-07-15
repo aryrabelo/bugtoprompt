@@ -214,6 +214,63 @@ describe("useSession", () => {
 		expect(callArg.artifactRef).toBe("/tmp/cap");
 	});
 
+	it("(b3) submitIssue publishes the effective (overridden) target to local artifact state", async () => {
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+
+		await act(async () => {
+			await result.current.start({ projectId: "proj" });
+		});
+		await act(async () => {
+			await result.current.stop();
+		});
+		// Late override selection at file-time: a different project/branch.
+		await act(async () => {
+			await result.current.submitIssue({
+				projectId: "proj2",
+				workspaceId: "ws2",
+				branch: "feat/late",
+			});
+		});
+
+		// Local history must reflect the filed target, not the record-start one.
+		expect(result.current.artifact?.projectId).toBe("proj2");
+		expect(result.current.artifact?.workspaceId).toBe("ws2");
+		expect(result.current.artifact?.branch).toBe("feat/late");
+		// The submit-time upload (the last saveArtifact) carries the edited artifact
+		// with the overridden target, not the record-start save.
+		const calls = (client.saveArtifact as Mock).mock.calls;
+		const savedArg = calls[calls.length - 1][0] as {
+			artifact: { projectId?: string; branch?: string };
+		};
+		expect(savedArg.artifact.projectId).toBe("proj2");
+		expect(savedArg.artifact.branch).toBe("feat/late");
+	});
+
+	it("(b4) a superseded start() resolves false so a chained enableVoice is skipped", async () => {
+		const client = makeFakeClient();
+		let resolveGrab: (g: typeof mockGrabber) => void = () => {};
+		const deferred = new Promise<typeof mockGrabber>((r) => {
+			resolveGrab = r;
+		});
+		// First start awaits a pending grabber; the second start (default resolved
+		// grabber) supersedes it before the first resolves.
+		(startScreenGrabber as Mock).mockReturnValueOnce(deferred);
+		const { result } = renderHook(() => useSession(client, "onClick"));
+
+		let firstStarted: boolean | undefined;
+		await act(async () => {
+			const p1 = result.current.start({});
+			await result.current.start({}); // supersede: generation bumps
+			resolveGrab(mockGrabber);
+			firstStarted = await p1;
+		});
+
+		// The stale start reports cancelled so the caller must not enableVoice.
+		expect(firstStarted).toBe(false);
+		expect(result.current.phase).toBe("recording");
+	});
+
 	it("(c) batch-fallback: transcribeBatch called when mintStreamingToken rejects", async () => {
 		const client = makeFakeClient({
 			mintStreamingToken: vi.fn().mockRejectedValue(new Error("no token")),
@@ -702,6 +759,64 @@ describe("useSession — rehydration", () => {
 			{ tStartMs: 0, tEndMs: 500, text: "reviewed" },
 		]);
 	});
+
+	it("(m2) rehydrates click screenshot previews from persisted clicks + blobs", async () => {
+		const sessionId = "cap_preview-rehydrate";
+		saveSession({
+			v: 1,
+			sessionId,
+			startedAt: Date.now() - 15_000,
+			binding: { projectId: "proj-3" },
+			status: "reviewing",
+			// Two clicks persisted out of resolution order (2 before 1) to prove
+			// the rebuilt strip is sorted by clickNumber, not snapshot order.
+			events: [
+				{
+					tMs: 200,
+					kind: "click",
+					clickNumber: 2,
+					screenshotRef: "snap-0001.jpg",
+				},
+				{
+					tMs: 100,
+					kind: "click",
+					clickNumber: 1,
+					screenshotRef: "snap-0000.jpg",
+				},
+			],
+			snapshots: [
+				{
+					tMs: 100,
+					screenshotRef: "snap-0000.jpg",
+					viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+					interactiveElements: [],
+				},
+				{
+					tMs: 200,
+					screenshotRef: "snap-0001.jpg",
+					viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+					interactiveElements: [],
+				},
+			],
+			transcript: [],
+			durationMs: 15_000,
+		});
+		await putShot(sessionId, 0, new Blob(["a"], { type: "image/jpeg" }));
+		await putShot(sessionId, 1, new Blob(["b"], { type: "image/jpeg" }));
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+
+		expect(result.current.phase).toBe("reviewing");
+		expect(result.current.clickPreviews.map((p) => p.clickNumber)).toEqual([
+			1, 2,
+		]);
+		expect(result.current.clickPreviews[0].screenshotRef).toBe("snap-0000.jpg");
+		expect(result.current.clickPreviews[0].url).toMatch(/^blob:/);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -793,6 +908,8 @@ describe("useSession — screenshotMode", () => {
 		// Click still recorded as a numbered DOM-only snapshot; no preview image.
 		expect(result.current.markCount).toBe(1);
 		expect(result.current.clickPreviews).toHaveLength(0);
+		// …but the click IS counted so the recorder never shows "0 clicks".
+		expect(result.current.clickCount).toBe(1);
 	});
 
 	it("(p) resumes click numbering from the highest persisted clickNumber", async () => {
