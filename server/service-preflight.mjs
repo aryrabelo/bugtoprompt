@@ -63,20 +63,28 @@ export async function detectTranscriptionState({ apiKey, detectLocal }) {
 
 /**
  * Assemble the exact /health contract:
- * { ok: true, issues: boolean, repos: number, gh, transcription }.
+ * { ok: true, issues: boolean, repos: number, gh, transcription, originAllowed }.
  *
  * @param {object} input
  * @param {boolean} input.issues
  * @param {number} input.repos
  * @param {"ready" | "missing" | "unauthenticated"} input.gh
  * @param {"ready" | "local" | "unconfigured"} input.transcription
+ * @param {boolean} input.originAllowed
  */
-export function buildHealthPayload({ issues, repos, gh, transcription }) {
+export function buildHealthPayload({
+	issues,
+	repos,
+	gh,
+	transcription,
+	originAllowed,
+}) {
 	return {
 		ok: true,
 		issues: Boolean(issues),
 		repos,
 		gh,
 		transcription,
+		originAllowed: Boolean(originAllowed),
 	};
 }
