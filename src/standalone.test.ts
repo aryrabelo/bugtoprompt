@@ -59,6 +59,13 @@ it("mount() creates a shadow host with scoped styles and the overlay inside", as
 	// Everything lives inside the shadow root.
 	expect(shadow()?.querySelector("[data-bugtoprompt-style]")).not.toBeNull();
 	expect(shadow()?.querySelector("[data-bugtoprompt]")).not.toBeNull();
+	// Host is hardened against host-page CSS: `all: initial !important` prevents
+	// rules like `body > div { overflow: hidden }` from clipping the overlay.
+	const host = document.querySelector(
+		"[data-bugtoprompt-host]",
+	) as HTMLElement | null;
+	expect(host?.style.getPropertyValue("all")).toBe("initial");
+	expect(host?.style.getPropertyPriority("all")).toBe("important");
 });
 
 it("unmount() removes the shadow host entirely", async () => {

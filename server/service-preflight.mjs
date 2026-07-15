@@ -31,6 +31,21 @@ export async function detectGhState({ lookup, authStatus }) {
 }
 
 /**
+ * Coerce the internal `gh` probe state into a value the wire contract accepts.
+ * Until the background probe resolves, the server holds a transient "pending"
+ * sentinel — outside {ready|missing|unauthenticated}, which the popup coerces
+ * to "missing" and thus mislabels an installed, authenticated CLI as absent.
+ * Report the non-alarming "unauthenticated" until the probe lands; it flips to
+ * the real state within the probe timeout.
+ *
+ * @param {"pending" | "ready" | "missing" | "unauthenticated"} ghState
+ * @returns {"ready" | "missing" | "unauthenticated"}
+ */
+export function publishedGhState(ghState) {
+	return ghState === "pending" ? "unauthenticated" : ghState;
+}
+
+/**
  * Resolve transcription readiness from the selected provider.
  * Local engine takes precedence; AssemblyAI key is the cloud fallback.
  *

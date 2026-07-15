@@ -55,6 +55,21 @@ describe("installEventTrack — clicks & selections", () => {
 		expect(events[0].selectedText).toBeUndefined();
 	});
 
+	it("ignores right- and middle-button releases (button !== 0)", () => {
+		mockSelection("");
+		for (const button of [1, 2]) {
+			now = 100;
+			target.dispatchEvent(
+				new MouseEvent("mousedown", { bubbles: true, button }),
+			);
+			now = 250;
+			target.dispatchEvent(
+				new MouseEvent("mouseup", { bubbles: true, button }),
+			);
+		}
+		expect(events).toHaveLength(0);
+	});
+
 	it("emits a select with the highlighted text (trimmed) on mouse-up", () => {
 		mockSelection("  essa parte aqui  ");
 		down(target, 70);

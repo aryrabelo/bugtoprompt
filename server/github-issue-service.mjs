@@ -82,6 +82,7 @@ import {
 	buildHealthPayload,
 	detectGhState,
 	detectTranscriptionState,
+	publishedGhState,
 } from "./service-preflight.mjs";
 import {
 	isOriginAllowed,
@@ -290,6 +291,36 @@ async function handleArtifact(req, res) {
 		sendJson(res, 400, { error: "invalid sessionId" });
 		return;
 	}
+	// Validate the FULL screenshot payload BEFORE creating the dir or writing
+	// anything, so a rejected capture never leaves a partial capture dir behind
+	// (and never overwrites a prior capture with the same sessionId on a 400).
+	const toWrite = [];
+	const seenRefs = new Set();
+	if (Array.isArray(body.screenshotsBase64)) {
+		const snapshots = Array.isArray(artifact.snapshots)
+			? artifact.snapshots
+			: [];
+		for (let i = 0; i < body.screenshotsBase64.length; i++) {
+			const b64 = body.screenshotsBase64[i];
+			if (typeof b64 !== "string" || b64.length === 0) continue;
+			const ref = snapshots[i]?.screenshotRef;
+			if (!isValidScreenshotRef(ref)) {
+				sendJson(res, 400, {
+					error: `screenshot ${i} missing a valid screenshotRef (expected snap-NNNN.jpg)`,
+				});
+				return;
+			}
+			if (seenRefs.has(ref)) {
+				sendJson(res, 400, {
+					error: `screenshot ${i} reuses screenshotRef ${ref}; each ref must be unique`,
+				});
+				return;
+			}
+			seenRefs.add(ref);
+			toWrite.push({ ref, b64 });
+		}
+	}
+
 	const dir = join(CAPTURES_ROOT, sessionId);
 	mkdirSync(dir, { recursive: true });
 
@@ -302,30 +333,10 @@ async function handleArtifact(req, res) {
 		);
 	}
 
-	if (Array.isArray(body.screenshotsBase64)) {
-		const snapshots = Array.isArray(artifact.snapshots)
-			? artifact.snapshots
-			: [];
-		// Validate every non-empty image up front so a bad ref never leaves a
-		// half-written capture dir behind.
-		const toWrite = [];
-		for (let i = 0; i < body.screenshotsBase64.length; i++) {
-			const b64 = body.screenshotsBase64[i];
-			if (typeof b64 !== "string" || b64.length === 0) continue;
-			const ref = snapshots[i]?.screenshotRef;
-			if (!isValidScreenshotRef(ref)) {
-				sendJson(res, 400, {
-					error: `screenshot ${i} missing a valid screenshotRef (expected snap-NNNN.jpg)`,
-				});
-				return;
-			}
-			toWrite.push({ ref, b64 });
-		}
-		// screenshotRef IS the persisted filename: prompt, artifact JSON, JPEG, and
-		// issue-local path stay identical rather than inventing screenshot-NNN.png.
-		for (const { ref, b64 } of toWrite) {
-			writeFileSync(join(dir, ref), Buffer.from(b64, "base64"));
-		}
+	// screenshotRef IS the persisted filename: prompt, artifact JSON, JPEG, and
+	// issue-local path stay identical rather than inventing screenshot-NNN.png.
+	for (const { ref, b64 } of toWrite) {
+		writeFileSync(join(dir, ref), Buffer.from(b64, "base64"));
 	}
 
 	sendJson(res, 200, { dir, sessionId });
@@ -675,7 +686,7 @@ function handleHealth(res, config, ghState) {
 		buildHealthPayload({
 			issues: config.issueMode,
 			repos: config.targets.length,
-			gh: ghState,
+			gh: publishedGhState(ghState),
 			transcription: transcriptionState,
 		}),
 	);
@@ -698,15 +709,27 @@ if (config.issueMode && config.targets.length === 0) {
 	process.exit(1);
 }
 
-// Resolve `gh` availability + auth exactly once at startup. Never surfaces a
-// token: we only report ready/missing/unauthenticated.
-const ghState = await detectGhState({
+// Resolve `gh` availability + auth in the BACKGROUND so a slow or hung
+// `gh auth status` never delays the HTTP listener — capture and transcription
+// work even when issue mode is off. Both probes are bounded by a timeout;
+// never surfaces a token, only ready/missing/unauthenticated (or pending).
+let ghState = "pending";
+const GH_PROBE_TIMEOUT_MS = 5_000;
+detectGhState({
 	lookup: () =>
-		execFileAsync("gh", ["--version"]).then(
+		execFileAsync("gh", ["--version"], { timeout: GH_PROBE_TIMEOUT_MS }).then(
 			() => true,
 			() => false,
 		),
-	authStatus: () => execFileAsync("gh", ["auth", "status"]),
+	// `--active` scopes the probe to the ACTIVE account: a valid active login is
+	// no longer reported as unauthenticated just because some other stale
+	// account/host configured on the machine has expired credentials.
+	authStatus: () =>
+		execFileAsync("gh", ["auth", "status", "--active"], {
+			timeout: GH_PROBE_TIMEOUT_MS,
+		}),
+}).then((state) => {
+	ghState = state;
 });
 
 // Resolve transcription provider once at startup. Local engine is preferred in
@@ -720,16 +743,32 @@ const transcriptionState = await detectTranscriptionState({
 	detectLocal: async () => localEngineReady,
 });
 
+/** True when no shared secret is configured, or the request presented it. */
+function presentsValidToken(req) {
+	const token = process.env.BUGTOPROMPT_TOKEN;
+	if (!token) return true;
+	const auth = req.headers.authorization || "";
+	const presented = auth.startsWith("Bearer ")
+		? auth.slice(7)
+		: req.headers["x-bugtoprompt-token"];
+	return presented === token;
+}
+
 const server = createServer((req, res) => {
 	const origin = req.headers.origin;
 	res.bugCors = corsHeaders(origin);
-	// /health is a self-diagnosing preflight: answer before the CORS/auth guards
-	// so any local caller (extension popup, dev harness) can probe readiness.
+	// /health answers before the CORS/auth guards so any local caller (extension
+	// popup, dev harness) can probe readiness. But when BUGTOPROMPT_TOKEN is set,
+	// unauthenticated callers get ONLY a minimal liveness response — repo count
+	// and gh/transcription readiness stay behind the token, honoring the
+	// "every non-OPTIONS request must present it" contract while keeping the
+	// discovery ping (ok:true) open.
 	if (
 		req.method === "GET" &&
 		new URL(req.url || "/", "http://localhost").pathname === "/health"
 	) {
-		handleHealth(res, config, ghState);
+		if (presentsValidToken(req)) handleHealth(res, config, ghState);
+		else sendJson(res, 200, { ok: true });
 		return;
 	}
 	// CSRF guard: a browser request from a disallowed Origin is rejected outright
@@ -741,16 +780,13 @@ const server = createServer((req, res) => {
 	}
 	// Optional shared-secret auth: when BUGTOPROMPT_TOKEN is set, every non-OPTIONS
 	// request must present it.
-	const token = process.env.BUGTOPROMPT_TOKEN;
-	if (token && req.method !== "OPTIONS") {
-		const auth = req.headers.authorization || "";
-		const presented = auth.startsWith("Bearer ")
-			? auth.slice(7)
-			: req.headers["x-bugtoprompt-token"];
-		if (presented !== token) {
-			sendJson(res, 401, { error: "unauthorized" });
-			return;
-		}
+	if (
+		process.env.BUGTOPROMPT_TOKEN &&
+		req.method !== "OPTIONS" &&
+		!presentsValidToken(req)
+	) {
+		sendJson(res, 401, { error: "unauthorized" });
+		return;
 	}
 	if (req.method === "OPTIONS") {
 		res.writeHead(204, res.bugCors);

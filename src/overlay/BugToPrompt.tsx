@@ -47,6 +47,34 @@ import type { ScreenshotMode, SessionBinding } from "./useSession";
 import { useSession } from "./useSession";
 import { VERSION } from "./version";
 
+/** Idle-panel capability copy per screenshot mode, so the row reflects what the
+ *  session will actually do instead of always claiming every click is captured. */
+const CAPTURE_ROW_COPY: Record<
+	ScreenshotMode,
+	{ label: string; desc: string; on: boolean }
+> = {
+	onClick: {
+		label: "Capture every click",
+		desc: "Every page click becomes a numbered 400×600 screenshot.",
+		on: true,
+	},
+	perPage: {
+		label: "Capture on navigation",
+		desc: "Captures a whole-frame screenshot as you navigate when screen sharing is available.",
+		on: true,
+	},
+	onMark: {
+		label: "Capture on Mark",
+		desc: "Screenshots are taken only when you press Mark.",
+		on: true,
+	},
+	off: {
+		label: "Screenshots off",
+		desc: "DOM timeline & voice only — no screen capture.",
+		on: false,
+	},
+};
+
 function clock(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
 	return `${Math.floor(total / 60)}:${(total % 60).toString().padStart(2, "0")}`;
@@ -214,16 +242,26 @@ function useAutoConfig({
 		projectIdProp ?? (clientProp !== undefined ? undefined : auto.projectId);
 
 	// screenshotMode priority: explicit prop > window.__BUGTOPROMPT__ > server
-	// config > default "onMark".
+	// config > default "onMark". Global/server values arrive as runtime data
+	// (only type-cast), so unknown strings are normalized to "onMark" — the
+	// same effective behavior useSession applies (any value ≠ "off" captures
+	// route/manual marks) — instead of rendering "off" copy for an active mode.
 	const globalScreenshotMode =
 		typeof window !== "undefined"
 			? (window.__BUGTOPROMPT__?.screenshotMode as ScreenshotMode | undefined)
 			: undefined;
-	const screenshotMode: ScreenshotMode =
+	const resolvedScreenshotMode =
 		screenshotModeProp ??
 		globalScreenshotMode ??
 		auto.screenshotMode ??
 		"onMark";
+	// External sources (window.__BUGTOPROMPT__, server config) are untrusted at
+	// runtime, so an unknown mode falls back to "onMark" instead of crashing the
+	// render when it indexes CAPTURE_ROW_COPY.
+	const screenshotMode: ScreenshotMode =
+		resolvedScreenshotMode in CAPTURE_ROW_COPY
+			? resolvedScreenshotMode
+			: "onMark";
 
 	return { client, modes, projectId, screenshotMode, hasBackend: auto.backend };
 }
@@ -322,6 +360,12 @@ function CaptureHistoryList({
 											.createIssue({
 												sessionId: rec.id,
 												prompt: rec.prompt,
+												// Forward the target captured at record-time so a
+												// site-binding's mapped repo is used instead of the
+												// server falling back to config.targets[0].
+												...(rec.artifact.workspaceId
+													? { targetId: rec.artifact.workspaceId }
+													: {}),
 												...(transcriptText(rec.artifact.transcript)
 													? {
 															transcriptText: transcriptText(
@@ -665,7 +709,7 @@ export function ReviewPanel({
 				</ol>
 			) : (
 				<p className="text-[10px] text-muted-foreground">
-					No screenshots captured.
+					No click screenshots captured.
 				</p>
 			)}
 
@@ -1066,12 +1110,12 @@ export function BugToPrompt({
 					{/* Three bordered capability rows (Jam-style). */}
 					<CapabilityRow
 						icon={<Camera className="size-3.5" />}
-						label="Capture every click"
-						status="on"
-						statusTone="on"
+						label={CAPTURE_ROW_COPY[screenshotMode].label}
+						status={CAPTURE_ROW_COPY[screenshotMode].on ? "on" : "off"}
+						statusTone={CAPTURE_ROW_COPY[screenshotMode].on ? "on" : "off"}
 					>
 						<p className="text-[10px] text-muted-foreground">
-							Every page click becomes a numbered 400×600 screenshot.
+							{CAPTURE_ROW_COPY[screenshotMode].desc}
 						</p>
 					</CapabilityRow>
 					<CapabilityRow
@@ -1082,17 +1126,19 @@ export function BugToPrompt({
 					>
 						{showIdleKeyPrompt ? (
 							<KeyPrompt onSave={(key) => session.provideKey(key)} />
-						) : (
-							<label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground">
-								<input
-									type="checkbox"
-									checked={wantVoice}
-									onChange={(e) => setWantVoice(e.currentTarget.checked)}
-									className="size-3 cursor-pointer accent-primary"
-								/>
-								Narrate the bug aloud (optional).
-							</label>
-						)}
+						) : null}
+						{/* The voice opt-out stays visible even on a no-key install so an
+						    autoVoice default can be turned off before Start (which calls
+						    enableVoice() and requests the microphone). */}
+						<label className="flex cursor-pointer items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground">
+							<input
+								type="checkbox"
+								checked={wantVoice}
+								onChange={(e) => setWantVoice(e.currentTarget.checked)}
+								className="size-3 cursor-pointer accent-primary"
+							/>
+							Narrate the bug aloud (optional).
+						</label>
 					</CapabilityRow>
 					<CapabilityRow
 						icon={<Bug className="size-3.5" />}
@@ -1108,8 +1154,8 @@ export function BugToPrompt({
 						data-testid="start"
 						onClick={() => {
 							setFrozen(binding);
-							void session.start(binding).then(() => {
-								if (wantVoice) void session.enableVoice();
+							void session.start(binding).then((started) => {
+								if (started && wantVoice) void session.enableVoice();
 							});
 						}}
 					>
@@ -1143,7 +1189,7 @@ export function BugToPrompt({
 				<RecordingCard
 					elapsedMs={session.elapsedMs}
 					streaming={session.streaming}
-					clickCount={session.clickPreviews.length}
+					clickCount={session.clickCount}
 					latestThumb={
 						latestPreview
 							? {

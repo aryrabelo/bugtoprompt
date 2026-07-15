@@ -131,12 +131,12 @@ function makeHarness(): Harness {
 }
 
 describe("ensureOverlay injection order & idempotency", () => {
-	it("first activation injects config then js, then mounts (styles live in the bundle's Shadow DOM — no page CSS)", async () => {
+	it("first activation seeds config, probes, injects js, then mounts (styles live in the bundle's Shadow DOM — no page CSS)", async () => {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, DEFAULT_CONFIG);
 		expect(h.page(1).ops).toEqual([
-			"probe",
 			"inject-config",
+			"probe",
 			"inject-js",
 			"mount",
 		]);
@@ -151,11 +151,11 @@ describe("ensureOverlay injection order & idempotency", () => {
 		expect(g?.baseUrl).toBe(DEFAULT_CONFIG.baseUrl);
 	});
 
-	it("reuses an existing overlay without reinjecting", async () => {
+	it("re-seeds config (without reinjecting the bundle) when reusing an existing overlay", async () => {
 		const h = makeHarness();
 		h.page(2).hasOverlay = true;
 		await ensureOverlay(h.chromeApi, 2, DEFAULT_CONFIG);
-		expect(h.page(2).ops).toEqual(["probe", "mount"]);
+		expect(h.page(2).ops).toEqual(["probe", "inject-config", "mount"]);
 	});
 });
 
@@ -256,6 +256,44 @@ describe("activate / deactivate / toggle", () => {
 		expect(await isTabActive(h.chromeApi, 5)).toBe(false);
 	});
 
+	it("does not record the tab active when the mount injection fails", async () => {
+		const h = makeHarness();
+		const scripting = h.chromeApi.scripting;
+		if (!scripting) throw new Error("scripting missing");
+		// Fail the first MAIN-world call (the config seed) so mount never lands.
+		vi.mocked(scripting.executeScript).mockRejectedValueOnce(
+			new Error("injection failed"),
+		);
+		await expect(
+			activateTab(
+				h.chromeApi,
+				{ id: 53, url: "http://localhost:3000/" },
+				DEFAULT_CONFIG,
+			),
+		).rejects.toThrow();
+		expect(await isTabActive(h.chromeApi, 53)).toBe(false);
+	});
+
+	it("clears session state even when unmount fails on a protected page", async () => {
+		const h = makeHarness();
+		await activateTab(
+			h.chromeApi,
+			{ id: 52, url: "http://127.0.0.1:5173/" },
+			DEFAULT_CONFIG,
+		);
+		expect(await isTabActive(h.chromeApi, 52)).toBe(true);
+		const scripting = h.chromeApi.scripting;
+		if (!scripting) throw new Error("scripting missing");
+		// The active tab navigated to a protected page: unmount rejects, but the
+		// session flag must still be cleared so capture actually turns off.
+		vi.mocked(scripting.executeScript).mockRejectedValueOnce(
+			new Error("Cannot access a chrome:// URL"),
+		);
+		const res = await deactivateTab(h.chromeApi, 52);
+		expect(res.active).toBe(false);
+		expect(await isTabActive(h.chromeApi, 52)).toBe(false);
+	});
+
 	it("toggle flips between active and inactive", async () => {
 		const h = makeHarness();
 		const tab = { id: 6, url: "http://localhost:8080/" };
@@ -279,13 +317,28 @@ describe("document-ready reinjection", () => {
 		// Simulate full navigation: new document has no MAIN-world singleton.
 		h.page(7).hasOverlay = false;
 		h.page(7).ops = [];
-		await handleDocumentReady(h.chromeApi, 7);
+		await handleDocumentReady(h.chromeApi, 7, "http://localhost:3000/");
 		expect(h.page(7).ops).toEqual([
-			"probe",
 			"inject-config",
+			"probe",
 			"inject-js",
 			"mount",
 		]);
+	});
+
+	it("skips injection when an active tab navigated to a protected page", async () => {
+		const h = makeHarness();
+		await activateTab(
+			h.chromeApi,
+			{ id: 71, url: "http://localhost:3000/" },
+			DEFAULT_CONFIG,
+		);
+		h.page(71).ops = [];
+		// The tab stays session-active, but the new document is unattachable, so
+		// MAIN-world injection must be skipped (it would reject).
+		await handleDocumentReady(h.chromeApi, 71, "chrome://settings");
+		expect(h.page(71).ops).toEqual([]);
+		expect(await isTabActive(h.chromeApi, 71)).toBe(true);
 	});
 
 	it("does nothing for an inactive tab", async () => {
@@ -314,5 +367,70 @@ describe("init tabs.onUpdated wiring", () => {
 		// session flag (and no-ops here because tab 50 is not active).
 		listener(50, { status: "complete" }, { url: "https://example.com/" });
 		expect(sessionGet.mock.calls.flat()).toContain("tab:50");
+	});
+
+	it("skips loopback pages so the content script owns readiness (no double-mount)", () => {
+		const h = makeHarness();
+		init(h.chromeApi);
+		const listener = h.updatedListeners[0];
+		const sessionGet = vi.mocked(h.chromeApi.storage.session?.get);
+		if (!sessionGet) throw new Error("session store missing");
+		listener(60, { status: "complete" }, { url: "http://localhost:3000/" });
+		// Loopback never reaches handleDocumentReady, so its active-flag probe
+		// (which reads tab:60) never runs.
+		expect(sessionGet.mock.calls.flat()).not.toContain("tab:60");
+	});
+});
+
+describe("resilience regressions", () => {
+	it("clears active state even when unmount rejects on a protected page", async () => {
+		const h = makeHarness();
+		await activateTab(
+			h.chromeApi,
+			{ id: 70, url: "http://localhost:3000/" },
+			DEFAULT_CONFIG,
+		);
+		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
+		if (!exec) throw new Error("scripting missing");
+		exec.mockRejectedValueOnce(new Error("no accessible document"));
+		// The unmount rejects, but the finally block still clears state so the
+		// tab is recoverable; the error surfaces to the toggle message handler.
+		await expect(deactivateTab(h.chromeApi, 70)).rejects.toThrow();
+		expect(await isTabActive(h.chromeApi, 70)).toBe(false);
+	});
+
+	it("rolls back active state when injection fails during activation", async () => {
+		const h = makeHarness();
+		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
+		if (!exec) throw new Error("scripting missing");
+		// Fail the bundle JS injection so ensureOverlay rejects mid-activation.
+		exec.mockImplementation(async (inj: Record<string, unknown>) => {
+			const files = inj.files as string[] | undefined;
+			if (files?.some((f) => f.includes("bugtoprompt.global.js"))) {
+				throw new Error("frame removed");
+			}
+			return [{ result: false }];
+		});
+		await expect(
+			activateTab(
+				h.chromeApi,
+				{ id: 71, url: "http://localhost:3000/" },
+				DEFAULT_CONFIG,
+			),
+		).rejects.toThrow();
+		expect(await isTabActive(h.chromeApi, 71)).toBe(false);
+	});
+
+	it("clears active state when an active tab navigates to a non-attachable URL", async () => {
+		const h = makeHarness();
+		await activateTab(
+			h.chromeApi,
+			{ id: 72, url: "http://localhost:3000/" },
+			DEFAULT_CONFIG,
+		);
+		h.page(72).ops = [];
+		await handleDocumentReady(h.chromeApi, 72, "chrome://extensions");
+		expect(await isTabActive(h.chromeApi, 72)).toBe(false);
+		expect(h.page(72).ops).toEqual([]);
 	});
 });
