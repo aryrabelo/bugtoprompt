@@ -222,7 +222,7 @@ describe("buildRows", () => {
 		expect(byKey.issue.ready).toBe(true);
 	});
 
-	it('treats transcription:"local" as voice-ready, not "Not configured"', () => {
+	it('treats transcription:"local" as voice-ready and distinguishes it from cloud in the status text', () => {
 		const rows = buildRows(DEFAULT_CONFIG, {
 			ok: true,
 			issues: false,
@@ -233,7 +233,20 @@ describe("buildRows", () => {
 		});
 		const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
 		expect(byKey.voice.ready).toBe(true);
+		expect(byKey.voice.status).toBe("Ready · local · armed");
 		expect(byKey.voice.status).not.toBe("Not configured");
+
+		const cloudRows = buildRows(DEFAULT_CONFIG, {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "ready",
+			transcription: "ready",
+			originAllowed: true,
+		});
+		const cloudByKey = Object.fromEntries(cloudRows.map((r) => [r.key, r]));
+		expect(cloudByKey.voice.status).toBe("Ready · armed");
+		expect(cloudByKey.voice.status).not.toBe(byKey.voice.status);
 	});
 
 	it("degrades gracefully when the sidecar is offline", () => {
