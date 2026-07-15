@@ -59,6 +59,7 @@
 		"prepare": "lefthook install; npm run build",
 		"test": "vitest run",
 		"lint": "biome check .",
+		"check:node-compat": "node scripts/check-node-compat.mjs",
 		"typecheck": "tsc --noEmit",
 		"service:github": "node server/github-issue-service.mjs",
 		"release:beta": "node scripts/release-beta.mjs"
