@@ -89,6 +89,7 @@ import {
 	isValidScreenshotRef,
 	isValidSessionId,
 	parseAllowedOrigins,
+	timingSafeTokenEqual,
 } from "./service-security.mjs";
 import { transcriptToSegments } from "./transcript-segments.mjs";
 
@@ -744,7 +745,8 @@ const transcriptionState = await detectTranscriptionState({
 	detectLocal: async () => localEngineReady,
 });
 
-/** True when no shared secret is configured, or the request presented it. */
+/** True when no shared secret is configured, or the request presented it.
+ *  Uses a constant-time compare so response latency cannot leak the token. */
 function presentsValidToken(req) {
 	const token = process.env.BUGTOPROMPT_TOKEN;
 	if (!token) return true;
@@ -752,7 +754,7 @@ function presentsValidToken(req) {
 	const presented = auth.startsWith("Bearer ")
 		? auth.slice(7)
 		: req.headers["x-bugtoprompt-token"];
-	return presented === token;
+	return timingSafeTokenEqual(presented, token);
 }
 
 const server = createServer((req, res) => {

@@ -4,6 +4,7 @@ import {
 	isValidScreenshotRef,
 	isValidSessionId,
 	parseAllowedOrigins,
+	timingSafeTokenEqual,
 } from "./service-security.mjs";
 
 describe("isValidSessionId", () => {
@@ -61,5 +62,25 @@ describe("isValidScreenshotRef", () => {
 		]) {
 			expect(isValidScreenshotRef(bad)).toBe(false);
 		}
+	});
+});
+
+describe("timingSafeTokenEqual", () => {
+	it("matches the correct secret", () => {
+		expect(timingSafeTokenEqual("s3cret", "s3cret")).toBe(true);
+	});
+	it("rejects a wrong secret of the same length", () => {
+		expect(timingSafeTokenEqual("s3cres", "s3cret")).toBe(false);
+	});
+	it("rejects a very different length without throwing", () => {
+		expect(timingSafeTokenEqual("x", "s3cret")).toBe(false);
+		expect(timingSafeTokenEqual("s3cret".repeat(50), "s3cret")).toBe(false);
+		expect(timingSafeTokenEqual("", "s3cret")).toBe(false);
+	});
+	it("fails closed on missing inputs", () => {
+		expect(timingSafeTokenEqual(undefined, "s3cret")).toBe(false);
+		expect(timingSafeTokenEqual("s3cret", undefined)).toBe(false);
+		expect(timingSafeTokenEqual(undefined, undefined)).toBe(false);
+		expect(timingSafeTokenEqual(42, "s3cret")).toBe(false);
 	});
 });
