@@ -10,6 +10,7 @@ import {
 	detectTranscriptionState,
 	publishedGhState,
 } from "./service-preflight.mjs";
+import { isOriginAllowed, parseAllowedOrigins } from "./service-security.mjs";
 
 describe("detectGhState", () => {
 	it("reports 'missing' when gh is not found (no auth probe)", async () => {
@@ -109,6 +110,7 @@ describe("buildHealthPayload", () => {
 				repos: 2,
 				gh: "ready",
 				transcription: "unconfigured",
+				originAllowed: true,
 			}),
 		).toEqual({
 			ok: true,
@@ -116,18 +118,43 @@ describe("buildHealthPayload", () => {
 			repos: 2,
 			gh: "ready",
 			transcription: "unconfigured",
+			originAllowed: true,
 		});
 	});
 
-	it("coerces issues to a strict boolean", () => {
+	it("coerces issues and originAllowed to strict booleans", () => {
 		const payload = buildHealthPayload({
 			issues: 0,
 			repos: 0,
 			gh: "missing",
 			transcription: "unconfigured",
+			originAllowed: undefined,
 		});
 		expect(payload.issues).toBe(false);
+		expect(payload.originAllowed).toBe(false);
 		expect(payload.ok).toBe(true);
+	});
+
+	// /health answers before the CORS gate, so a page origin the allowlist would
+	// reject on every other endpoint must still be reported — as originAllowed:
+	// false — rather than silently passing as healthy. Mirrors the server's
+	// dispatch (isOriginAllowed(origin) → buildHealthPayload) without booting the
+	// listener (see file header).
+	it("reports originAllowed:false for a disallowed page origin", () => {
+		const allow = parseAllowedOrigins({
+			BUGTOPROMPT_ALLOWED_ORIGINS: "https://ok.example.com",
+		});
+		const originAllowed = isOriginAllowed("https://evil.example.com", allow);
+		expect(originAllowed).toBe(false);
+		expect(
+			buildHealthPayload({
+				issues: true,
+				repos: 1,
+				gh: "ready",
+				transcription: "ready",
+				originAllowed,
+			}).originAllowed,
+		).toBe(false);
 	});
 });
 

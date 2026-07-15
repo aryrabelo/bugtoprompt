@@ -131,6 +131,25 @@ describe("computeCropRect — fixed 400×600 click crop", () => {
 	});
 });
 
+describe("computeCropRect — anisotropic frame/viewport aspect ratios", () => {
+	// Width ratio 2x (800/400), height ratio 2.5x (1000/400). The vertical
+	// source math must use the height-based scale, not the horizontal one.
+	test("sy/sh use height scale, sx/sw use width scale", () => {
+		const r = computeCropRect(
+			800,
+			1000,
+			{ width: 400, height: 400 },
+			{ x: 300, y: 350 },
+		);
+		// Horizontal: availL=100, availW=300 → ×2
+		expect(r.sx).toBe(200);
+		expect(r.sw).toBe(600);
+		// Vertical: availT=50, availH=350 → ×2.5 (buggy width-scale would give 100/700)
+		expect(r.sy).toBe(125);
+		expect(r.sh).toBe(875);
+	});
+});
+
 describe("computeScaledSize", () => {
 	test("downscales so the max dimension is ≤ maxDim", () => {
 		const s = computeScaledSize(3840, 2160, 1280);
