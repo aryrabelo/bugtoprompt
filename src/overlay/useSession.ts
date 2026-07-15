@@ -245,6 +245,7 @@ interface RehydrateBag {
 	setPhase: (v: SessionPhase) => void;
 	setElapsedMs: (v: number) => void;
 	setStreaming: (v: boolean) => void;
+	setScreenshotsUnavailable: (v: boolean) => void;
 	setClickPreviews: (
 		v: Array<{ clickNumber: number; screenshotRef: string; url: string }>,
 	) => void;
@@ -305,6 +306,12 @@ async function restoreRecording(
 	bag.setElapsedMs(Date.now() - session.startedAt);
 	bag.recordingRef.current = true;
 	bag.setStreaming(false);
+
+	// Rehydration never re-acquires a screen grabber (see below), so a resumed
+	// screenshot-enabled recording can no longer capture: mark it unavailable.
+	if (bag.screenshotModeRef.current !== "off") {
+		bag.setScreenshotsUnavailable(true);
+	}
 
 	// Screen capture needs a user gesture: the grabber is acquired inside
 	// start() (the "Start capture" click) and getDisplayMedia cannot be
@@ -1143,6 +1150,7 @@ export function useSession(
 				setPhase,
 				setElapsedMs,
 				setStreaming,
+				setScreenshotsUnavailable,
 				setClickPreviews,
 				setClickCount,
 				mark,

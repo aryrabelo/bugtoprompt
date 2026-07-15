@@ -121,4 +121,5 @@ body {
 	min-height: 14px;
 	font-size: 12px;
 	color: #f87171;
+	overflow-wrap: anywhere;
 }
