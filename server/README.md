@@ -25,8 +25,9 @@ mixed-content blocking.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/bugtoprompt/config` | advertised modes / projectId — its `200` activates the overlay's backend mode |
+| `GET`  | `/health` | preflight status (`{ ok, issues, repos, gh, transcription }`); `transcription` is `"ready"` (local `parakeet-mlx` OR AssemblyAI key available) or `"unconfigured"` (neither) |
 | `POST` | `/streaming-token` | mint a 300s AssemblyAI streaming token (`{ token, expiresAt }`) |
-| `POST` | `/transcribe` | AssemblyAI batch transcript of a saved capture |
+| `POST` | `/transcribe` | batch transcript of a saved capture (local `parakeet-mlx` or AssemblyAI, see `BUGTOPROMPT_TRANSCRIBE`) |
 | `POST` | `/artifact` | persist `artifact.json` + audio + screenshots |
 | `GET`  | `/targets` | configured repos as targets |
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
@@ -35,7 +36,7 @@ mixed-content blocking.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `ASSEMBLYAI_API_KEY` | — | required for transcription; without it `/streaming-token` and `/transcribe` return `501` |
+| `ASSEMBLYAI_API_KEY` | — | required for `/streaming-token` always; for `/transcribe` only when the local `parakeet-mlx` engine is unavailable (see `BUGTOPROMPT_TRANSCRIBE`) — without it, `/streaming-token` returns `501` and `/transcribe` falls back to local transcription if possible, else `501` |
 | `BUGTOPROMPT_HOST` | `127.0.0.1` | bind address; set to `0.0.0.0` to expose beyond localhost (add auth + TLS) |
 | `BUGTOPROMPT_PORT` | `4127` | listen port |
 | `BUGTOPROMPT_REPOS` | — | comma-separated repos as targets: `owner/repo[#branch]` |
