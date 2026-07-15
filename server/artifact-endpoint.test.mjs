@@ -13,6 +13,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,7 +22,16 @@ import { afterAll, describe, expect, it } from "vitest";
 const SERVICE = fileURLToPath(
 	new URL("./github-issue-service.mjs", import.meta.url),
 );
-const PORT = 41470 + (process.pid % 100);
+// OS-assigned free port: bind to 0, record, release. Avoids pid-derived
+// collisions between concurrent test processes.
+const PORT = await new Promise((resolve, reject) => {
+	const srv = createServer();
+	srv.once("error", reject);
+	srv.listen(0, "127.0.0.1", () => {
+		const { port } = srv.address();
+		srv.close(() => resolve(port));
+	});
+});
 const WORK = mkdtempSync(join(tmpdir(), "btp-artifact-test-"));
 
 let child;
@@ -54,8 +64,10 @@ describe("POST /artifact duplicate screenshotRef guard", () => {
 	it("returns 400 and touches no files when two screenshots reuse one ref", async () => {
 		child = spawn(process.execPath, [SERVICE], {
 			cwd: WORK,
+			// Hermetic env: never inherit host process.env (a machine-level
+			// BUGTOPROMPT_TOKEN would 401-gate every request). PATH only.
 			env: {
-				...process.env,
+				PATH: process.env.PATH,
 				BUGTOPROMPT_PORT: String(PORT),
 				BUGTOPROMPT_HOST: "127.0.0.1",
 			},
@@ -96,6 +108,9 @@ describe("POST /artifact duplicate screenshotRef guard", () => {
 	}, 15_000);
 
 	it("accepts distinct valid refs for the same payload shape", async () => {
+		// The child boots in the previous test; re-verify liveness so this
+		// test is not order/timing-dependent on that boot having settled.
+		await waitForHealth(PORT);
 		const png = Buffer.from("fake-image").toString("base64");
 		const res = await fetch(`http://127.0.0.1:${PORT}/artifact`, {
 			method: "POST",
