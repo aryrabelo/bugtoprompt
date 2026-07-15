@@ -64,17 +64,21 @@ export async function overlayPresent(
 	const results = await scripting.executeScript({
 		target: { tabId },
 		world: "MAIN",
-		func: () => typeof window.BugToPrompt !== "undefined",
+		// A page may define an unrelated window.BugToPrompt; only treat the
+		// bundle as present when it exposes the overlay's mount/unmount API.
+		func: () =>
+			typeof window.BugToPrompt?.mount === "function" &&
+			typeof window.BugToPrompt?.unmount === "function",
 	});
 	return results?.[0]?.result === true;
 }
 
 /**
- * First-activation injection: seed window.__BUGTOPROMPT__ (manual:true so the
- * bundle does not auto-mount), inject the packaged CSS, then the packaged
- * global JS which defines window.BugToPrompt without mounting.
+ * Seed the MAIN-world window.__BUGTOPROMPT__ config (manual:true so the bundle
+ * does not auto-mount). Run on every activation so option and repo-binding
+ * changes take effect even when the singleton from a prior activation persists.
  */
-async function injectBundle(
+async function seedConfig(
 	chromeApi: ChromeLike,
 	tabId: number,
 	config: SyncConfig,
@@ -103,6 +107,21 @@ async function injectBundle(
 		},
 		args: [{ ...config, projectId }],
 	});
+}
+
+/**
+ * First-activation injection: seed window.__BUGTOPROMPT__, then the packaged
+ * global JS which defines window.BugToPrompt without mounting.
+ */
+async function injectBundle(
+	chromeApi: ChromeLike,
+	tabId: number,
+	config: SyncConfig,
+	projectId?: string,
+): Promise<void> {
+	const scripting = chromeApi.scripting;
+	if (!scripting) return;
+	await seedConfig(chromeApi, tabId, config, projectId);
 	await scripting.executeScript({
 		target: { tabId },
 		world: "MAIN",
@@ -129,7 +148,8 @@ async function callOverlay(
 
 /**
  * Guarantee an overlay is mounted in the tab. Injects the bundle only when the
- * MAIN-world singleton is absent (fresh document), otherwise reuses it.
+ * MAIN-world singleton is absent (fresh document); when reusing an existing
+ * singleton it re-seeds the config so the remount picks up current options.
  */
 export async function ensureOverlay(
 	chromeApi: ChromeLike,
@@ -137,7 +157,9 @@ export async function ensureOverlay(
 	config: SyncConfig,
 	projectId?: string,
 ): Promise<void> {
-	if (!(await overlayPresent(chromeApi, tabId))) {
+	if (await overlayPresent(chromeApi, tabId)) {
+		await seedConfig(chromeApi, tabId, config, projectId);
+	} else {
 		await injectBundle(chromeApi, tabId, config, projectId);
 	}
 	await callOverlay(chromeApi, tabId, "mount");
@@ -192,16 +214,26 @@ export async function activateTab(
 	const blocked = await pageActivatable(chromeApi, tab.url);
 	if (blocked) return blocked;
 	await setTabActive(chromeApi, tab.id, true);
-	// Auto-discover the sidecar for this tab (configured URL → tab port + 3 →
-	// portless default) so the injected overlay talks to the right port with
-	// zero manual configuration.
-	const { baseUrl } = await discoverBaseUrl(
-		candidateBaseUrls(config.baseUrl, tab.url),
-		fetchImpl,
-	);
-	// Per-domain mapping: undefined on localhost, the matched repo on a bound site.
-	const projectId = resolveProjectId(config.siteBindings, hostnameOf(tab.url));
-	await ensureOverlay(chromeApi, tab.id, { ...config, baseUrl }, projectId);
+	try {
+		// Auto-discover the sidecar for this tab (configured URL → tab port + 3 →
+		// portless default) so the injected overlay talks to the right port with
+		// zero manual configuration.
+		const { baseUrl } = await discoverBaseUrl(
+			candidateBaseUrls(config.baseUrl, tab.url),
+			fetchImpl,
+		);
+		// Per-domain mapping: undefined on localhost, matched repo on a bound site.
+		const projectId = resolveProjectId(
+			config.siteBindings,
+			hostnameOf(tab.url),
+		);
+		await ensureOverlay(chromeApi, tab.id, { ...config, baseUrl }, projectId);
+	} catch (err) {
+		// Injection failed (e.g. the page rejected executeScript): roll back so a
+		// later toggle retries activation instead of trying to stop a dead overlay.
+		await setTabActive(chromeApi, tab.id, false);
+		throw err;
+	}
 	return { active: true };
 }
 
@@ -209,8 +241,14 @@ export async function deactivateTab(
 	chromeApi: ChromeLike,
 	tabId: number,
 ): Promise<ToggleResult> {
-	await callOverlay(chromeApi, tabId, "unmount");
-	await setTabActive(chromeApi, tabId, false);
+	try {
+		// May reject on a page that navigated to a protected URL (chrome://,
+		// etc.) where there is no accessible document left to unmount.
+		await callOverlay(chromeApi, tabId, "unmount");
+	} finally {
+		// Always clear state so the popup and stored flag stay recoverable.
+		await setTabActive(chromeApi, tabId, false);
+	}
 	return { active: false };
 }
 
@@ -248,6 +286,14 @@ export async function handleDocumentReady(
 	fetchImpl: typeof fetch = fetch,
 ): Promise<void> {
 	if (!(await isTabActive(chromeApi, tabId))) return;
+	// When we know the destination URL, an active tab may have navigated to a
+	// page we can no longer attach to (chrome://, the Web Store, an ungranted
+	// origin). Clear state and skip injection so it is not left reported active
+	// with no overlay. A missing URL is left untouched (destination unknown).
+	if (tabUrl !== undefined && (await pageActivatable(chromeApi, tabUrl))) {
+		await setTabActive(chromeApi, tabId, false);
+		return;
+	}
 	const config = await loadConfig(chromeApi);
 	// Same auto-discovery as activation so the remounted overlay keeps talking
 	// to the right sidecar port after a full navigation.
@@ -298,7 +344,16 @@ export function init(chromeApi: ChromeLike): void {
 					});
 					return;
 				}
-				sendResponse(await toggleTab(chromeApi, tab, config));
+				try {
+					sendResponse(await toggleTab(chromeApi, tab, config));
+				} catch {
+					// Injection failed: still answer so the popup clears its spinner
+					// and shows an error instead of hanging on a dead channel.
+					sendResponse({
+						active: await isTabActive(chromeApi, tab.id),
+						error: "BugToPrompt could not update this tab.",
+					});
+				}
 			})();
 			return true; // async sendResponse
 		}
@@ -309,6 +364,10 @@ export function init(chromeApi: ChromeLike): void {
 	// tab that is still session-active. handleDocumentReady no-ops otherwise.
 	chromeApi.tabs?.onUpdated?.addListener((tabId, changeInfo, tab) => {
 		if (changeInfo.status !== "complete") return;
+		// Loopback pages have the content script, which already reports readiness
+		// via btp:document-ready. Skip them here so a localhost navigation does
+		// not run two readiness handlers and mount duplicate overlays.
+		if (classifyPage(tab.url) === "loopback") return;
 		void handleDocumentReady(chromeApi, tabId, tab.url);
 	});
 }

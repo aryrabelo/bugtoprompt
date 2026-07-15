@@ -53,4 +53,14 @@ describe("parseBindingRows", () => {
 			error: expect.stringMatching(/Invalid repo/),
 		});
 	});
+
+	it("rejects duplicate hostnames (case-insensitive)", () => {
+		const result = parseBindingRows([
+			{ host: "app.example.com", projectId: "acme/web" },
+			{ host: "APP.example.com", projectId: "acme/other" },
+		]);
+		expect(result).toEqual({
+			error: expect.stringMatching(/Duplicate hostname/),
+		});
+	});
 });

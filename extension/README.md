@@ -19,7 +19,7 @@ Chrome cannot install this automatically — it is a 1-minute manual step:
 
 - Open any `http://localhost:*` page (e.g. the GerarPosts dev server).
 - Click the toolbar icon → popup shows sidecar health, target repo, and
-  **Start capture** — or press **⌘⇧B** to toggle the overlay directly.
+  **Start capture** — or press **⌘⇧Y** to toggle the overlay directly.
 - The overlay records numbered clicks (400×600 screenshots when you share
   **This tab**), voice narration, and files GitHub issues via the sidecar.
 

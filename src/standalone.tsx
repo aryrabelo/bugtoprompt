@@ -100,6 +100,10 @@ export function mount(opts?: Partial<BugToPromptProps>): () => void {
 	// tracker can ignore retargeted overlay events.
 	_host = document.createElement("div");
 	_host.setAttribute("data-bugtoprompt-host", "");
+	// Reset all author-facing styles on the host so hostile host-page rules
+	// (e.g. `body > div { overflow: hidden }`) can neither clip nor reposition
+	// the fixed overlay that renders through this zero-dimension host.
+	_host.style.setProperty("all", "initial", "important");
 	const shadow = _host.attachShadow({ mode: "open" });
 	const style = document.createElement("style");
 	style.setAttribute("data-bugtoprompt-style", "");
