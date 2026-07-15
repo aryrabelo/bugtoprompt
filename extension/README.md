@@ -29,6 +29,9 @@ Chrome cannot install this automatically — it is a 1-minute manual step:
   `bun run dev` in GerarPosts, or standalone via `npx bugtoprompt`
   (see `../server/`).
 - Options page: sidecar URL (loopback only) and screenshot mode.
+- Issue filing is opt-in on the sidecar: set `BUGTOPROMPT_ENABLE_ISSUES=1`
+  (needs an authenticated `gh` CLI). Voice transcription runs locally when
+  `parakeet-mlx` is available, otherwise it needs `ASSEMBLYAI_API_KEY`.
 
 ## Update after code changes
 

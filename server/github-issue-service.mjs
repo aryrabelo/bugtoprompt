@@ -9,7 +9,9 @@
  *
  * Endpoints served:
  *
- *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode
+ *   GET  /bugtoprompt/config        → advertised modes + projectId + defaultMode +
+ *                                       transcriptionProvider ("assemblyai" | "local" |
+ *                                       "unconfigured")
  *   GET  /targets?projectId=...     → configured repos as Target[]
  *   POST /artifact                  → persist artifact.json + audio + screenshots
  *   POST /transcribe                → batch transcript of saved audio (local or
@@ -260,11 +262,18 @@ function readJsonBody(req) {
 // Handlers
 // ---------------------------------------------------------------------------
 
-function handleConfig(res, config) {
+/**
+ * @param {import("node:http").ServerResponse} res
+ * @param {object} config
+ * @param {"assemblyai" | "local" | "unconfigured"} transcriptionProvider  which
+ *        backend serves POST /transcribe — see resolveTranscribeProvider.
+ */
+function handleConfig(res, config, transcriptionProvider) {
 	const body = {
 		modes: config.enabledModes,
 		defaultMode: config.defaultMode,
 		projectId: config.projectId,
+		transcriptionProvider,
 	};
 	if (config.screenshotMode) body.screenshotMode = config.screenshotMode;
 	if (config.env) body.env = config.env;
@@ -807,7 +816,7 @@ const server = createServer((req, res) => {
 
 	const dispatch = async () => {
 		if (req.method === "GET" && path === "/bugtoprompt/config") {
-			handleConfig(res, config);
+			handleConfig(res, config, transcriptionProvider);
 			return;
 		}
 		if (req.method === "GET" && path === "/targets") {
