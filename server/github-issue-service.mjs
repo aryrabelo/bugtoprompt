@@ -743,15 +743,22 @@ detectGhState({
 	ghState = state;
 });
 
-// Resolve transcription provider once at startup. Local engine is preferred in
-// auto/local mode; AssemblyAI key is required for cloud-only mode.
-const localEngineReady = await detectLocalEngine(execFileAsync);
-const transcriptionProvider = resolveTranscribeProvider(process.env, {
-	localReady: localEngineReady,
-});
-const transcriptionState = await detectTranscriptionState({
-	apiKey: process.env.ASSEMBLYAI_API_KEY,
-	detectLocal: async () => localEngineReady,
+// Resolve the transcription provider in the BACKGROUND, mirroring the gh probes
+// above, so the uvx/parakeet detection (bounded by a 5s timeout) never delays
+// server.listen(). Until the probe lands both values hold the safe "unconfigured"
+// sentinel (a valid wire enum, so /health and /bugtoprompt/config need no special
+// casing); they flip to the real provider/state within the probe timeout —
+// analogous to gh's pending → ready/unauthenticated transition.
+let transcriptionProvider = "unconfigured";
+let transcriptionState = "unconfigured";
+detectLocalEngine(execFileAsync).then(async (localEngineReady) => {
+	transcriptionProvider = resolveTranscribeProvider(process.env, {
+		localReady: localEngineReady,
+	});
+	transcriptionState = await detectTranscriptionState({
+		apiKey: process.env.ASSEMBLYAI_API_KEY,
+		detectLocal: async () => localEngineReady,
+	});
 });
 
 /** True when no shared secret is configured, or the request presented it.

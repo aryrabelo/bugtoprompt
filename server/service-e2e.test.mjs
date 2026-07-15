@@ -113,13 +113,19 @@ JSON
 	});
 	child.stdout.resume(); // drain so the child never blocks on a full pipe
 
-	// Wait for readiness by polling /health.
+	// Wait for readiness by polling /health. Startup no longer blocks on the
+	// local-engine probe (issue #41), so /health returns 200 before the
+	// background probe resolves — poll until the transcription state actually
+	// flips to "local" so the assertions below aren't racing the probe.
 	const deadline = Date.now() + 15_000;
 	for (;;) {
 		if (spawnError) throw new Error(`server failed to spawn: ${spawnError}`);
 		try {
 			const res = await fetch(`${baseUrl}/health`);
-			if (res.ok) break;
+			if (res.ok) {
+				const body = await res.json();
+				if (body.transcription === "local") break;
+			}
 		} catch {
 			// not listening yet
 		}
