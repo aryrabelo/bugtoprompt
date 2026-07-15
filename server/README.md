@@ -29,17 +29,13 @@ mixed-content blocking.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET`  | `/bugtoprompt/config` | advertised modes / projectId — its `200` activates the overlay's backend mode |
+| `GET`  | `/bugtoprompt/config` | advertised modes / projectId / `transcriptionProvider` (`"assemblyai" \| "local" \| "unconfigured"`) — its `200` activates the overlay's backend mode |
 | `GET`  | `/health` | preflight status (`{ ok, issues, repos, gh, transcription }`); `transcription` is `"local"` (local `parakeet-mlx` engine found — preferred), `"ready"` (AssemblyAI key, no local engine) or `"unconfigured"` (neither) |
 | `POST` | `/streaming-token` | mint a 300s AssemblyAI streaming token (`{ token, expiresAt }`) |
 | `POST` | `/transcribe` | batch transcript of a saved capture (local `parakeet-mlx` or AssemblyAI, see `BUGTOPROMPT_TRANSCRIBE`) |
 | `POST` | `/artifact` | persist `artifact.json` + audio + screenshots |
 | `GET`  | `/targets` | configured repos as targets |
 | `POST` | `/issue` | `gh issue create` against the chosen repo (issue mode) |
-
-`GET /health` reports `transcription: "ready" | "local" | "unconfigured"` —
-`local` means a local parakeet CLI was found (preferred even when an
-AssemblyAI key is also set).
 
 ## Configuration (env)
 
