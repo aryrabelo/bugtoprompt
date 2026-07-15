@@ -22,6 +22,12 @@ const execFileAsync = promisify(defaultExecFile);
 
 export const LOCAL_TRANSCRIBE_TIMEOUT_MS = 10 * 60 * 1000;
 
+// Same class of hang risk the `gh` startup probes (github-issue-service.mjs)
+// guard against: bound the CLI probe with a native execFile timeout so a
+// missing/hung `uvx` can never block the awaited startup call before
+// server.listen().
+export const LOCAL_ENGINE_PROBE_TIMEOUT_MS = 5_000;
+
 export const BUILT_IN_VOCAB = {
 	minSimilarity: 0.72,
 	terms: [
@@ -275,7 +281,9 @@ export function parakeetJsonToWords(data) {
 export async function detectLocalEngine(execFile) {
 	const exec = execFile || execFileAsync;
 	try {
-		await exec("uvx", ["parakeet-mlx", "--version"]);
+		await exec("uvx", ["parakeet-mlx", "--version"], {
+			timeout: LOCAL_ENGINE_PROBE_TIMEOUT_MS,
+		});
 		return true;
 	} catch {
 		return false;

@@ -81,11 +81,30 @@ describe("detectLocalEngine", () => {
 	it("returns true when the CLI responds", async () => {
 		const execFile = vi.fn().mockResolvedValue({ stdout: "1.0.0" });
 		expect(await detectLocalEngine(execFile)).toBe(true);
-		expect(execFile).toHaveBeenCalledWith("uvx", ["parakeet-mlx", "--version"]);
+		expect(execFile).toHaveBeenCalledWith(
+			"uvx",
+			["parakeet-mlx", "--version"],
+			expect.objectContaining({ timeout: expect.any(Number) }),
+		);
 	});
 
 	it("returns false when the CLI throws", async () => {
 		const execFile = vi.fn().mockRejectedValue(new Error("not found"));
+		expect(await detectLocalEngine(execFile)).toBe(false);
+	});
+
+	it("bounds the probe with a native execFile timeout so a hung CLI can't block startup", async () => {
+		const execFile = vi.fn().mockResolvedValue({ stdout: "1.0.0" });
+		await detectLocalEngine(execFile);
+		const [, , opts] = execFile.mock.calls[0];
+		expect(opts.timeout).toBeGreaterThan(0);
+		expect(opts.timeout).toBeLessThanOrEqual(10_000);
+	});
+
+	it("returns false when the probe times out", async () => {
+		const execFile = vi
+			.fn()
+			.mockRejectedValue(Object.assign(new Error("killed"), { killed: true }));
 		expect(await detectLocalEngine(execFile)).toBe(false);
 	});
 });
