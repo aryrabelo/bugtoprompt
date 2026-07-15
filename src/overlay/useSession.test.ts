@@ -5,6 +5,7 @@ import type { BugToPromptClient, Target } from "../client";
 import { loadSession, putShot, saveSession } from "./session-store";
 import { startScreenGrabber } from "./snapshot/screenshot";
 import { useSession } from "./useSession";
+import { deferred } from "./util/deferred";
 
 // ---------------------------------------------------------------------------
 // Mock instances (configured fresh in beforeEach; factories close over these)
@@ -580,7 +581,7 @@ describe("useSession — onClick capture", () => {
 		vi.spyOn(window, "getSelection").mockReturnValue({
 			toString: () => "",
 		} as Selection);
-		const gate = Promise.withResolvers<{
+		const gate = deferred<{
 			blob: Blob;
 			method: "getDisplayMedia";
 		} | null>();
