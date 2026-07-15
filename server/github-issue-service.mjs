@@ -688,7 +688,7 @@ async function handleIssue(req, res, config) {
 }
 
 /** GET /health — self-diagnosing preflight. Never exposes tokens. */
-function handleHealth(res, config, ghState) {
+function handleHealth(res, config, ghState, originAllowed) {
 	sendJson(
 		res,
 		200,
@@ -697,6 +697,7 @@ function handleHealth(res, config, ghState) {
 			repos: config.targets.length,
 			gh: publishedGhState(ghState),
 			transcription: transcriptionState,
+			originAllowed,
 		}),
 	);
 }
@@ -776,7 +777,12 @@ const server = createServer((req, res) => {
 		req.method === "GET" &&
 		new URL(req.url || "/", "http://localhost").pathname === "/health"
 	) {
-		if (presentsValidToken(req)) handleHealth(res, config, ghState);
+		const originParam =
+			new URL(req.url || "/", "http://localhost").searchParams.get("origin") ||
+			undefined;
+		const originAllowed = isOriginAllowed(originParam, ALLOWED_ORIGINS);
+		if (presentsValidToken(req))
+			handleHealth(res, config, ghState, originAllowed);
 		else sendJson(res, 200, { ok: true });
 		return;
 	}

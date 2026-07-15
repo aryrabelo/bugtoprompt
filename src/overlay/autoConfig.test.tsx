@@ -423,12 +423,15 @@ describe("<BugToPrompt baseUrl /> adopts backend without a config probe", () => 
 // ---------------------------------------------------------------------------
 // P0-2: reviewing dead-end. The binding freezes at record-start; if config
 // (hence projectId) resolves AFTER that, the frozen binding has no projectId
-// so "File issue" is stuck disabled. Reviewing must offer a target picker that
-// enables filing once a target is selected (late binding).
+// so "File issue" used to stay stuck disabled until a target was picked —
+// which dead-ended forever when listTargets() failed/returned empty (cubic
+// finding, issue #21). Reviewing must unlock filing as soon as the resolved
+// projectId is available; the target picker still lets a target be selected
+// to narrow/scope the filed issue, but is no longer required to unlock it.
 // ---------------------------------------------------------------------------
 
 describe("<BugToPrompt /> reviewing late target binding (P0-2)", () => {
-	it("shows a picker when the frozen binding has no projectId and enables File issue after selecting a target", async () => {
+	it("enables File issue as soon as projectId resolves, and still offers a picker to narrow the target", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockImplementation((url: unknown) => {
@@ -491,11 +494,14 @@ describe("<BugToPrompt /> reviewing late target binding (P0-2)", () => {
 			expect(screen.queryByRole("button", { name: /discard/i })).not.toBeNull(),
 		);
 
-		// Frozen binding has no projectId → File issue starts disabled.
+		// Frozen binding has no projectId, but the resolved projectId ("p-srv")
+		// unlocks filing immediately — no target pick required (the fix for the
+		// cubic dead-end finding: an empty/failed target list must not block
+		// filing forever).
 		const fileButton = screen.getByRole("button", {
 			name: /create github issue/i,
 		}) as HTMLButtonElement;
-		expect(fileButton.disabled).toBe(true);
+		expect(fileButton.disabled).toBe(false);
 
 		// The reviewing picker is offered and lists the configured target.
 		const combobox = screen.getByRole("combobox");
@@ -509,7 +515,7 @@ describe("<BugToPrompt /> reviewing late target binding (P0-2)", () => {
 			fireEvent.keyDown(combobox, { key: "Enter" });
 		});
 
-		// File issue is now enabled — the dead-end is gone.
+		// Still enabled after narrowing to a specific target.
 		expect(fileButton.disabled).toBe(false);
 
 		// Filing now works: submitIssue must use the late-bound target, not the
