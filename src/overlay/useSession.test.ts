@@ -956,6 +956,31 @@ describe("useSession — screenshotMode", () => {
 		expect(lastClick?.clickNumber).toBe(3);
 		vi.useRealTimers();
 	});
+
+	it("(p2) rehydrated screenshot-enabled recording → screenshotsUnavailable (no grabber on resume)", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		saveSession({
+			v: 1,
+			sessionId: "cap_resume-noshot",
+			startedAt: Date.now() - 5000,
+			binding: {},
+			status: "recording",
+			events: [],
+			snapshots: [],
+			transcript: [],
+			durationMs: 5000,
+		});
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client, "onClick"));
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(60);
+		});
+		expect(result.current.phase).toBe("recording");
+		// Resume never re-acquires the grabber, so screenshots are unavailable.
+		expect(result.current.screenshotsUnavailable).toBe(true);
+		vi.useRealTimers();
+	});
 });
 
 // ---------------------------------------------------------------------------

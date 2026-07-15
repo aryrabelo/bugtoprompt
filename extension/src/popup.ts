@@ -54,6 +54,7 @@ export interface HealthPayload {
 	repos: number;
 	gh: GhState;
 	transcription: TranscriptionState;
+	originAllowed: boolean;
 }
 
 /** Fetch and validate the sidecar /health contract. Returns null when down. */
@@ -61,6 +62,7 @@ export async function fetchHealth(
 	baseUrl: string,
 	fetchImpl: typeof fetch,
 	timeoutMs?: number,
+	origin?: string,
 ): Promise<HealthPayload | null> {
 	let raw: unknown;
 	try {
@@ -83,9 +85,10 @@ export async function fetchHealth(
 			}
 		}
 		try {
-			const res = await (signal
-				? fetchImpl(`${baseUrl}/health`, { signal })
-				: fetchImpl(`${baseUrl}/health`));
+			const url = origin
+				? `${baseUrl}/health?origin=${encodeURIComponent(origin)}`
+				: `${baseUrl}/health`;
+			const res = await (signal ? fetchImpl(url, { signal }) : fetchImpl(url));
 			if (!res.ok) return null;
 			raw = await res.json();
 		} finally {
@@ -105,12 +108,14 @@ export async function fetchHealth(
 	if (r.transcription !== "ready" && r.transcription !== "unconfigured") {
 		return null;
 	}
+	if (typeof r.originAllowed !== "boolean") return null;
 	return {
 		ok: true,
 		issues: r.issues,
 		repos: r.repos,
 		gh: r.gh,
 		transcription: r.transcription,
+		originAllowed: r.originAllowed,
 	};
 }
 
@@ -349,6 +354,7 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		paint(active);
 		startBtn.addEventListener("click", doToggle);
 	}
+	startBtn.disabled = false;
 
 	// Sidecar discovery + health decorate the pill/capability rows only; they run
 	// after the button is wired so a slow endpoint never blocks capture. Each
@@ -364,13 +370,23 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		timedFetch,
 	);
 	targetEl.textContent = baseUrl;
-	const health = await fetchHealth(baseUrl, timedFetch, HEALTH_TIMEOUT_MS);
+	const health = await fetchHealth(
+		baseUrl,
+		timedFetch,
+		HEALTH_TIMEOUT_MS,
+		pageOrigin(tab?.url),
+	);
 	renderPill(pillEl, healthPill(health));
 	renderRows(rowsEl, buildRows(config, health));
 	// When the sidecar can't be reached for a bound non-localhost site, the most
 	// common cause is its origin allowlist — surface the exact env fix. Never
 	// clobber a newer toggle/injection error the user just triggered.
-	if (!health && kind === "http" && (granted || active) && !errEl.textContent) {
+	if (
+		!health?.originAllowed &&
+		kind === "http" &&
+		(granted || active) &&
+		!errEl.textContent
+	) {
 		errEl.textContent = offlineHint(pageOrigin(tab?.url));
 	}
 }

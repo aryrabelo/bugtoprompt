@@ -7,8 +7,9 @@ export default defineConfig({
 		include: [
 			"src/**/*.test.ts",
 			"src/**/*.test.tsx",
-			"server/**/*.test.mjs",
 			"extension/src/**/*.test.ts",
+			"server/**/*.test.mjs",
+			"scripts/**/*.test.mjs",
 		],
 	},
 });

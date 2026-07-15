@@ -131,7 +131,7 @@ function makeHarness(): Harness {
 }
 
 describe("ensureOverlay injection order & idempotency", () => {
-	it("first activation seeds config, probes, injects js, then mounts (styles live in the bundle's Shadow DOM — no page CSS)", async () => {
+	it("first activation probes, seeds config, injects js, then mounts (styles live in the bundle's Shadow DOM — no page CSS)", async () => {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, DEFAULT_CONFIG);
 		expect(h.page(1).ops).toEqual([
@@ -284,8 +284,11 @@ describe("activate / deactivate / toggle", () => {
 		expect(await isTabActive(h.chromeApi, 52)).toBe(true);
 		const scripting = h.chromeApi.scripting;
 		if (!scripting) throw new Error("scripting missing");
-		// The active tab navigated to a protected page: unmount rejects, but the
-		// session flag must still be cleared so capture actually turns off.
+		// The active tab navigated to a protected page: unmount rejects (no
+		// accessible document to unmount) and deactivateTab does not swallow
+		// that — but the `finally` block still clears the session flag so
+		// capture actually turns off (matches the "resilience regressions"
+		// contract below: the error surfaces to the toggle message handler).
 		vi.mocked(scripting.executeScript).mockRejectedValueOnce(
 			new Error("Cannot access a chrome:// URL"),
 		);
@@ -325,7 +328,7 @@ describe("document-ready reinjection", () => {
 		]);
 	});
 
-	it("skips injection when an active tab navigated to a protected page", async () => {
+	it("clears active state when an active tab navigated to a protected page", async () => {
 		const h = makeHarness();
 		await activateTab(
 			h.chromeApi,
@@ -333,9 +336,10 @@ describe("document-ready reinjection", () => {
 			DEFAULT_CONFIG,
 		);
 		h.page(71).ops = [];
-		// The active tab navigated to an unattachable page: MAIN-world injection
-		// is skipped AND the stale active flag is cleared, so the tab is never
-		// left reported active with no overlay (see handleDocumentReady).
+		// The new document is unattachable, so MAIN-world injection must be
+		// skipped (it would reject) and the session flag is cleared so the
+		// tab isn't left reported active with no overlay (matches the
+		// "resilience regressions" contract below for the same scenario).
 		await handleDocumentReady(h.chromeApi, 71, "chrome://settings");
 		expect(h.page(71).ops).toEqual([]);
 		expect(await isTabActive(h.chromeApi, 71)).toBe(false);

@@ -95,7 +95,8 @@ export function isTabShare(
  * viewport edge the source is clamped and the destination offset grows so the
  * click stays at the exact destination center (CLICK_CENTER_X, CLICK_CENTER_Y);
  * the uncovered destination pixels are left for the caller to fill with a
- * neutral background. `scale` maps CSS px → frame px via frameW / viewport.width.
+ * neutral background. Horizontal source math uses scaleX (frameW/viewport.width);
+ * vertical uses scaleY (frameH/viewport.height), so letterboxed shares crop right.
  */
 export function computeCropRect(
 	frameW: number,
@@ -114,7 +115,8 @@ export function computeCropRect(
 	dw: number;
 	dh: number;
 } {
-	const scale = viewport.width > 0 ? frameW / viewport.width : 1;
+	const scaleX = viewport.width > 0 ? frameW / viewport.width : 1;
+	const scaleY = viewport.height > 0 ? frameH / viewport.height : 1;
 	// Desired crop rect in CSS coords, centered on the click.
 	const left = point.x - widthCss / 2;
 	const top = point.y - heightCss / 2;
@@ -131,10 +133,10 @@ export function computeCropRect(
 	const dw = Math.round(availW);
 	const dh = Math.round(availH);
 	// Source rect in frame px, clamped to the frame bounds.
-	const sx = Math.round(availL * scale);
-	const sy = Math.round(availT * scale);
-	const sw = Math.min(Math.round(availW * scale), frameW - sx);
-	const sh = Math.min(Math.round(availH * scale), frameH - sy);
+	const sx = Math.round(availL * scaleX);
+	const sy = Math.round(availT * scaleY);
+	const sw = Math.min(Math.round(availW * scaleX), frameW - sx);
+	const sh = Math.min(Math.round(availH * scaleY), frameH - sy);
 	return { sx, sy, sw, sh, dx, dy, dw, dh };
 }
 

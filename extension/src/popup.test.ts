@@ -24,6 +24,7 @@ describe("fetchHealth", () => {
 			repos: 2,
 			gh: "ready",
 			transcription: "ready",
+			originAllowed: true,
 		};
 		const fetchImpl = vi.fn(async () => jsonResponse(payload));
 		const health = await fetchHealth(
@@ -70,6 +71,7 @@ describe("fetchHealth", () => {
 			repos: 0,
 			gh: "ready",
 			transcription: "unconfigured",
+			originAllowed: true,
 		};
 		const fetchImpl = vi.fn(async () => jsonResponse(payload));
 		await fetchHealth(
@@ -80,6 +82,70 @@ describe("fetchHealth", () => {
 		const [url, opts] = fetchImpl.mock.calls[0] as [string, RequestInit?];
 		expect(url).toBe("http://127.0.0.1:4127/health");
 		expect(opts?.signal).toBeInstanceOf(AbortSignal);
+	});
+
+	it("appends the page origin so the sidecar can report its CORS verdict", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({
+				ok: true,
+				issues: true,
+				repos: 1,
+				gh: "ready",
+				transcription: "ready",
+				originAllowed: true,
+			}),
+		);
+		await fetchHealth(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+			undefined,
+			"https://app.example.com",
+		);
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"http://127.0.0.1:4127/health?origin=https%3A%2F%2Fapp.example.com",
+		);
+	});
+
+	// Root cause of the bug: /health answers before the CORS gate, so a sidecar
+	// that would 403 real requests from this origin still returns a valid body.
+	// fetchHealth must surface originAllowed:false (non-null) so the caller can
+	// distinguish "up but wrong origin" from "down" — the old `!health` hint
+	// check treated this as healthy.
+	it("parses originAllowed:false without treating the sidecar as offline", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({
+				ok: true,
+				issues: true,
+				repos: 1,
+				gh: "ready",
+				transcription: "ready",
+				originAllowed: false,
+			}),
+		);
+		const health = await fetchHealth(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(health).not.toBeNull();
+		expect(health?.originAllowed).toBe(false);
+	});
+
+	it("rejects a body missing the originAllowed field", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({
+				ok: true,
+				issues: true,
+				repos: 1,
+				gh: "ready",
+				transcription: "ready",
+			}),
+		);
+		expect(
+			await fetchHealth(
+				"http://127.0.0.1:4127",
+				fetchImpl as unknown as typeof fetch,
+			),
+		).toBeNull();
 	});
 });
 
@@ -93,6 +159,7 @@ describe("healthPill", () => {
 				repos: 0,
 				gh: "unauthenticated",
 				transcription: "unconfigured",
+				originAllowed: true,
 			}).tone,
 		).toBe("warn");
 		// Issue filing disabled → gh irrelevant, not flagged as unhealthy.
@@ -103,6 +170,7 @@ describe("healthPill", () => {
 				repos: 0,
 				gh: "missing",
 				transcription: "unconfigured",
+				originAllowed: true,
 			}).tone,
 		).toBe("ok");
 		expect(
@@ -112,6 +180,7 @@ describe("healthPill", () => {
 				repos: 1,
 				gh: "ready",
 				transcription: "ready",
+				originAllowed: true,
 			}).tone,
 		).toBe("ok");
 	});
@@ -125,6 +194,7 @@ describe("buildRows", () => {
 			repos: 3,
 			gh: "ready",
 			transcription: "ready",
+			originAllowed: true,
 		});
 		const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
 		expect(byKey.capture.status).toBe("On every click");
@@ -150,6 +220,7 @@ describe("buildRows", () => {
 			repos: 0,
 			gh: "missing",
 			transcription: "unconfigured",
+			originAllowed: true,
 		});
 		expect(missing.find((r) => r.key === "issue")?.status).toBe(
 			"gh CLI missing",
@@ -163,6 +234,7 @@ describe("buildRows", () => {
 			repos: 0,
 			gh: "missing",
 			transcription: "unconfigured",
+			originAllowed: true,
 		});
 		const row = disabled.find((r) => r.key === "issue");
 		expect(row?.status).toBe("Issue filing disabled");
