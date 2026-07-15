@@ -46,7 +46,7 @@ export function offlineHint(origin: string | undefined): string {
 }
 
 export type GhState = "ready" | "missing" | "unauthenticated";
-export type TranscriptionState = "ready" | "unconfigured";
+export type TranscriptionState = "ready" | "local" | "unconfigured";
 
 export interface HealthPayload {
 	ok: true;
@@ -105,7 +105,11 @@ export async function fetchHealth(
 	if (r.gh !== "ready" && r.gh !== "missing" && r.gh !== "unauthenticated") {
 		return null;
 	}
-	if (r.transcription !== "ready" && r.transcription !== "unconfigured") {
+	if (
+		r.transcription !== "ready" &&
+		r.transcription !== "local" &&
+		r.transcription !== "unconfigured"
+	) {
 		return null;
 	}
 	if (typeof r.originAllowed !== "boolean") return null;
@@ -151,7 +155,8 @@ export function buildRows(
 				: config.screenshotMode === "perPage"
 					? "Per page"
 					: "On mark";
-	const voiceReady = health?.transcription === "ready";
+	const voiceReady =
+		health?.transcription === "ready" || health?.transcription === "local";
 	const voiceStatus = !health
 		? "Sidecar offline"
 		: voiceReady

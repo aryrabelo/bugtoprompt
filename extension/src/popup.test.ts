@@ -35,6 +35,23 @@ describe("fetchHealth", () => {
 		expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:4127/health");
 	});
 
+	it('parses transcription:"local" instead of treating it as sidecar offline', async () => {
+		const payload: HealthPayload = {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "ready",
+			transcription: "local",
+			originAllowed: true,
+		};
+		const fetchImpl = vi.fn(async () => jsonResponse(payload));
+		const health = await fetchHealth(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(health).toEqual(payload);
+	});
+
 	it("returns null when the sidecar is offline or the body is malformed", async () => {
 		const down = vi.fn(async () => {
 			throw new Error("ECONNREFUSED");
@@ -203,6 +220,20 @@ describe("buildRows", () => {
 		expect(byKey.voice.ready).toBe(true);
 		expect(byKey.issue.status).toBe("3 repo(s)");
 		expect(byKey.issue.ready).toBe(true);
+	});
+
+	it('treats transcription:"local" as voice-ready, not "Not configured"', () => {
+		const rows = buildRows(DEFAULT_CONFIG, {
+			ok: true,
+			issues: false,
+			repos: 0,
+			gh: "ready",
+			transcription: "local",
+			originAllowed: true,
+		});
+		const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+		expect(byKey.voice.ready).toBe(true);
+		expect(byKey.voice.status).not.toBe("Not configured");
 	});
 
 	it("degrades gracefully when the sidecar is offline", () => {
