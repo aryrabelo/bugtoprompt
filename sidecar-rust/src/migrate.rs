@@ -1,0 +1,216 @@
+//! One-time first-run migration (PRD §14 note 4): import an existing macOS
+//! LaunchAgent plist's `EnvironmentVariables` — the Node sidecar's config — into
+//! `config.toml`, so upgrading users keep their setup without hand-editing a
+//! file. Runs once: it is a no-op as soon as a `config.toml` exists.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use plist::Value;
+
+use crate::config::{PersistedConfig, RawRepoEntry};
+
+/// Default LaunchAgent plist path the Node sidecar was installed under.
+pub fn default_launch_agent_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        PathBuf::from(home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join("com.bugtoprompt.sidecar.plist")
+    })
+}
+
+/// Read the `EnvironmentVariables` string map from a LaunchAgent plist. Returns
+/// an empty map when the file is absent, unreadable, or carries no env dict.
+fn read_plist_env(plist_path: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(value) = Value::from_file(plist_path) else {
+        return out;
+    };
+    let Some(dict) = value.as_dictionary() else {
+        return out;
+    };
+    let Some(env) = dict
+        .get("EnvironmentVariables")
+        .and_then(Value::as_dictionary)
+    else {
+        return out;
+    };
+    for (k, v) in env {
+        if let Some(s) = v.as_string() {
+            out.insert(k.clone(), s.to_string());
+        }
+    }
+    out
+}
+
+/// Build a [`PersistedConfig`] from LaunchAgent env vars. Uses the same var
+/// names `config::Config` reads, so this is a straight port of the Node env.
+pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> PersistedConfig {
+    let get = |k: &str| env.get(k).cloned().filter(|s| !s.is_empty());
+    let split_list = |raw: String| -> Vec<String> {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+
+    let mut cfg = PersistedConfig::default();
+    if env.get("BUGTOPROMPT_ENABLE_ISSUES").map(String::as_str) == Some("1") {
+        cfg.issue_mode = Some(true);
+    }
+    cfg.project_id = get("BUGTOPROMPT_PROJECT_ID");
+    cfg.screenshot_mode = get("BUGTOPROMPT_SCREENSHOT_MODE");
+    cfg.env = get("BUGTOPROMPT_ENV");
+    cfg.token = get("BUGTOPROMPT_TOKEN");
+    cfg.host = get("BUGTOPROMPT_HOST");
+    cfg.port = get("BUGTOPROMPT_PORT").and_then(|p| p.parse().ok());
+    cfg.assemblyai_key = get("ASSEMBLYAI_API_KEY");
+    if let Some(origins) = get("BUGTOPROMPT_ALLOWED_ORIGINS") {
+        let list = split_list(origins);
+        if !list.is_empty() {
+            cfg.allowed_origins = Some(list);
+        }
+    }
+    if let Some(repos) = get("BUGTOPROMPT_REPOS") {
+        let list: Vec<RawRepoEntry> = split_list(repos)
+            .into_iter()
+            .map(RawRepoEntry::Str)
+            .collect();
+        if !list.is_empty() {
+            cfg.repos = Some(list);
+        }
+    }
+    cfg
+}
+
+/// Import a LaunchAgent plist's env into `config_path`, but only if the config
+/// file does not already exist (one-time) and the plist contributes at least
+/// one setting. Returns `Ok(true)` when a config file was written.
+pub fn migrate_from_launch_agent(plist_path: &Path, config_path: &Path) -> std::io::Result<bool> {
+    if config_path.exists() {
+        return Ok(false);
+    }
+    let env = read_plist_env(plist_path);
+    if env.is_empty() {
+        return Ok(false);
+    }
+    let cfg = config_from_launch_agent_env(&env);
+    if cfg == PersistedConfig::default() {
+        return Ok(false);
+    }
+    cfg.save(config_path)?;
+    Ok(true)
+}
+
+/// First-run migration using the default LaunchAgent + config paths. Best
+/// effort: logs and continues on any error so a malformed plist never blocks
+/// startup. Call once from the host app's `main` before `Config::load()`.
+pub fn run_first_run_migration() {
+    let (Some(plist), Some(config)) = (default_launch_agent_path(), crate::config::config_path())
+    else {
+        return;
+    };
+    match migrate_from_launch_agent(&plist, &config) {
+        Ok(true) => tracing::info!("migrated LaunchAgent env into {}", config.display()),
+        Ok(false) => {}
+        Err(err) => tracing::warn!("LaunchAgent migration skipped: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIXTURE_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bugtoprompt.sidecar</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>BUGTOPROMPT_ENABLE_ISSUES</key>
+        <string>1</string>
+        <key>BUGTOPROMPT_REPOS</key>
+        <string>gerarposts, aryrabelo/bugtoprompt#main</string>
+        <key>BUGTOPROMPT_ALLOWED_ORIGINS</key>
+        <string>https://gerarposts.com.br,http://localhost:3000</string>
+        <key>ASSEMBLYAI_API_KEY</key>
+        <string>sk-assembly-123</string>
+        <key>BUGTOPROMPT_PORT</key>
+        <string>4127</string>
+    </dict>
+</dict>
+</plist>
+"#;
+
+    #[test]
+    fn imports_launch_agent_env_into_config_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("com.bugtoprompt.sidecar.plist");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&plist, FIXTURE_PLIST).unwrap();
+
+        let migrated = migrate_from_launch_agent(&plist, &config).unwrap();
+        assert!(
+            migrated,
+            "should migrate when config is absent and plist has env"
+        );
+        assert!(config.exists());
+
+        // Assert on the resulting TOML content.
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(text.contains("issue_mode = true"), "toml:\n{text}");
+        assert!(
+            text.contains("assemblyai_key = \"sk-assembly-123\""),
+            "toml:\n{text}"
+        );
+        assert!(text.contains("https://gerarposts.com.br"), "toml:\n{text}");
+        assert!(text.contains("http://localhost:3000"), "toml:\n{text}");
+
+        // And it parses back into the expected structured config.
+        let parsed: PersistedConfig = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.issue_mode, Some(true));
+        assert_eq!(parsed.port, Some(4127));
+        assert_eq!(parsed.assemblyai_key.as_deref(), Some("sk-assembly-123"));
+        assert_eq!(
+            parsed.allowed_origins,
+            Some(vec![
+                "https://gerarposts.com.br".to_string(),
+                "http://localhost:3000".to_string(),
+            ])
+        );
+        assert_eq!(
+            parsed.repos,
+            Some(vec![
+                RawRepoEntry::Str("gerarposts".to_string()),
+                RawRepoEntry::Str("aryrabelo/bugtoprompt#main".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn does_not_overwrite_existing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("agent.plist");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&plist, FIXTURE_PLIST).unwrap();
+        std::fs::write(&config, "port = 9999\n").unwrap();
+
+        let migrated = migrate_from_launch_agent(&plist, &config).unwrap();
+        assert!(!migrated, "must not clobber an existing config.toml");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), "port = 9999\n");
+    }
+
+    #[test]
+    fn no_migration_when_plist_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("missing.plist");
+        let config = dir.path().join("config.toml");
+        let migrated = migrate_from_launch_agent(&plist, &config).unwrap();
+        assert!(!migrated);
+        assert!(!config.exists());
+    }
+}

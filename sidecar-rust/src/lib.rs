@@ -21,6 +21,7 @@ pub mod app;
 pub mod config;
 pub mod gh;
 pub mod handlers;
+pub mod migrate;
 pub mod mw;
 pub mod preflight;
 pub mod security;

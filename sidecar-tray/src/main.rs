@@ -3,20 +3,30 @@
 //! Wraps the embedded axum server (`sidecar_rust::serve`, issue #54) as a
 //! background task supervised from a dedicated OS thread (see
 //! `supervisor.rs`) so the `tao` event loop can own the main thread —
-//! required for `tray-icon` on macOS. "Settings" is stubbed as a no-op menu
-//! item until its window lands (#58, PRD §11 tech stack: Tauri webview).
-//! Windows tray support is explicitly out of scope here (v2, PRD §12).
+//! required for `tray-icon` on macOS. Windows tray support is out of scope
+//! here (v2, PRD §12).
+//!
+//! Clicking "Settings" now opens a `wry` (Tauri) webview (`settings_window`)
+//! that edits `config.toml` (#58, PRD §8). On first run the tray imports an
+//! existing LaunchAgent plist's env into `config.toml` (PRD §14 note 4).
 
+mod settings_ui;
+mod settings_window;
 mod supervisor;
 
-use tao::event::{Event, StartCause};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
 use tracing::info;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use sidecar_rust::config::Config;
+use settings_ui::Ipc;
+use settings_window::{SettingsWindow, Worker};
+use sidecar_rust::config::{self, Config};
 use supervisor::Supervisor;
 
 fn main() {
@@ -27,8 +37,13 @@ fn main() {
         )
         .init();
 
+    // One-time: import an existing LaunchAgent plist's env into config.toml
+    // before the config is loaded (PRD §14 note 4). No-op once config exists.
+    sidecar_rust::migrate::run_first_run_migration();
+
     let config = Config::load();
-    let port = config.port;
+    let mut running_port = config.port;
+    let mut running_host = config.host.clone();
 
     if config.issue_mode && config.targets.is_empty() {
         eprintln!(
@@ -43,7 +58,7 @@ fn main() {
     let mut supervisor = Some(Supervisor::spawn(config));
 
     let status_item = MenuItem::new(
-        format!("\u{1f41b} BugToPrompt \u{25cf} Running (port {port})"),
+        format!("\u{1f41b} BugToPrompt \u{25cf} Running (port {running_port})"),
         false,
         None,
     );
@@ -69,21 +84,44 @@ fn main() {
 
     let mut tray_icon: Option<TrayIcon> = None;
 
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
+    // Settings-window plumbing (#58). The webview forwards IPC messages over
+    // `ipc_*`; background probe/install workers report over `worker_*`.
+    let (ipc_tx, ipc_rx) = mpsc::channel::<String>();
+    let (worker_tx, worker_rx) = mpsc::channel::<Worker>();
+    let mut settings: Option<SettingsWindow> = None;
+    let mut uvx_status = String::from("checking");
 
-        if let Event::NewEvents(StartCause::Init) = event
-            && tray_icon.is_none()
-        {
-            tray_icon = Some(
-                TrayIconBuilder::new()
-                    .with_menu(Box::new(tray_menu.clone()))
-                    .with_tooltip(format!("BugToPrompt \u{2014} running on port {port}"))
-                    .with_icon(bug_icon())
-                    .with_icon_as_template(true)
-                    .build()
-                    .expect("failed to build tray icon"),
-            );
+    event_loop.run(move |event, target, control_flow| {
+        // Poll the IPC/worker channels while the settings window is open;
+        // otherwise sleep until the next OS/menu event.
+        *control_flow = if settings.is_some() {
+            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(120))
+        } else {
+            ControlFlow::Wait
+        };
+
+        match event {
+            Event::NewEvents(StartCause::Init) if tray_icon.is_none() => {
+                tray_icon = Some(
+                    TrayIconBuilder::new()
+                        .with_menu(Box::new(tray_menu.clone()))
+                        .with_tooltip(format!(
+                            "BugToPrompt \u{2014} running on port {running_port}"
+                        ))
+                        .with_icon(bug_icon())
+                        .with_icon_as_template(true)
+                        .build()
+                        .expect("failed to build tray icon"),
+                );
+            }
+            // Closing the settings window drops its webview/window.
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                settings = None;
+            }
+            _ => {}
         }
 
         if let Ok(menu_event) = menu_channel.try_recv() {
@@ -92,16 +130,123 @@ fn main() {
                 if let Some(mut sup) = supervisor.take() {
                     sup.shutdown();
                 }
+                settings = None;
                 tray_icon = None;
                 *control_flow = ControlFlow::Exit;
             } else if menu_event.id() == settings_item.id() {
-                // ponytail: settings window lands with #58; no-op placeholder for now.
-                info!("Settings clicked, settings window not implemented yet (#58)");
+                if settings.is_none() {
+                    match SettingsWindow::open(target, ipc_tx.clone()) {
+                        Ok(win) => settings = Some(win),
+                        Err(err) => tracing::error!("failed to open settings window: {err}"),
+                    }
+                }
             } else if menu_event.id() == logs_item.id() {
                 open_logs_dir();
             }
         }
+
+        // Messages from the settings webview.
+        while let Ok(raw) = ipc_rx.try_recv() {
+            let Some(msg) = settings_ui::parse_ipc(&raw) else {
+                continue;
+            };
+            match msg {
+                Ipc::Ready => {
+                    if let Some(win) = &settings {
+                        win.push_state(&settings_ui::state_json(
+                            &config::load_persisted(),
+                            supervisor.is_some(),
+                            &running_host,
+                            running_port,
+                            &uvx_status,
+                        ));
+                    }
+                    settings_window::spawn_uvx_probe(worker_tx.clone());
+                }
+                Ipc::ProbeUvx => settings_window::spawn_uvx_probe(worker_tx.clone()),
+                Ipc::InstallUvx => settings_window::spawn_uvx_install(worker_tx.clone()),
+                Ipc::Save { config: payload } => {
+                    let saved = save_and_restart(
+                        payload,
+                        &mut supervisor,
+                        &mut running_host,
+                        &mut running_port,
+                    );
+                    if let Some(win) = &settings {
+                        win.push_saved(saved);
+                        if saved {
+                            win.push_state(&settings_ui::state_json(
+                                &config::load_persisted(),
+                                supervisor.is_some(),
+                                &running_host,
+                                running_port,
+                                &uvx_status,
+                            ));
+                        }
+                    }
+                }
+                Ipc::Quit => {
+                    info!("Quit requested from settings, shutting down");
+                    if let Some(mut sup) = supervisor.take() {
+                        sup.shutdown();
+                    }
+                    settings = None;
+                    tray_icon = None;
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
+        }
+
+        // Results from background probe/install workers.
+        while let Ok(msg) = worker_rx.try_recv() {
+            match msg {
+                Worker::Uvx(ready) => {
+                    uvx_status = if ready { "ready" } else { "missing" }.to_string();
+                    if let Some(win) = &settings {
+                        win.push_uvx(&uvx_status);
+                    }
+                }
+                Worker::InstallLine(line) => {
+                    if let Some(win) = &settings {
+                        win.push_install_line(&line);
+                    }
+                }
+            }
+        }
     });
+}
+
+/// Persist a settings save, then restart the server so it picks up the new
+/// CORS allowlist / host / port. Restart-on-save is acceptable for v1 per the
+/// #58 acceptance criteria; hot-reload is a nice-to-have. Returns whether the
+/// config file was written.
+fn save_and_restart(
+    payload: settings_ui::SavePayload,
+    supervisor: &mut Option<Supervisor>,
+    running_host: &mut String,
+    running_port: &mut u16,
+) -> bool {
+    let Some(path) = config::config_path() else {
+        tracing::warn!("no config path (HOME unset); cannot save settings");
+        return false;
+    };
+    let next = settings_ui::apply_save(config::load_persisted(), payload);
+    if let Err(err) = next.save(&path) {
+        tracing::error!("failed to write {}: {err}", path.display());
+        return false;
+    }
+    if let Some(mut sup) = supervisor.take() {
+        sup.shutdown();
+    }
+    let cfg = Config::load();
+    *running_host = cfg.host.clone();
+    *running_port = cfg.port;
+    *supervisor = Some(Supervisor::spawn(cfg));
+    info!(
+        "settings saved; server restarted on {}:{}",
+        running_host, running_port
+    );
+    true
 }
 
 /// Minimal 16x16 monochrome bug-shaped glyph, generated at build time so the

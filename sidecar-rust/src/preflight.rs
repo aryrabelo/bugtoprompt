@@ -46,6 +46,10 @@ pub async fn detect_gh_state() -> GhState {
     }
 }
 
+/// Shell one-liner the Settings UI runs when `uvx` is missing (PRD §6):
+/// installs Astral's `uv` (which provides `uvx`).
+pub const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+
 /// Probe whether the parakeet-mlx CLI is available through `uvx`.
 pub async fn detect_local_engine() -> bool {
     run_ok(
