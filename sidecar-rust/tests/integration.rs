@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::process::Command;
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -23,13 +25,55 @@ impl ServerGuard {
         for (k, v) in extra_env {
             cmd.env(k, v);
         }
+        // Bind port 0 (OS-assigned ephemeral) *in the child*, and read the
+        // port it actually bound back from stdout — no pre-bind/release/
+        // rebind handoff, so no window for a sibling test to steal the port
+        // between our probe and the child's bind (issue #72).
         cmd.env("BUGTOPROMPT_PORT", "0");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        cmd.env("BUGTOPROMPT_PORT", port.to_string());
+        cmd.stdout(Stdio::piped());
 
         let mut child = cmd.spawn().unwrap();
+        let mut child_stdout = BufReader::new(child.stdout.take().unwrap());
+
+        // `sidecar_rust::serve` (src/lib.rs) prints `listening on <addr>`
+        // right after binding. Read it off a background thread bounded by a
+        // channel timeout so a startup failure fails the test fast instead
+        // of hanging on a read that never completes.
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let port = loop {
+                line.clear();
+                match child_stdout.read_line(&mut line) {
+                    Ok(0) => break None,
+                    Ok(_) => {
+                        if let Some(port) = line
+                            .trim()
+                            .strip_prefix("listening on 127.0.0.1:")
+                            .and_then(|p| p.parse::<u16>().ok())
+                        {
+                            break Some(port);
+                        }
+                    }
+                    Err(_) => break None,
+                }
+            };
+            let _ = tx.send(port);
+            // Keep draining stdout for the life of the child so it never
+            // blocks writing to a full pipe once we've stopped reading.
+            let mut sink = String::new();
+            while child_stdout.read_line(&mut sink).unwrap_or(0) > 0 {
+                sink.clear();
+            }
+        });
+
+        let port = match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Some(port)) => port,
+            _ => {
+                let _ = child.kill();
+                panic!("server did not report a listening port");
+            }
+        };
         let base = format!("http://127.0.0.1:{}", port);
 
         let client = reqwest::blocking::Client::new();
