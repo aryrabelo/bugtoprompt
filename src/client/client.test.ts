@@ -1,7 +1,7 @@
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaptureArtifact } from "../schema";
-import { createFetchClient } from "./index";
+import { createFetchClient, type ProConfig } from "./index";
 
 describe("createFetchClient", () => {
 	const BASE = "http://x";
@@ -285,5 +285,102 @@ describe("createFetchClient.saveArtifact media upload", () => {
 				screenshotsBase64: [btoa("s")],
 			}),
 		).rejects.toThrow("500");
+	});
+});
+
+describe("createFetchClient PRO override (issue #8)", () => {
+	const LOCAL_BASE = "http://x";
+	const PRO: ProConfig = { baseUrl: "https://pro", token: "tok" };
+	let fetchSpy: Mock;
+
+	beforeEach(() => {
+		fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function okResponse(body: unknown) {
+		return { ok: true, json: async () => body };
+	}
+
+	function authHeader(init: RequestInit): string | undefined {
+		return (init.headers as Record<string, string> | undefined)?.Authorization;
+	}
+
+	it("transcribeBatch routes to pro.baseUrl with the bearer header", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ transcript: [] }));
+
+		await createFetchClient(LOCAL_BASE, PRO).transcribeBatch("sess", "t1");
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://pro/transcribe");
+		expect(authHeader(init)).toBe("Bearer tok");
+		const body = JSON.parse(init.body as string) as Record<string, unknown>;
+		expect(body).toEqual({ sessionId: "sess", targetId: "t1" });
+	});
+
+	it("createIssue routes to pro.baseUrl with the bearer header", async () => {
+		fetchSpy.mockResolvedValue(
+			okResponse({ created: true, number: 1, url: "https://gh/1" }),
+		);
+
+		await createFetchClient(LOCAL_BASE, PRO).createIssue({
+			sessionId: "sess",
+			prompt: "body",
+		});
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://pro/issue");
+		expect(authHeader(init)).toBe("Bearer tok");
+	});
+
+	it("saveArtifact (empty capture) routes to pro.baseUrl with the bearer header", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ dir: "d", sessionId: "cap_x" }));
+		const artifact = { sessionId: "cap_x" } as unknown as CaptureArtifact;
+
+		await createFetchClient(LOCAL_BASE, PRO).saveArtifact({
+			artifact,
+			audioBase64: "",
+			screenshotsBase64: [],
+		});
+
+		expect(fetchSpy).toHaveBeenCalledOnce();
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://pro/artifact");
+		expect(authHeader(init)).toBe("Bearer tok");
+	});
+
+	it("mintStreamingToken and listTargets route to pro.baseUrl with the bearer header", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ token: "t", expiresAt: 0 }));
+		await createFetchClient(LOCAL_BASE, PRO).mintStreamingToken();
+		const [tokenUrl, tokenInit] = fetchSpy.mock.calls[0] as [
+			string,
+			RequestInit,
+		];
+		expect(tokenUrl).toBe("https://pro/streaming-token");
+		expect(authHeader(tokenInit)).toBe("Bearer tok");
+
+		fetchSpy.mockClear();
+		fetchSpy.mockResolvedValue(okResponse([]));
+		await createFetchClient(LOCAL_BASE, PRO).listTargets("p1");
+		const [targetsUrl, targetsInit] = fetchSpy.mock.calls[0] as [
+			string,
+			RequestInit,
+		];
+		expect(targetsUrl).toBe("https://pro/targets?projectId=p1");
+		expect(authHeader(targetsInit)).toBe("Bearer tok");
+	});
+
+	it("without pro, requests hit the local base and carry no Authorization header", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ token: "t", expiresAt: 0 }));
+
+		await createFetchClient(LOCAL_BASE).mintStreamingToken();
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("http://x/streaming-token");
+		expect(authHeader(init)).toBeUndefined();
 	});
 });

@@ -36,6 +36,11 @@ declare global {
 			defaultOpen?: boolean;
 			/** When true, the standalone build will NOT auto-mount on load.
 			 *  Call window.BugToPrompt.mount() manually instead. */
+			/** PRO remote-service credentials seeded by the extension (issue #8).
+			 *  When present, the overlay routes all backend traffic to
+			 *  `pro.baseUrl` with an `Authorization: Bearer ${pro.token}` header
+			 *  instead of the local sidecar. */
+			pro?: { baseUrl: string; token: string };
 			manual?: boolean;
 		};
 		/** Exposed by the standalone IIFE build (bugtoprompt.global.js). */

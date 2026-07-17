@@ -11,7 +11,10 @@ import {
 	discoverBaseUrl,
 	loadConfig,
 	originPattern,
+	PRO_BASE_URL,
+	PRO_LOGIN_URL,
 	pageOrigin,
+	saveConfig,
 } from "./config";
 
 /** What the popup's primary button does for the current tab. */
@@ -121,6 +124,31 @@ export async function fetchHealth(
 		transcription: r.transcription,
 		originAllowed: r.originAllowed,
 	};
+}
+
+/**
+ * Better Auth session probe (PRO): the user logs in on the PRO dashboard; the
+ * extension picks the resulting session up from cookies. Returns the session
+ * token, or null when logged out, offline, or the body is malformed — never
+ * throws.
+ */
+export async function fetchProSession(
+	baseUrl: string,
+	fetchImpl: typeof fetch,
+	timeoutMs = 4000,
+): Promise<string | null> {
+	try {
+		const res = await fetchImpl(`${baseUrl}/api/auth/get-session`, {
+			credentials: "include",
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!res.ok) return null;
+		const body = (await res.json()) as { session?: { token?: unknown } };
+		const token = body.session?.token;
+		return typeof token === "string" && token !== "" ? token : null;
+	} catch {
+		return null;
+	}
 }
 
 export interface StatusPill {
@@ -366,6 +394,50 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		startBtn.addEventListener("click", doToggle);
 	}
 	startBtn.disabled = false;
+
+	// PRO (issue #8): a stored session token routes the seeded overlay's
+	// backend traffic to the remote service instead of the local sidecar.
+	// Wired after the start button so a stalled probe never blocks capture;
+	// skipped silently when the row is absent (jsdom / options-less builds).
+	const proBtn = document.getElementById("pro-login");
+	const proHintEl = document.getElementById("pro-hint");
+	if (proBtn instanceof HTMLButtonElement && proHintEl instanceof HTMLElement) {
+		let proToken = config.proToken;
+		const paintPro = (): void => {
+			proBtn.textContent = proToken ? "Pro: active · Log out" : "Login to Pro";
+		};
+		paintPro();
+		let proBusy = false;
+		proBtn.addEventListener("click", () => {
+			if (proBusy) return;
+			proBusy = true;
+			proBtn.disabled = true;
+			proHintEl.textContent = "";
+			void (async () => {
+				try {
+					if (proToken) {
+						await saveConfig(chromeApi, { proToken: "" });
+						proToken = "";
+						paintPro();
+						return;
+					}
+					const token = await fetchProSession(PRO_BASE_URL, fetch);
+					if (token) {
+						await saveConfig(chromeApi, { proToken: token });
+						proToken = token;
+						paintPro();
+					} else {
+						void chromeApi.tabs?.create?.({ url: PRO_LOGIN_URL });
+						proHintEl.textContent =
+							"Log in on the dashboard, then click again.";
+					}
+				} finally {
+					proBusy = false;
+					proBtn.disabled = false;
+				}
+			})();
+		});
+	}
 
 	// Sidecar discovery + health decorate the pill/capability rows only; they run
 	// after the button is wired so a slow endpoint never blocks capture. Each

@@ -26,7 +26,11 @@
 		"open_in_tab": true
 	},
 	"permissions": ["storage", "scripting", "activeTab"],
-	"host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+	"host_permissions": [
+		"http://localhost/*",
+		"http://127.0.0.1/*",
+		"https://api.bugtoprompt.com/*"
+	],
 	"optional_host_permissions": ["http://*/*", "https://*/*"],
 	"content_scripts": [
 		{
