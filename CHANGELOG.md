@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Node.js floor raised to `>=22`; CI lanes now run Node 22 + 24.** Node 20
+  went EOL in 2026-04 (Node 18 long before), so `engines` in both
+  `package.json` and `server/package.json` now require Node 22+. The
+  `check:node-compat` guard was retired: `Promise.withResolvers()` (ES2024)
+  is natively available on the new floor.
 - **Extension popup voice status renamed to `"Ready Local"` / `"Ready Cloud"`.**
   The armed state now names the transcription path directly (local engine vs
   cloud) instead of `"Ready · local · armed"` / `"Ready · armed"`; the manual
