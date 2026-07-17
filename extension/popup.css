@@ -116,6 +116,28 @@ body {
 	color: #6b7280;
 	cursor: not-allowed;
 }
+.pro {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.pro-login {
+	padding: 4px 8px;
+	border: 1px solid #2a2e37;
+	border-radius: 6px;
+	background: transparent;
+	color: #e5e7eb;
+	font-size: 12px;
+	cursor: pointer;
+}
+.pro-login:hover {
+	background: #2a2e37;
+}
+.pro-hint {
+	font-size: 11px;
+	color: #6b7280;
+	overflow-wrap: anywhere;
+}
 .error {
 	margin: 0;
 	min-height: 14px;

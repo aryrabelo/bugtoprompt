@@ -120,6 +120,18 @@ describe("loadConfig / saveConfig", () => {
 		const reloaded = await loadConfig(chromeApi);
 		expect(reloaded.baseUrl).toBe("http://127.0.0.1:4127");
 	});
+
+	it("proToken defaults to empty, persists through saveConfig, and coerces non-string garbage to empty", async () => {
+		const chromeApi = fakeChrome();
+		expect((await loadConfig(chromeApi)).proToken).toBe("");
+		const merged = await saveConfig(chromeApi, { proToken: "sess-tok" });
+		expect(merged.proToken).toBe("sess-tok");
+		const reloaded = await loadConfig(chromeApi);
+		expect(reloaded.proToken).toBe("sess-tok");
+
+		const garbage = await loadConfig(fakeChrome({ proToken: 42 }));
+		expect(garbage.proToken).toBe("");
+	});
 });
 
 describe("candidateBaseUrls (sidecar auto-discovery order)", () => {

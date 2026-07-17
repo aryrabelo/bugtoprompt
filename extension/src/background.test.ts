@@ -151,6 +151,24 @@ describe("ensureOverlay injection order & idempotency", () => {
 		expect(g?.baseUrl).toBe(DEFAULT_CONFIG.baseUrl);
 	});
 
+	it("seeds pro:undefined when no PRO session token is stored", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, DEFAULT_CONFIG);
+		expect(h.page(1).injectedGlobal?.pro).toBeUndefined();
+	});
+
+	it("seeds pro:{baseUrl,token} when a PRO session token is stored", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, {
+			...DEFAULT_CONFIG,
+			proToken: "sess-tok",
+		});
+		expect(h.page(1).injectedGlobal?.pro).toEqual({
+			baseUrl: "https://api.bugtoprompt.com",
+			token: "sess-tok",
+		});
+	});
+
 	it("re-seeds config (without reinjecting the bundle) when reusing an existing overlay", async () => {
 		const h = makeHarness();
 		h.page(2).hasOverlay = true;

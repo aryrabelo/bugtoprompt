@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from "./config";
 import {
 	buildRows,
 	fetchHealth,
+	fetchProSession,
 	type HealthPayload,
 	healthPill,
 	offlineHint,
@@ -166,6 +167,65 @@ describe("fetchHealth", () => {
 				fetchImpl as unknown as typeof fetch,
 			),
 		).toBeNull();
+	});
+});
+
+describe("fetchProSession", () => {
+	it("returns the session token on a valid session body", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse({ session: { token: "t" } }),
+		);
+		const token = await fetchProSession(
+			"https://api.bugtoprompt.com",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(token).toBe("t");
+		const [url, init] = fetchImpl.mock.calls[0] as unknown as [
+			string,
+			RequestInit,
+		];
+		expect(url).toBe("https://api.bugtoprompt.com/api/auth/get-session");
+		expect(init.credentials).toBe("include");
+	});
+
+	it("returns null on a non-ok response", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({}, false));
+		const token = await fetchProSession(
+			"https://api.bugtoprompt.com",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(token).toBeNull();
+	});
+
+	it("returns null when the session or token is missing/empty", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse({}));
+		expect(
+			await fetchProSession(
+				"https://api.bugtoprompt.com",
+				fetchImpl as unknown as typeof fetch,
+			),
+		).toBeNull();
+
+		const emptyToken = vi.fn(async () =>
+			jsonResponse({ session: { token: "" } }),
+		);
+		expect(
+			await fetchProSession(
+				"https://api.bugtoprompt.com",
+				emptyToken as unknown as typeof fetch,
+			),
+		).toBeNull();
+	});
+
+	it("returns null on a network error instead of throwing", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("offline");
+		});
+		const token = await fetchProSession(
+			"https://api.bugtoprompt.com",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(token).toBeNull();
 	});
 });
 

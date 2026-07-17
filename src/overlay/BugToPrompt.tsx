@@ -23,7 +23,11 @@ import {
 import type { ReactElement, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { type BugToPromptClient, createFetchClient } from "../client";
+import {
+	type BugToPromptClient,
+	createFetchClient,
+	type ProConfig,
+} from "../client";
 import { promptTitle, renderPrompt, transcriptText } from "../render";
 import type { CaptureEvent, TranscriptSegment } from "../schema";
 import { Button } from "../ui/button";
@@ -186,12 +190,14 @@ function useAutoConfig({
 	modesProp,
 	projectIdProp,
 	screenshotModeProp,
+	pro,
 }: {
 	clientProp: BugToPromptClient | undefined;
 	baseUrl: string | undefined;
 	modesProp: OutputMode[] | undefined;
 	projectIdProp: string | undefined;
 	screenshotModeProp: ScreenshotMode | undefined;
+	pro: ProConfig | undefined;
 }): AutoConfigResult {
 	const [auto, setAuto] = useState(() => ({
 		client: createLocalFallbackClient(),
@@ -211,6 +217,11 @@ function useAutoConfig({
 	useEffect(() => {
 		if (clientProp !== undefined) return;
 		let cancelled = false;
+		// Rebuild from primitive deps — the seeded pro object identity is unstable across renders.
+		const proConfig: ProConfig | undefined =
+			pro?.baseUrl && pro?.token
+				? { baseUrl: pro.baseUrl, token: pro.token }
+				: undefined;
 		const run = async (): Promise<void> => {
 			const base = resolveBaseUrl(baseUrl);
 			const cfg = await fetchServerConfig(base);
@@ -222,7 +233,7 @@ function useAutoConfig({
 			// only required for same-origin zero-config discovery (empty base).
 			if (cfg || base) {
 				setAuto({
-					client: createFetchClient(base),
+					client: createFetchClient(base, proConfig),
 					modes:
 						modesProp ??
 						cfg?.modes ??
@@ -238,7 +249,7 @@ function useAutoConfig({
 		return () => {
 			cancelled = true;
 		};
-	}, [clientProp, baseUrl, modesProp, projectIdProp]);
+	}, [clientProp, baseUrl, modesProp, projectIdProp, pro?.baseUrl, pro?.token]);
 
 	// Derived effective values — when an explicit client is provided it takes
 	// precedence and the classic single-client contract is preserved.
@@ -818,6 +829,8 @@ export interface BugToPromptProps {
 	/** Explicit base URL for the bugtoprompt backend (overrides auto-detection).
 	 *  Only used when `client` is omitted. */
 	baseUrl?: string;
+	/** PRO remote-service credentials (issue #8); only used when `client` is omitted. */
+	pro?: ProConfig;
 	/** The currently-selected project (the issue's target repo is derived from it). */
 	projectId?: string;
 	/** The open target binding, when one is selected. */
@@ -865,6 +878,7 @@ export function BugToPrompt({
 	portalTarget,
 	clipboard,
 	onDownload,
+	pro,
 }: BugToPromptProps): ReactElement | null {
 	const {
 		client,
@@ -879,6 +893,7 @@ export function BugToPrompt({
 		modesProp,
 		projectIdProp,
 		screenshotModeProp,
+		pro,
 	});
 
 	const [open, setOpen] = useState(defaultOpen);
