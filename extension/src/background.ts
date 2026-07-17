@@ -12,6 +12,7 @@ import {
 	discoverBaseUrl,
 	loadConfig,
 	originPattern,
+	PRO_BASE_URL,
 	resolveProjectId,
 } from "./config";
 
@@ -89,7 +90,7 @@ async function seedConfig(
 	await scripting.executeScript({
 		target: { tabId },
 		world: "MAIN",
-		func: (cfg: SyncConfig & { projectId?: string }) => {
+		func: (cfg: SyncConfig & { projectId?: string; proBaseUrl: string }) => {
 			window.__BUGTOPROMPT__ = {
 				baseUrl: cfg.baseUrl,
 				modes: cfg.modes,
@@ -103,9 +104,17 @@ async function seedConfig(
 				// not just the floating launcher.
 				defaultOpen: true,
 				manual: true,
+				// PRO: when a session token is stored, the overlay routes all
+				// backend traffic (streaming token, artifact/blob upload, issue
+				// filing) to the remote service instead of the local sidecar.
+				pro: cfg.proToken
+					? { baseUrl: cfg.proBaseUrl, token: cfg.proToken }
+					: undefined,
 			};
 		},
-		args: [{ ...config, projectId }],
+		// func is serialized into the page and can't close over module
+		// constants, so PRO_BASE_URL travels through the args object.
+		args: [{ ...config, projectId, proBaseUrl: PRO_BASE_URL }],
 	});
 }
 

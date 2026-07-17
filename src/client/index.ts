@@ -76,13 +76,14 @@ async function uploadBlob(
 	seq: number,
 	bytes: Uint8Array,
 	contentType: string,
+	headers?: Record<string, string>,
 ): Promise<string> {
 	const url = `${baseUrl}/blob?session=${encodeURIComponent(sessionId)}&kind=${kind}&seq=${seq}`;
 	let res: Response;
 	try {
 		res = await fetch(url, {
 			method: "POST",
-			headers: { "Content-Type": contentType },
+			headers: { "Content-Type": contentType, ...headers },
 			// Uint8Array is a valid runtime BodyInit; the cast bridges a lib.dom/
 			// @types/node typing gap where Uint8Array<ArrayBufferLike> is rejected.
 			body: bytes as BodyInit,
@@ -101,10 +102,11 @@ async function uploadBlob(
 async function postJson<T>(
 	url: string,
 	body: Record<string, unknown>,
+	headers?: Record<string, string>,
 ): Promise<T> {
 	const res = await fetch(url, {
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers: { "Content-Type": "application/json", ...headers },
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) {
@@ -120,18 +122,38 @@ async function postJson<T>(
 }
 
 /**
+ * PRO remote service credentials (issue #8). When provided to
+ * {@link createFetchClient}, every request is routed to `pro.baseUrl`
+ * instead of the local/self-hosted base and carries an `Authorization:
+ * Bearer` header — enabling server-side voice transcription and remote
+ * artifact upload + issue filing.
+ */
+export interface ProConfig {
+	baseUrl: string;
+	token: string;
+}
+
+/**
  * A reference HTTP implementation over `fetch`. Maps each BugToPromptClient
- * method to the documented REST contract at `baseUrl`.
+ * method to the documented REST contract at `baseUrl`. When `pro` is given,
+ * every endpoint below is instead served from `pro.baseUrl` with an
+ * `Authorization: Bearer ${pro.token}` header attached (PRO remote service,
+ * issue #8) — behavior is otherwise byte-identical.
  *
  * Paths: POST /streaming-token, POST /artifact, POST /transcribe,
  *        POST /issue, GET /targets?projectId=
  */
-export function createFetchClient(baseUrl: string): BugToPromptClient {
+export function createFetchClient(
+	baseUrl: string,
+	pro?: ProConfig,
+): BugToPromptClient {
+	const base = pro?.baseUrl ?? baseUrl;
+	const auth = pro ? { Authorization: `Bearer ${pro.token}` } : undefined;
 	return {
 		mintStreamingToken(targetId?: string) {
 			const body: Record<string, unknown> = {};
 			if (targetId !== undefined) body.targetId = targetId;
-			return postJson(`${baseUrl}/streaming-token`, body);
+			return postJson(`${base}/streaming-token`, body, auth);
 		},
 
 		async saveArtifact(input) {
@@ -143,7 +165,7 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 
 			// Empty capture: no media to stage, send an artifact-only payload.
 			if (shots.length === 0 && !hasAudio) {
-				return postJson(`${baseUrl}/artifact`, { artifact });
+				return postJson(`${base}/artifact`, { artifact }, auth);
 			}
 
 			// New path: stage each blob via the binary /blob route, then reference
@@ -154,46 +176,52 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 				for (const { b64, seq } of shots) {
 					screenshotRefs.push(
 						await uploadBlob(
-							baseUrl,
+							base,
 							artifact.sessionId,
 							"screenshot",
 							seq,
 							base64ToBytes(b64),
 							"image/jpeg",
+							auth,
 						),
 					);
 				}
 				let audioRef: string | undefined;
 				if (hasAudio) {
 					audioRef = await uploadBlob(
-						baseUrl,
+						base,
 						artifact.sessionId,
 						"audio",
 						0,
 						base64ToBytes(audioBase64),
 						"audio/webm",
+						auth,
 					);
 				}
 				const body: Record<string, unknown> = { artifact };
 				if (screenshotRefs.length > 0) body.screenshotRefs = screenshotRefs;
 				if (audioRef !== undefined) body.audioRef = audioRef;
-				return await postJson(`${baseUrl}/artifact`, body);
+				return await postJson(`${base}/artifact`, body, auth);
 			} catch (err) {
 				// A slim-artifact POST failure is a real error — surface it.
 				if (!(err instanceof BlobRouteError)) throw err;
 				// Blob staging unavailable: fall back to the legacy base64 payload.
-				return postJson(`${baseUrl}/artifact`, {
-					artifact,
-					audioBase64,
-					screenshotsBase64,
-				});
+				return postJson(
+					`${base}/artifact`,
+					{
+						artifact,
+						audioBase64,
+						screenshotsBase64,
+					},
+					auth,
+				);
 			}
 		},
 
 		transcribeBatch(sessionId, targetId?) {
 			const body: Record<string, unknown> = { sessionId };
 			if (targetId !== undefined) body.targetId = targetId;
-			return postJson(`${baseUrl}/transcribe`, body);
+			return postJson(`${base}/transcribe`, body, auth);
 		},
 
 		createIssue(input) {
@@ -206,12 +234,12 @@ export function createFetchClient(baseUrl: string): BugToPromptClient {
 				body.transcriptText = input.transcriptText;
 			}
 			if (input.targetId !== undefined) body.targetId = input.targetId;
-			return postJson(`${baseUrl}/issue`, body);
+			return postJson(`${base}/issue`, body, auth);
 		},
 
 		async listTargets(projectId) {
-			const url = `${baseUrl}/targets?projectId=${encodeURIComponent(projectId)}`;
-			const res = await fetch(url);
+			const url = `${base}/targets?projectId=${encodeURIComponent(projectId)}`;
+			const res = await fetch(url, auth ? { headers: auth } : undefined);
 			if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
 			return res.json() as Promise<Target[]>;
 		},

@@ -58,9 +58,12 @@ pub async fn serve(
         .parse()
         .expect("host:port must be a valid socket address");
 
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound_addr = listener.local_addr()?;
+
     info!(
         "bugtoprompt server on http://{} (issue mode {}; {} repo target(s))",
-        addr,
+        bound_addr,
         if config.issue_mode {
             "ENABLED"
         } else {
@@ -68,8 +71,18 @@ pub async fn serve(
         },
         config.targets.len()
     );
+    // Stable, unconditional stdout line (independent of tracing's env
+    // filter/format) reporting the address actually bound — in particular
+    // the OS-assigned port when `config.port == 0`. The integration test
+    // harness parses this instead of pre-binding an ephemeral port itself
+    // and handing it to the child, which raced sibling tests under
+    // parallel `cargo test` (issue #72).
+    println!("listening on {}", bound_addr);
+    {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    }
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, build_app(state))
         .with_graceful_shutdown(shutdown)
         .await

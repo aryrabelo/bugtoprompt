@@ -28,7 +28,4 @@ jobs:
           workspaces: sidecar-rust
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # integration tests spawn a real server on an ephemeral port; the
-      # pre-bind/release/rebind handoff races under parallelism, so serialize
-      # (proper fix — child binds port 0 and reports it — is a follow-up).
-      - run: cargo test -- --test-threads=1
+      - run: cargo test

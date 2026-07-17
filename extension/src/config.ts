@@ -24,6 +24,13 @@ export interface SiteBinding {
 	projectId: string;
 }
 
+/** PRO remote service base URL (issue #8): server-side voice transcription
+ *  and remote artifact upload/issue filing, in place of the local sidecar. */
+export const PRO_BASE_URL = "https://api.bugtoprompt.com";
+/** PRO login/dashboard URL — the user authenticates there; the extension
+ *  picks the resulting session up from cookies (see fetchProSession). */
+export const PRO_LOGIN_URL = "https://app.bugtoprompt.com";
+
 /** Non-secret defaults persisted in chrome.storage.sync. */
 export interface SyncConfig {
 	baseUrl: string;
@@ -33,6 +40,9 @@ export interface SyncConfig {
 	autoVoice: boolean;
 	/** Per-host repo mappings for non-localhost sites. Empty on localhost-only setups. */
 	siteBindings: SiteBinding[];
+	/** Better Auth session token for the PRO remote service. Empty string means
+	 *  PRO is inactive and all traffic stays on the local sidecar. */
+	proToken: string;
 }
 
 export const DEFAULT_CONFIG: SyncConfig = {
@@ -42,6 +52,7 @@ export const DEFAULT_CONFIG: SyncConfig = {
 	screenshotMode: "onClick",
 	autoVoice: true,
 	siteBindings: [],
+	proToken: "",
 };
 
 /** Loopback hosts we accept. IPv6 loopback (::1 / [::1]) is intentionally excluded. */
@@ -285,6 +296,8 @@ export interface ChromeLike {
 	tabs?: {
 		query(info: unknown): Promise<Array<{ id?: number; url?: string }>>;
 		sendMessage?(tabId: number, msg: unknown): Promise<unknown>;
+		/** Open a new tab — used to send the user to the PRO login dashboard. */
+		create?(props: { url: string }): Promise<unknown> | undefined;
 		onUpdated?: {
 			addListener(
 				cb: (
@@ -322,6 +335,7 @@ const SYNC_KEYS = [
 	"screenshotMode",
 	"autoVoice",
 	"siteBindings",
+	"proToken",
 ];
 
 function coerceConfig(raw: Record<string, unknown>): SyncConfig {
@@ -356,6 +370,7 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 	}
 	if (typeof raw.autoVoice === "boolean") cfg.autoVoice = raw.autoVoice;
 	cfg.siteBindings = normalizeBindings(raw.siteBindings);
+	if (typeof raw.proToken === "string") cfg.proToken = raw.proToken.trim();
 	return cfg;
 }
 
@@ -404,6 +419,7 @@ export async function saveConfig(
 		screenshotMode: merged.screenshotMode,
 		autoVoice: merged.autoVoice,
 		siteBindings: merged.siteBindings,
+		proToken: merged.proToken,
 	};
 	await chromeApi.storage.sync.set(payload);
 	return merged;

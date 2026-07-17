@@ -68,6 +68,9 @@ function readGlobalConfig(): Partial<BugToPromptProps> {
 	if (g.screenshotMode) cfg.screenshotMode = g.screenshotMode;
 	if (typeof g.autoVoice === "boolean") cfg.autoVoice = g.autoVoice;
 	if (typeof g.defaultOpen === "boolean") cfg.defaultOpen = g.defaultOpen;
+	if (g.pro?.baseUrl && g.pro.token) {
+		cfg.pro = { baseUrl: g.pro.baseUrl, token: g.pro.token };
+	}
 	return cfg;
 }
 
