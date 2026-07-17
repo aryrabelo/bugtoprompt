@@ -160,11 +160,11 @@ export function buildRows(
 	const voiceMode =
 		health?.transcription === "local"
 			? config.autoVoice
-				? "Ready · local · armed"
-				: "Ready · local · manual"
+				? "Ready Local"
+				: "Ready Local · manual"
 			: config.autoVoice
-				? "Ready · armed"
-				: "Ready · manual";
+				? "Ready Cloud"
+				: "Ready Cloud · manual";
 	const voiceStatus = !health
 		? "Sidecar offline"
 		: voiceReady

@@ -219,7 +219,7 @@ describe("buildRows", () => {
 		const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
 		expect(byKey.capture.status).toBe("On every click");
 		expect(byKey.capture.ready).toBe(true);
-		expect(byKey.voice.status).toBe("Ready · armed");
+		expect(byKey.voice.status).toBe("Ready Cloud");
 		expect(byKey.voice.ready).toBe(true);
 		expect(byKey.issue.status).toBe("3 repo(s)");
 		expect(byKey.issue.ready).toBe(true);
@@ -236,7 +236,7 @@ describe("buildRows", () => {
 		});
 		const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
 		expect(byKey.voice.ready).toBe(true);
-		expect(byKey.voice.status).toBe("Ready · local · armed");
+		expect(byKey.voice.status).toBe("Ready Local");
 		expect(byKey.voice.status).not.toBe("Not configured");
 
 		const cloudRows = buildRows(DEFAULT_CONFIG, {
@@ -248,7 +248,7 @@ describe("buildRows", () => {
 			originAllowed: true,
 		});
 		const cloudByKey = Object.fromEntries(cloudRows.map((r) => [r.key, r]));
-		expect(cloudByKey.voice.status).toBe("Ready · armed");
+		expect(cloudByKey.voice.status).toBe("Ready Cloud");
 		expect(cloudByKey.voice.status).not.toBe(byKey.voice.status);
 	});
 
