@@ -1,0 +1,14 @@
+[package]
+name = "sidecar-tray"
+version = "0.1.0"
+edition = "2024"
+description = "BugToPrompt desktop sidecar — macOS menu bar tray shell (issue #57)"
+publish = false
+
+[dependencies]
+sidecar-rust = { path = "../sidecar-rust" }
+tao = { version = "0.35", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tray-icon = "0.24"
