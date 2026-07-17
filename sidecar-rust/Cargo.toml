@@ -1,0 +1,28 @@
+[package]
+name = "sidecar-rust"
+version = "0.1.0"
+edition = "2021"
+description = "BugToPrompt desktop sidecar — HTTP server core (issue #54)"
+publish = false
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "signal"] }
+tower-http = { version = "0.5", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+base64 = "0.22"
+subtle = "2"
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+parking_lot = "0.12"
+url = "2"
+
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

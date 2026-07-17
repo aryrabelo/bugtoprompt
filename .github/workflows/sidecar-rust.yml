@@ -1,0 +1,31 @@
+name: sidecar-rust
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sidecar-rust/**"
+      - ".github/workflows/sidecar-rust.yml"
+  pull_request:
+    paths:
+      - "sidecar-rust/**"
+      - ".github/workflows/sidecar-rust.yml"
+
+jobs:
+  rust:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar-rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidecar-rust
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
