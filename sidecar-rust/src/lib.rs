@@ -25,6 +25,7 @@ pub mod mw;
 pub mod preflight;
 pub mod security;
 pub mod state;
+pub mod transcribe;
 
 /// Bind the axum server on `config.host:config.port` and serve until
 /// `shutdown` resolves. Spawns the same background `gh`/transcription
