@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::gh;
 use crate::security;
 use crate::state::AppState;
+use crate::transcribe;
 
 fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
@@ -207,10 +208,12 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
     )
 }
 
-/// `POST /transcribe` — real routing to whichever transcription engine is
-/// ready lands in #55; #54 only owns the session-id validation (mirroring
-/// the traversal guard) and the frozen `501` stub response.
-pub async fn post_transcribe(State(_state): State<AppState>, req: Request) -> Response {
+/// `POST /transcribe` — routes to whichever transcription engine
+/// `preflight`'s background probe found ready. `"local"` runs the real
+/// ffmpeg + `uvx parakeet-mlx` pipeline (`transcribe::local_transcribe`);
+/// `"assemblyai"` cloud relay is #60; `"unconfigured"` (uvx missing, no
+/// AssemblyAI key) degrades to a clear `501`, never a panic.
+pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Response {
     let body = match read_json_body(req.into_body()).await {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -228,10 +231,50 @@ pub async fn post_transcribe(State(_state): State<AppState>, req: Request) -> Re
             json!({ "error": "invalid sessionId" }),
         );
     }
-    json_response(
-        StatusCode::NOT_IMPLEMENTED,
-        json!({ "error": "transcription not implemented yet (see #55)" }),
-    )
+
+    let dir = state.config.captures_root.join(session_id);
+    let audio_path = dir.join("audio.webm");
+    if tokio::fs::metadata(&audio_path).await.is_err() {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": format!("audio not found for session {session_id}") }),
+        );
+    }
+
+    // Copy the &'static str out and drop the RwLockReadGuard immediately —
+    // holding it across the .await below would make the handler future
+    // !Send (parking_lot guards aren't Send), breaking axum::Handler.
+    let provider = *state.transcription_provider.read();
+    match provider {
+        "local" => {
+            let vocab = transcribe::load_vocab();
+            match transcribe::local_transcribe(
+                &audio_path,
+                transcribe::LOCAL_TRANSCRIBE_TIMEOUT,
+                &vocab,
+                None,
+            )
+            .await
+            {
+                Ok(transcript) => {
+                    transcribe::persist_transcript(&dir, &transcript).await;
+                    json_response(StatusCode::OK, json!({ "transcript": transcript }))
+                }
+                Err(err) => json_response(
+                    StatusCode::BAD_GATEWAY,
+                    json!({ "error": format!("local transcription failed: {err}") }),
+                ),
+            }
+        }
+        "assemblyai" => json_response(
+            StatusCode::NOT_IMPLEMENTED,
+            json!({ "error": "cloud transcription not implemented yet (see #60)" }),
+        ),
+        _ => json_response(
+            StatusCode::NOT_IMPLEMENTED,
+            json!({ "error": "transcription not configured" }),
+        ),
+    }
 }
 
 /// `POST /streaming-token` — Pro cloud relay is #60; always `501` here.

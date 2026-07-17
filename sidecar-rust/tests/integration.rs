@@ -23,11 +23,7 @@ impl ServerGuard {
         for (k, v) in extra_env {
             cmd.env(k, v);
         }
-        // Use port 0 to get an ephemeral port.
         cmd.env("BUGTOPROMPT_PORT", "0");
-
-        // Pre-bind a port ourselves to make the base URL deterministic, then pass
-        // that port to the child. This avoids races and lets us read the port.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -36,7 +32,6 @@ impl ServerGuard {
         let mut child = cmd.spawn().unwrap();
         let base = format!("http://127.0.0.1:{}", port);
 
-        // Wait for /health to become ready.
         let client = reqwest::blocking::Client::new();
         let started = std::time::Instant::now();
         loop {
@@ -280,21 +275,139 @@ fn stubs_return_501() {
     ]));
     let client = reqwest::blocking::Client::new();
 
-    // /issue is real as of #56 — see the issue_* tests below.
-    for path in ["/transcribe", "/streaming-token"] {
-        let payload = json!({ "sessionId": "cap_abc-123" });
-        let resp = client
-            .post(format!("{}{}", server.base, path))
-            .json(&payload)
-            .send()
+    // /transcribe (#55) and /issue (#56) are real now; only the Pro cloud
+    // relay stays a 501 stub until #60.
+    let payload = json!({ "sessionId": "cap_abc-123" });
+    let resp = client
+        .post(format!("{}/streaming-token", server.base))
+        .json(&payload)
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        501,
+        "/streaming-token should return 501 (Pro cloud relay stub, #60)"
+    );
+}
+
+#[test]
+fn transcribe_without_saved_audio_returns_400_not_501() {
+    // No /artifact was ever POSTed for this session, so /transcribe must
+    // reject with 400 before it ever looks at which provider is configured
+    // (#55: the frozen #54 stub 501 no longer applies here).
+    let server = ServerGuard::spawn(HashMap::new());
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{}/transcribe", server.base))
+        .json(&json!({ "sessionId": "cap_abc-123" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().unwrap();
+    assert!(body["error"].as_str().unwrap().contains("audio not found"));
+}
+
+#[test]
+fn transcribe_local_path_uses_a_stubbed_engine_and_persists_batch_fallback() {
+    // Fake `uvx`/`ffmpeg` on PATH (mirrors `server/service-e2e.test.mjs`):
+    // succeeds on the `--version` startup probe (so /health's background
+    // probe flips to "local") and, on a real run, writes parakeet-shaped
+    // JSON into --output-dir.
+    let bin_dir = TempDir::new().unwrap();
+    let parakeet_json = json!({
+        "sentences": [{
+            "tokens": [
+                { "text": " Hello", "start": 0.0, "end": 0.5 },
+                { "text": " world.", "start": 0.6, "end": 1.2 },
+            ]
+        }]
+    })
+    .to_string();
+    std::fs::write(bin_dir.path().join("ffmpeg"), "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::write(
+        bin_dir.path().join("uvx"),
+        format!(
+            "#!/bin/sh\ndir=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"--output-dir\" ]; then dir=\"$a\"; fi\n  prev=\"$a\"\ndone\nif [ -z \"$dir\" ]; then exit 0; fi\ncat > \"$dir/audio.json\" <<'JSON'\n{parakeet_json}\nJSON\n"
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in ["ffmpeg", "uvx"] {
+            std::fs::set_permissions(
+                bin_dir.path().join(name),
+                std::fs::Permissions::from_mode(0o755),
+            )
             .unwrap();
-        assert_eq!(
-            resp.status(),
-            501,
-            "{} should return 501 for #54/#57 stub",
-            path
-        );
+        }
     }
+    // Prepend the fake bin dir so it shadows any real uvx/ffmpeg on this
+    // host, matching the Node e2e test's PATH strategy exactly.
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.path().display(),
+        std::env::var("PATH").unwrap()
+    );
+    let mut env = HashMap::new();
+    env.insert("PATH", path_env.as_str());
+    let server = ServerGuard::spawn(env);
+
+    // ServerGuard only waits for /health to answer 200 — the transcription
+    // background probe can still be in flight, so poll until it flips to
+    // "local" (mirrors service-e2e.test.mjs's readiness loop).
+    let client = reqwest::blocking::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let body: Value = client
+            .get(format!("{}/health", server.base))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        if body["transcription"] == "local" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "transcription state never became \"local\""
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let artifact_resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&json!({
+            "artifact": { "sessionId": "cap_transcribe-1" },
+            "audioBase64": "ZmFrZS13ZWJtLWJ5dGVz",
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(artifact_resp.status(), 200);
+
+    let resp = client
+        .post(format!("{}/transcribe", server.base))
+        .json(&json!({ "sessionId": "cap_transcribe-1" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().unwrap();
+    assert_eq!(
+        body["transcript"],
+        json!([{ "tStartMs": 0, "tEndMs": 1200, "text": "Hello world." }])
+    );
+
+    let artifact_dir = std::path::Path::new(
+        artifact_resp.json::<Value>().unwrap()["dir"]
+            .as_str()
+            .unwrap(),
+    )
+    .to_path_buf();
+    let artifact: Value =
+        serde_json::from_str(&std::fs::read_to_string(artifact_dir.join("artifact.json")).unwrap())
+            .unwrap();
+    assert_eq!(artifact["transcriptionMode"], "batch-fallback");
+    assert_eq!(artifact["transcript"], body["transcript"]);
 }
 
 #[test]
