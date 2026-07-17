@@ -10,7 +10,7 @@
 		"directory": "server"
 	},
 	"engines": {
-		"node": ">=18"
+		"node": ">=22"
 	},
 	"bin": {
 		"bugtoprompt-server": "github-issue-service.mjs"

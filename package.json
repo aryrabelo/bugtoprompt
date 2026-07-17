@@ -20,7 +20,7 @@
 	"type": "module",
 	"license": "MIT",
 	"engines": {
-		"node": ">=18"
+		"node": ">=22"
 	},
 	"private": false,
 	"main": "./dist/index.js",
@@ -68,7 +68,6 @@
 		"prepare": "lefthook install; npm run build",
 		"test": "vitest run",
 		"lint": "biome check .",
-		"check:node-compat": "node scripts/check-node-compat.mjs",
 		"typecheck": "tsc --noEmit",
 		"typecheck:extension": "tsc --noEmit -p extension/tsconfig.json",
 		"service:github": "node server/github-issue-service.mjs",

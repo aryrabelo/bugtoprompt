@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Node.js floor raised to `>=22`; CI lanes now run Node 22 + 24.** Node 20
+  went EOL in 2026-04 (Node 18 long before), so `engines` in both
+  `package.json` and `server/package.json` now require Node 22+. The
+  `check:node-compat` guard was retired: `Promise.withResolvers()` (ES2024)
+  is natively available on the new floor.
 - **Migration: `bugtoprompt-server` was absorbed into the `bugtoprompt`
   package.** The local sidecar now runs via `npx bugtoprompt` (same entry,
   `server/github-issue-service.mjs`; env vars and endpoints unchanged). The
