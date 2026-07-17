@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Extension popup voice status renamed to `"Ready Local"` / `"Ready Cloud"`.**
+  The armed state now names the transcription path directly (local engine vs
+  cloud) instead of `"Ready · local · armed"` / `"Ready · armed"`; the manual
+  variants keep the same pattern (`"Ready Local · manual"`,
+  `"Ready Cloud · manual"`). Owner decision from #9.
 - **Migration: `bugtoprompt-server` was absorbed into the `bugtoprompt`
   package.** The local sidecar now runs via `npx bugtoprompt` (same entry,
   `server/github-issue-service.mjs`; env vars and endpoints unchanged). The
