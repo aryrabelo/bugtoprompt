@@ -7,3 +7,9 @@ dist
 .harness-mem/
 docs/superpowers/
 extension/*.zip
+
+# Worker/conductor scratch — lives in a worktree's .context/, never the repo
+.context/
+RUN-LOG.md
+handoff.md
+DONE
