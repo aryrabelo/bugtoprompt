@@ -1,24 +1,7 @@
-use std::net::SocketAddr;
-
-use axum::serve;
 use tokio::signal;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::app::build_app;
-use crate::config::Config;
-use crate::preflight::{
-    detect_gh_state, detect_local_engine, detect_transcription_state,
-    resolve_transcription_provider,
-};
-use crate::state::AppState;
-
-mod app;
-mod config;
-mod handlers;
-mod mw;
-mod preflight;
-mod security;
-mod state;
+use sidecar_rust::config::Config;
 
 #[tokio::main]
 async fn main() {
@@ -38,46 +21,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let state = AppState::new(config.clone());
-
-    // Resolve `gh` and local transcription engine in the BACKGROUND so a slow
-    // or hung CLI probe never delays the HTTP listener. Mirrors
-    // github-issue-service.mjs:727-762.
-    let gh_state = state.clone();
-    tokio::spawn(async move {
-        let s = detect_gh_state().await;
-        gh_state.update_gh_state(s);
-    });
-
-    let transcription_state = state.clone();
-    let assemblyai_key = config.assemblyai_key.clone();
-    tokio::spawn(async move {
-        let local_ready = detect_local_engine().await;
-        let provider = resolve_transcription_provider(local_ready, assemblyai_key.as_deref());
-        let state_value = detect_transcription_state(local_ready, assemblyai_key.as_deref());
-        transcription_state.update_transcription(provider, state_value);
-    });
-
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port)
-        .parse()
-        .expect("host:port must be a valid socket address");
-
-    info!(
-        "bugtoprompt server on http://{} (issue mode {}; {} repo target(s))",
-        addr,
-        if config.issue_mode {
-            "ENABLED"
-        } else {
-            "disabled"
-        },
-        config.targets.len()
-    );
-
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind server");
-    serve(listener, build_app(state))
-        .with_graceful_shutdown(shutdown_signal())
+    sidecar_rust::serve(config, shutdown_signal())
         .await
         .expect("server failed");
 }
