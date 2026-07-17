@@ -19,6 +19,7 @@ use crate::state::AppState;
 
 pub mod app;
 pub mod config;
+pub mod gh;
 pub mod handlers;
 pub mod mw;
 pub mod preflight;

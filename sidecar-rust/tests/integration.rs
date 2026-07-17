@@ -66,6 +66,50 @@ impl Drop for ServerGuard {
     }
 }
 
+/// Write a fake `gh` executable to `dir/gh` so tests can stub the process
+/// boundary without real GitHub auth. Behavior is controlled at *runtime* by
+/// the `FAKE_GH_MODE` env var the script reads from its own environment:
+/// unset/anything else -> success, `"unauthenticated"` -> `gh auth status`
+/// and `gh issue create` both fail. `--version` always succeeds so the
+/// background probe never hangs waiting on it.
+fn write_fake_gh(dir: &std::path::Path) {
+    let script = r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "gh version 2.0.0 (fake)"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  [ "$FAKE_GH_MODE" = "unauthenticated" ] && exit 1
+  exit 0
+fi
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  if [ "$FAKE_GH_MODE" = "unauthenticated" ]; then
+    echo "error: not authenticated to github.com" 1>&2
+    exit 1
+  fi
+  echo "https://github.com/acme/web/issues/42"
+  exit 0
+fi
+exit 1
+"#;
+    let path = dir.join("gh");
+    std::fs::write(&path, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+}
+
+/// Build a PATH with `fake_bin` prepended so `gh` resolves to the fake
+/// script ahead of whatever else is already on PATH.
+fn path_with_fake_bin_first(fake_bin: &std::path::Path) -> String {
+    format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
 #[test]
 fn health_returns_exact_shape_and_ok_true() {
     let server = ServerGuard::spawn(HashMap::new());
@@ -236,7 +280,8 @@ fn stubs_return_501() {
     ]));
     let client = reqwest::blocking::Client::new();
 
-    for path in ["/transcribe", "/streaming-token", "/issue"] {
+    // /issue is real as of #56 — see the issue_* tests below.
+    for path in ["/transcribe", "/streaming-token"] {
         let payload = json!({ "sessionId": "cap_abc-123" });
         let resp = client
             .post(format!("{}{}", server.base, path))
@@ -246,7 +291,7 @@ fn stubs_return_501() {
         assert_eq!(
             resp.status(),
             501,
-            "{} should return 501 for #54 stub",
+            "{} should return 501 for #54/#57 stub",
             path
         );
     }
@@ -290,4 +335,109 @@ fn config_and_targets_match_contract() {
     let first = &targets[0];
     assert_eq!(first["id"], "acme/web");
     assert_eq!(first["branch"], "main");
+}
+
+#[test]
+fn issue_created_returns_created_number_and_url() {
+    let fake_bin = TempDir::new().unwrap();
+    write_fake_gh(fake_bin.path());
+    let path = path_with_fake_bin_first(fake_bin.path());
+
+    let mut env = HashMap::new();
+    env.insert("BUGTOPROMPT_ENABLE_ISSUES", "1");
+    env.insert("BUGTOPROMPT_REPOS", "acme/web");
+    env.insert("PATH", path.as_str());
+    let server = ServerGuard::spawn(env);
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{}/issue", server.base))
+        .json(&json!({ "sessionId": "cap_abc-123", "prompt": "the button is broken" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().unwrap();
+    assert_eq!(body["created"], true);
+    assert_eq!(body["number"], 42);
+    assert_eq!(body["url"], "https://github.com/acme/web/issues/42");
+}
+
+#[test]
+fn issue_gh_missing_returns_clear_error_not_a_crash() {
+    let empty_bin = TempDir::new().unwrap();
+
+    let mut env = HashMap::new();
+    env.insert("BUGTOPROMPT_ENABLE_ISSUES", "1");
+    env.insert("BUGTOPROMPT_REPOS", "acme/web");
+    // PATH with no `gh` on it at all — `gh issue create` must fail cleanly,
+    // never crash the server.
+    env.insert("PATH", empty_bin.path().to_str().unwrap());
+    let server = ServerGuard::spawn(env);
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let health: Value = reqwest::blocking::get(format!("{}/health", server.base))
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(health["gh"], "missing");
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{}/issue", server.base))
+        .json(&json!({ "sessionId": "cap_abc-123" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+    let body: Value = resp.json().unwrap();
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("gh issue create failed"));
+}
+
+#[test]
+fn issue_gh_unauthenticated_returns_clear_error() {
+    let fake_bin = TempDir::new().unwrap();
+    write_fake_gh(fake_bin.path());
+    let path = path_with_fake_bin_first(fake_bin.path());
+
+    let mut env = HashMap::new();
+    env.insert("BUGTOPROMPT_ENABLE_ISSUES", "1");
+    env.insert("BUGTOPROMPT_REPOS", "acme/web");
+    env.insert("PATH", path.as_str());
+    env.insert("FAKE_GH_MODE", "unauthenticated");
+    let server = ServerGuard::spawn(env);
+
+    // GET /health reflects the unauthenticated gh probe too (#54's
+    // detect_gh_state, exercised here against the fake binary).
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let health: Value = reqwest::blocking::get(format!("{}/health", server.base))
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(health["gh"], "unauthenticated");
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{}/issue", server.base))
+        .json(&json!({ "sessionId": "cap_abc-123" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 502);
+}
+
+#[test]
+fn issue_invalid_session_id_rejected_with_400() {
+    let mut env = HashMap::new();
+    env.insert("BUGTOPROMPT_ENABLE_ISSUES", "1");
+    env.insert("BUGTOPROMPT_REPOS", "acme/web");
+    let server = ServerGuard::spawn(env);
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(format!("{}/issue", server.base))
+        .json(&json!({ "sessionId": "cap_../etc/passwd" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 400);
 }

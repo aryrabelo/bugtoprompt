@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Json, Response};
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::gh;
 use crate::security;
 use crate::state::AppState;
 
@@ -244,9 +245,10 @@ pub async fn post_streaming_token(State(_state): State<AppState>, req: Request) 
     )
 }
 
-/// `POST /issue` — local `gh` issue filing is #56; #54 validates the
-/// session id (it will eventually be used to read the saved artifact) and
-/// returns the frozen `501` stub.
+/// `POST /issue` — local `gh` issue filing (#56): reads the saved artifact,
+/// resolves the target repo, and shells out to `gh issue create` via
+/// `crate::gh::create_issue` (argument vector, never a shell string, so no
+/// artifact-derived text can be interpreted as shell syntax).
 pub async fn post_issue(State(state): State<AppState>, req: Request) -> Response {
     if !state.config.issue_mode {
         return json_response(
@@ -271,8 +273,29 @@ pub async fn post_issue(State(state): State<AppState>, req: Request) -> Response
             json!({ "error": "invalid sessionId" }),
         );
     }
-    json_response(
-        StatusCode::NOT_IMPLEMENTED,
-        json!({ "error": "gh issue filing not implemented yet (see #56)" }),
-    )
+
+    let target_id = body.get("targetId").and_then(Value::as_str);
+    let Some(target) = gh::resolve_target(&state.config.targets, target_id) else {
+        return json_response(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "no repository configured" }),
+        );
+    };
+
+    let artifact = gh::read_artifact(&state.config.captures_root, session_id).await;
+    let title = gh::derive_title(artifact.as_ref(), session_id);
+    let issue_body = body
+        .get("prompt")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("BugToPrompt capture {session_id}"));
+
+    match gh::create_issue(&target.repo, &title, &issue_body, session_id).await {
+        Ok(issue) => json_response(
+            StatusCode::OK,
+            json!({ "created": true, "number": issue.number, "url": issue.url }),
+        ),
+        Err(detail) => json_response(StatusCode::BAD_GATEWAY, json!({ "error": detail })),
+    }
 }
