@@ -27,6 +27,8 @@ pub enum Worker {
     Uvx(bool),
     /// A line of `uv` installer output.
     InstallLine(String),
+    /// Update check finished: `Some` = a newer GitHub release is available.
+    Update(Option<sidecar_rust::updater::ReleaseInfo>),
 }
 
 /// A live settings window: the webview and the `tao` window backing it. Field
