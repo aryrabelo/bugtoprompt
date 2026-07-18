@@ -21,6 +21,7 @@ pub mod app;
 pub mod config;
 pub mod gh;
 pub mod handlers;
+pub mod migrate;
 pub mod mw;
 pub mod preflight;
 pub mod security;
@@ -46,10 +47,12 @@ pub async fn serve(
 
     let transcription_state = state.clone();
     let assemblyai_key = config.assemblyai_key.clone();
+    let engine_pref = config.transcription_engine.clone();
     tokio::spawn(async move {
         let local_ready = detect_local_engine().await;
-        let provider = resolve_transcription_provider(local_ready, assemblyai_key.as_deref());
-        let state_value = detect_transcription_state(local_ready, assemblyai_key.as_deref());
+        let pref = engine_pref.as_deref();
+        let provider = resolve_transcription_provider(local_ready, assemblyai_key.as_deref(), pref);
+        let state_value = detect_transcription_state(local_ready, assemblyai_key.as_deref(), pref);
         transcription_state.update_transcription(provider, state_value);
     });
 
