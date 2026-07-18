@@ -72,11 +72,15 @@ chmod +x "${CONTENTS_DIR}/MacOS/BugToPrompt"
 sed "s/__VERSION__/${VERSION}/g" "${TRAY_DIR}/packaging/Info.plist" >"${CONTENTS_DIR}/Info.plist"
 plutil -lint "${CONTENTS_DIR}/Info.plist"
 
-# 6. Import the Developer ID cert into a throwaway keychain (env-gated). Without
-# this, codesign cannot find the identity in CI (no login keychain holds it).
-# Skipped entirely when APPLE_CERTIFICATE is absent, so the unsigned path is
-# untouched. The keychain is deleted by the EXIT trap.
-if [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]; then
+# 6+7. Signing (env-gated, all-or-nothing). Signing requires the FULL chain:
+# the cert (APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD, imported into a
+# throwaway keychain so codesign can find it in CI) AND the identity name
+# (APPLE_SIGNING_IDENTITY). If ANY is missing we fall back to an unsigned build
+# and exit 0 — a partial config must never make `codesign` fail the job.
+SIGNED="false"
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]; then
+	# Import the Developer ID cert into a throwaway keychain (deleted by the
+	# EXIT trap) so codesign can resolve the identity without a login keychain.
 	KEYCHAIN_DIR="$(mktemp -d)"
 	KEYCHAIN_PATH="${KEYCHAIN_DIR}/build.keychain-db"
 	KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
@@ -94,18 +98,13 @@ if [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_CERTIFICATE_PASSWORD:-}" ]; 
 	CERT_P12=""
 	KEYCHAIN_CREATED="true"
 	echo "imported signing certificate into a throwaway keychain"
-fi
-
-# 7. Signing (env-gated, graceful).
-SIGNED="false"
-if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
 	codesign --force --deep --options runtime --timestamp \
 		--sign "${APPLE_SIGNING_IDENTITY}" "${APP_DIR}"
 	codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
 	echo "signed BugToPrompt.app"
 	SIGNED="true"
 else
-	echo "NOTICE: APPLE_SIGNING_IDENTITY absent - building UNSIGNED .app (local/dev only; Gatekeeper will warn)"
+	echo "NOTICE: signing skipped - building UNSIGNED .app (need APPLE_SIGNING_IDENTITY + APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD; Gatekeeper will warn)"
 fi
 
 # 8. Create the DMG with a drag-to-Applications layout.
