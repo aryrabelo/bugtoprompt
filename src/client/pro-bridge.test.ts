@@ -24,7 +24,7 @@
  * `standalone.test.ts` uses for its own module-load-order test).
  */
 import { webcrypto } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Target } from "./index";
 import { createProBridgeClient } from "./pro-bridge";
 
@@ -96,6 +96,10 @@ interface Envelope {
 	data: string;
 }
 
+// Contract v2.1 3a: encrypted-mode request ids are crypto.randomUUID().
+const UUID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 interface ProEncryptedRequestMessage {
 	type: "btp:pro-request";
 	id: string;
@@ -139,19 +143,28 @@ async function deriveTestKey(secret: string): Promise<CryptoKey> {
 async function encryptFor(
 	key: CryptoKey,
 	plaintext: string,
+	aad: string,
 ): Promise<Envelope> {
 	const iv = crypto.getRandomValues(new Uint8Array(12));
 	const ct = await crypto.subtle.encrypt(
-		{ name: "AES-GCM", iv },
+		{ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(aad) },
 		key,
 		new TextEncoder().encode(plaintext),
 	);
 	return { iv: toB64(iv), data: toB64(new Uint8Array(ct)) };
 }
 
-async function decryptWith(key: CryptoKey, enc: Envelope): Promise<string> {
+async function decryptWith(
+	key: CryptoKey,
+	enc: Envelope,
+	aad: string,
+): Promise<string> {
 	const pt = await crypto.subtle.decrypt(
-		{ name: "AES-GCM", iv: fromB64(enc.iv) },
+		{
+			name: "AES-GCM",
+			iv: fromB64(enc.iv),
+			additionalData: new TextEncoder().encode(aad),
+		},
 		key,
 		fromB64(enc.data),
 	);
@@ -159,11 +172,12 @@ async function decryptWith(key: CryptoKey, enc: Envelope): Promise<string> {
 }
 
 /** Install a fake v2 (encrypted) relay: decrypts every outbound request
- *  under `secret`'s derived key, calls `respond`, and dispatches the
- *  encrypted reply as a real `message` event — the same shape the
+ *  under `secret`'s derived key with the contract v2.1 `"btp:req:"+id` AAD,
+ *  calls `respond`, and dispatches the encrypted reply — sealed with the
+ *  `"btp:res:"+id` AAD — as a real `message` event — the same shape the
  *  extension's ISOLATED-world relay produces. Requests that fail to decrypt
- *  under `secret` are dropped (mirrors the real relay's "garbage in, silence
- *  out" behavior) rather than crashing the test. */
+ *  under `secret`/the expected AAD are dropped (mirrors the real relay's
+ *  "garbage in, silence out" behavior) rather than crashing the test. */
 function installEncryptedRelay(
 	secret: string,
 	respond: (
@@ -184,7 +198,9 @@ function installEncryptedRelay(
 			let op: string;
 			let payload: unknown;
 			try {
-				const parsed: unknown = JSON.parse(await decryptWith(key, message.enc));
+				const parsed: unknown = JSON.parse(
+					await decryptWith(key, message.enc, `btp:req:${message.id}`),
+				);
 				if (
 					!parsed ||
 					typeof parsed !== "object" ||
@@ -200,7 +216,11 @@ function installEncryptedRelay(
 			}
 			onRequest?.(op, payload, message);
 			const outcome = respond(op, payload);
-			const enc = await encryptFor(key, JSON.stringify(outcome));
+			const enc = await encryptFor(
+				key,
+				JSON.stringify(outcome),
+				`btp:res:${message.id}`,
+			);
 			window.dispatchEvent(
 				new MessageEvent("message", {
 					data: { type: "btp:pro-response", id: message.id, enc },
@@ -253,6 +273,33 @@ afterEach(() => {
 });
 
 describe("createProBridgeClient (P0 fix, issue #82) — legacy v1 plaintext relay, degraded/no-secret mode", () => {
+	// Contract v2.1 3b reserves the plaintext relay for contexts that
+	// genuinely lack `crypto.subtle` — "subtle present, no secret" now
+	// fails closed instead of falling back here (see the fail-closed tests
+	// below). So this suite must actually remove `crypto.subtle` to
+	// exercise the degraded path for real, using the same swap-and-restore
+	// technique as the top-of-file webcrypto polyfill.
+	let originalCrypto: Crypto;
+
+	beforeEach(() => {
+		originalCrypto = globalThis.crypto;
+		Object.defineProperty(globalThis, "crypto", {
+			value: {
+				getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+			},
+			configurable: true,
+			writable: true,
+		});
+	});
+
+	afterEach(() => {
+		Object.defineProperty(globalThis, "crypto", {
+			value: originalCrypto,
+			configurable: true,
+			writable: true,
+		});
+	});
+
 	it('mintStreamingToken posts op "mintStreamingToken" and resolves with the relayed result', async () => {
 		let capturedOp: string | undefined;
 		let capturedPayload: unknown;
@@ -383,6 +430,7 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		expect(capturedPayload).toEqual({ targetId: "t1" });
 		expect(result).toEqual({ token: "tok-v2", expiresAt: 111 });
 		expect(wire?.enc).toBeTruthy();
+		expect(wire?.id).toMatch(UUID_RE);
 		expect(wire).not.toHaveProperty("op");
 		expect(wire).not.toHaveProperty("payload");
 	});
@@ -436,6 +484,7 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		const forgedEnc = await encryptFor(
 			wrongKey,
 			JSON.stringify({ ok: true, result: { evil: "wrong-key" } }),
+			`btp:res:${id}`,
 		);
 		window.dispatchEvent(
 			new MessageEvent("message", {
@@ -452,6 +501,7 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		const genuineEnc = await encryptFor(
 			key,
 			JSON.stringify({ ok: true, result: { token: "real-tok", expiresAt: 1 } }),
+			`btp:res:${id}`,
 		);
 		window.dispatchEvent(
 			new MessageEvent("message", {
@@ -526,37 +576,16 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		}
 	});
 
-	it('secret setter hygiene: set("") is ignored — the request still uses the degraded/plaintext path', async () => {
+	it('secret setter hygiene: set("") is ignored — subsequent requests fail closed (subtle present, no secret), never falling back to plaintext', async () => {
 		const { createProBridgeClient, setSecret } = await freshBridgeModule();
 		setSecret("");
 
-		let sawEncrypted = false;
-		installRelay(
-			() => ({ ok: true, result: [] }),
-			() => {
-				sawEncrypted = false;
-			},
-		);
-		vi.spyOn(window, "postMessage").mockImplementation((message: unknown) => {
-			if (isEncReq(message)) sawEncrypted = true;
-			if (!isProRequest(message)) return;
-			window.dispatchEvent(
-				new MessageEvent("message", {
-					data: {
-						type: "btp:pro-response",
-						id: message.id,
-						ok: true,
-						result: [],
-					},
-					source: window,
-				}),
-			);
-		});
+		const postSpy = vi.spyOn(window, "postMessage");
 
-		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual(
-			[],
+		await expect(createProBridgeClient().listTargets("p1")).rejects.toThrow(
+			/encryption secret not established/,
 		);
-		expect(sawEncrypted).toBe(false);
+		expect(postSpy).not.toHaveBeenCalled();
 	});
 
 	it("secret setter hygiene: setting a new secret replaces the old one for subsequent requests", async () => {
@@ -583,5 +612,100 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual({
 			round: 2,
 		});
+	});
+});
+
+describe("createProBridgeClient — contract v2.1: AAD id+direction binding, fail-closed", () => {
+	it("ignores a response rebound to a different request's id (same key, wrong AAD) — only the AAD-correct response resolves", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		const secret = "secret-rebind";
+		setSecret(secret);
+
+		let capturedId: string | undefined;
+		vi.spyOn(window, "postMessage").mockImplementation((message: unknown) => {
+			if (isEncReq(message)) capturedId = message.id;
+		});
+
+		const pending = createProBridgeClient().mintStreamingToken("t1");
+		await vi.waitFor(() => {
+			expect(capturedId).toBeDefined();
+		});
+		if (capturedId === undefined) {
+			throw new Error("encrypted request id was never captured");
+		}
+		const id = capturedId;
+		expect(id).toMatch(UUID_RE);
+
+		let settled = false;
+		pending.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+
+		// Encrypted under the correct key and posted under the real wire id
+		// (so it passes the id filter) — but bound to a DIFFERENT response's
+		// AAD ("btp:res:some-other-id"). This is the rebind attack: a
+		// genuine response recorded from one exchange and replayed onto this
+		// one's id. Pre-AAD, this would have decrypted cleanly under the
+		// shared key and resolved the wrong request; with AAD binding, GCM
+		// authentication fails because the AAD doesn't match the id it's
+		// posted under, so it must be dropped like any other forgery.
+		const key = await deriveTestKey(secret);
+		const reboundEnc = await encryptFor(
+			key,
+			JSON.stringify({ ok: true, result: { evil: "rebound" } }),
+			"btp:res:some-other-id",
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "btp:pro-response", id, enc: reboundEnc },
+				source: window,
+			}),
+		);
+
+		await wait(50);
+		expect(settled).toBe(false);
+
+		// The genuine AAD-correct response (same id, matching "btp:res:"+id
+		// AAD) resolves normally.
+		const genuineEnc = await encryptFor(
+			key,
+			JSON.stringify({ ok: true, result: { token: "real-tok", expiresAt: 1 } }),
+			`btp:res:${id}`,
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "btp:pro-response", id, enc: genuineEnc },
+				source: window,
+			}),
+		);
+
+		await expect(pending).resolves.toEqual({
+			token: "real-tok",
+			expiresAt: 1,
+		});
+	});
+
+	it("fails closed when crypto.subtle is present but no secret has been delivered — createIssue and transcribeBatch reject locally without ever posting a payload", async () => {
+		const { createProBridgeClient } = await freshBridgeModule();
+		// No setSecret() call: bridgeSecret stays unset on this fresh module
+		// instance, while crypto.subtle stays present (the ambient jsdom
+		// crypto forced at the top of this file, untouched by this suite).
+
+		const postSpy = vi.spyOn(window, "postMessage");
+		const client = createProBridgeClient();
+
+		await expect(
+			client.createIssue({ sessionId: "s1", prompt: "p" }),
+		).rejects.toThrow(/encryption secret not established/);
+		await expect(client.transcribeBatch("s1", "t1")).rejects.toThrow(
+			/encryption secret not established/,
+		);
+
+		expect(postSpy).not.toHaveBeenCalled();
 	});
 });

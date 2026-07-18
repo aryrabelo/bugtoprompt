@@ -179,7 +179,7 @@ async function callOverlay(
 
 /**
  * Inject the ISOLATED-world relay content script (P1, issue #82, wire
- * contract v2). Generates a fresh `secret = crypto.randomUUID()` per
+ * contract v2.1). Generates a fresh `secret = crypto.randomUUID()` per
  * injection and passes it as the relay's one `executeScript` arg. The relay
  * is a self-contained serialized function (no closures over this module —
  * it runs in the page's ISOLATED world) that derives an AES-GCM key from
@@ -188,22 +188,35 @@ async function callOverlay(
  * key to the service worker via `chrome.runtime.sendMessage` (ISOLATED-world
  * content scripts get a `chrome` global with extension messaging access —
  * page scripts never do), replying with an encrypted
- * `{type:"btp:pro-response", id, enc}`. A `__btpProRelay` flag on
- * `globalThis` makes re-injection into the same document a no-op (the relay
- * func returns `false`, and no new secret is seeded); only on a *fresh* init
- * (`true`) does this function also run a second MAIN-world injection that
- * hands the same secret to `window.__btpProBridgeSecret.set` (registered by
- * src/client/pro-bridge.ts at module load) — page scripts cannot observe an
- * executeScript evaluation, so a passive listener never sees the secret.
- * Plaintext requests are dropped whenever `crypto.subtle` exists; only on a
- * degraded insecure-http origin (no `subtle`, so no envelope is possible
- * anywhere) does the relay fall back to legacy v1 plaintext forwarding. The
- * real Bearer token lives only in the service worker; this relay never sees
- * or stores it. Documented residual: an active attacker who hijacks
- * `window.__btpProBridgeSecret.set` before pro-bridge.ts registers it (i.e.
- * before the bundle's own module-load runs) can still capture the secret —
- * equivalent to any other MAIN-world active-attack scenario, not a passive
- * one.
+ * `{type:"btp:pro-response", id, enc}`. Every encrypt/decrypt binds an
+ * `additionalData` AAD string to the *wire id and direction*
+ * (`"btp:req:" + id` for requests, `"btp:res:" + id` for responses), so an
+ * envelope captured off one wire id and replayed under another fails GCM
+ * authentication and is dropped — no cross-id mix-and-match. The relay also
+ * keeps a per-document `seenIds` set (FIFO-capped at 10,000): a request id
+ * is claimed synchronously before its async decrypt starts, so a duplicate
+ * arriving in the same message burst — or any later replay of a captured
+ * envelope — is dropped without a second decrypt or a second
+ * `sendMessage` forward; a garbage/undecryptable envelope releases its
+ * claim so a genuine retry under the same id isn't permanently poisoned. A
+ * `__btpProRelay` flag on `globalThis` makes re-injection into the same
+ * document a no-op (the relay func returns `false`, and no new secret is
+ * seeded); only on a *fresh* init (`true`) does this function also run a
+ * second MAIN-world injection that hands the same secret to
+ * `window.__btpProBridgeSecret.set` (registered by src/client/pro-bridge.ts
+ * at module load) — page scripts cannot observe an executeScript
+ * evaluation, so a passive listener never sees the secret. Plaintext
+ * requests are dropped whenever `crypto.subtle` exists; only on a degraded
+ * insecure-http origin (no `subtle`, so no envelope is possible anywhere)
+ * does the relay fall back to legacy v1 plaintext forwarding — that
+ * degraded path has neither AAD binding nor replay tracking (no crypto to
+ * distinguish an attacker's forged message from the client's; documented
+ * residual, unchanged from v1). The real Bearer token lives only in the
+ * service worker; this relay never sees or stores it. Documented residual:
+ * an active attacker who hijacks `window.__btpProBridgeSecret.set` before
+ * pro-bridge.ts registers it (i.e. before the bundle's own module-load
+ * runs) can still capture the secret — equivalent to any other MAIN-world
+ * active-attack scenario, not a passive one.
  */
 export async function injectProRelay(
 	chromeApi: ChromeLike,
@@ -273,12 +286,17 @@ export async function injectProRelay(
 			};
 			const encryptEnvelope = async (
 				obj: unknown,
+				aad: string,
 			): Promise<{ iv: string; data: string }> => {
 				const key = await getKey();
 				const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
 				const plain = new TextEncoder().encode(JSON.stringify(obj));
 				const cipher = await requireSubtle().encrypt(
-					{ name: "AES-GCM", iv },
+					{
+						name: "AES-GCM",
+						iv,
+						additionalData: new TextEncoder().encode(aad),
+					},
 					key,
 					plain,
 				);
@@ -287,17 +305,98 @@ export async function injectProRelay(
 					data: bytesToBase64(new Uint8Array(cipher)),
 				};
 			};
-			const decryptEnvelope = async (enc: {
-				iv: string;
-				data: string;
-			}): Promise<unknown> => {
+			const decryptEnvelope = async (
+				enc: { iv: string; data: string },
+				aad: string,
+			): Promise<unknown> => {
 				const key = await getKey();
 				const plain = await requireSubtle().decrypt(
-					{ name: "AES-GCM", iv: base64ToBytes(enc.iv) },
+					{
+						name: "AES-GCM",
+						iv: base64ToBytes(enc.iv),
+						additionalData: new TextEncoder().encode(aad),
+					},
 					key,
 					base64ToBytes(enc.data),
 				);
 				return JSON.parse(new TextDecoder().decode(plain));
+			};
+
+			// Per-document replay guard (wire contract v2.1 §2): a request id
+			// is claimed the instant it's seen, before the async decrypt even
+			// starts, so a duplicate arriving in the same message burst is
+			// dropped too, not just a later replay. FIFO-capped at 10,000 —
+			// oldest ids are evicted first; evicting an id whose claim was
+			// already released on decrypt failure is harmless (delete on an
+			// absent Set entry is a no-op). Not used by the degraded
+			// plaintext path below: there's no crypto there to tell an
+			// attacker's forged message apart from the client's, so replay
+			// tracking would be theater — documented residual, unchanged
+			// from v1.
+			const seenIds = new Set<string>();
+			const seenIdQueue: string[] = [];
+			const MAX_SEEN_IDS = 10_000;
+			const claimId = (id: string): void => {
+				seenIds.add(id);
+				seenIdQueue.push(id);
+				if (seenIdQueue.length > MAX_SEEN_IDS) {
+					const evicted = seenIdQueue.shift();
+					if (evicted !== undefined) seenIds.delete(evicted);
+				}
+			};
+			// Decrypt + forward one encrypted request. Split into two try
+			// blocks so the seenIds claim is only released on a decrypt/parse
+			// failure (garbage, or an envelope lifted from another wire id —
+			// AAD mismatch) — once sendMessage has actually run, the claim
+			// stays forever so a replay can never trigger a second forward.
+			const handleEncryptedRequest = async (
+				id: string,
+				enc: { iv: string; data: string },
+			): Promise<void> => {
+				let request: { op: string; payload?: unknown };
+				try {
+					const parsed = await decryptEnvelope(enc, `btp:req:${id}`);
+					if (
+						typeof parsed !== "object" ||
+						parsed === null ||
+						!("op" in parsed) ||
+						typeof (parsed as { op: unknown }).op !== "string"
+					) {
+						throw new Error("bad request shape");
+					}
+					request = parsed as { op: string; payload?: unknown };
+				} catch {
+					// Forged/garbage envelope, or a genuine envelope re-posted
+					// under a different wire id (AAD mismatch) — decrypt/parse
+					// failed before anything was forwarded. Release the
+					// tentative claim: a genuine retry under the same id must
+					// not be permanently poisoned by an attacker's garbage.
+					seenIds.delete(id);
+					return;
+				}
+				try {
+					const resp = await globalWithChrome.chrome.runtime
+						.sendMessage({
+							type: "btp:pro-request",
+							op: request.op,
+							payload: request.payload,
+						})
+						.catch((err: unknown) => ({ ok: false, error: String(err) }));
+					const respObj =
+						resp && typeof resp === "object"
+							? resp
+							: { ok: false, error: "empty response" };
+					const responseEnc = await encryptEnvelope(respObj, `btp:res:${id}`);
+					window.postMessage(
+						{ type: "btp:pro-response", id, enc: responseEnc },
+						"/",
+					);
+				} catch {
+					// sendMessage already ran (the op was forwarded exactly
+					// once) — only response re-encryption failed. Nothing safe
+					// to send back, so drop silently; the claim stays so a
+					// replay can't trigger a second forward.
+				}
 			};
 
 			window.addEventListener("message", (ev: MessageEvent) => {
@@ -318,49 +417,14 @@ export async function injectProRelay(
 
 				if (enc && typeof enc === "object") {
 					// Encrypted path: only requests that decrypt under this
-					// document's secret are ever forwarded — a page script without
-					// the secret cannot forge one (wire contract v2).
+					// document's secret and this exact wire id are ever
+					// forwarded — a page script without the secret can't forge
+					// one, and a captured envelope replayed or rebound to
+					// another id fails AAD auth (wire contract v2.1).
 					if (!subtle) return; // no subtle: a real envelope can't exist here
-					decryptEnvelope(enc as { iv: string; data: string })
-						.then((parsed) => {
-							if (
-								typeof parsed !== "object" ||
-								parsed === null ||
-								!("op" in parsed) ||
-								typeof (parsed as { op: unknown }).op !== "string"
-							) {
-								throw new Error("bad request shape");
-							}
-							const request = parsed as { op: string; payload?: unknown };
-							return globalWithChrome.chrome.runtime
-								.sendMessage({
-									type: "btp:pro-request",
-									op: request.op,
-									payload: request.payload,
-								})
-								.catch((err: unknown) => ({
-									ok: false,
-									error: String(err),
-								}))
-								.then((resp: unknown) => {
-									const respObj =
-										resp && typeof resp === "object"
-											? resp
-											: { ok: false, error: "empty response" };
-									return encryptEnvelope(respObj);
-								});
-						})
-						.then((responseEnc) => {
-							window.postMessage(
-								{ type: "btp:pro-response", id, enc: responseEnc },
-								"/",
-							);
-						})
-						.catch(() => {
-							// Forged/garbage envelope (decrypt or parse failed), or the
-							// response itself couldn't be encrypted — nothing safe to
-							// send back, so drop silently.
-						});
+					if (seenIds.has(id)) return; // replay: already claimed, drop
+					claimId(id); // tentative claim before the async decrypt
+					void handleEncryptedRequest(id, enc as { iv: string; data: string });
 					return;
 				}
 

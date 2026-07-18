@@ -742,8 +742,32 @@ describe("init btp:pro-request active-tab gate (P1, issue #82 finding 1)", () =>
 	});
 });
 
-describe("injectProRelay ISOLATED relay wire behavior (contract v2)", () => {
-	it("round-trips an encrypted request/response and drops a plaintext request while crypto.subtle is available", async () => {
+/**
+ * Node's WebCrypto `subtle` operations resolve via the platform async work
+ * queue, not pure microtasks, so a real macrotask tick — not just
+ * `Promise.resolve()` — is required to observe "the relay's async decrypt
+ * attempt settled without forwarding anything." Deterministic fake timers
+ * don't help here: they'd also intercept the real timer callbacks Node's
+ * WebCrypto implementation schedules internally.
+ */
+function tick(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, 0);
+	return promise;
+}
+
+describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
+	/**
+	 * Captures the relay func from a fresh `ensureOverlay` injection, resets
+	 * the `__btpProRelay` flag (it lives on the real `globalThis` — the relay
+	 * func can't close over module scope, so it can't be scoped per-test any
+	 * other way — and would otherwise make every `it` after the first see
+	 * the flag already set and skip listener registration), then invokes it
+	 * under stubbed `window`/`chrome` globals. Returns the captured listener
+	 * plus AAD-aware encrypt/decrypt helpers mirroring the relay's own
+	 * (`btp:req:`/`btp:res:` + wire id).
+	 */
+	async function setupRelay() {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, {
 			...DEFAULT_CONFIG,
@@ -776,46 +800,88 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2)", () => {
 		}));
 		vi.stubGlobal("window", stubWindow);
 		vi.stubGlobal("chrome", { runtime: { sendMessage } });
-		try {
-			expect(relayFunc(secret)).toBe(true);
-			const listener = listeners[0];
-			if (!listener) throw new Error("relay did not register a listener");
+		const flagged = globalThis as unknown as { __btpProRelay?: boolean };
+		delete flagged.__btpProRelay;
 
-			const rawKey = await crypto.subtle.digest(
-				"SHA-256",
-				new TextEncoder().encode(secret),
-			);
-			const key = await crypto.subtle.importKey(
-				"raw",
-				rawKey,
-				"AES-GCM",
-				false,
-				["encrypt", "decrypt"],
-			);
-			const toB64 = (bytes: Uint8Array): string => {
-				let binary = "";
-				for (let i = 0; i < bytes.length; i++) {
-					binary += String.fromCharCode(bytes[i]);
-				}
-				return btoa(binary);
-			};
-			const fromB64 = (b64: string): Uint8Array<ArrayBuffer> => {
-				const binary = atob(b64);
-				const bytes = new Uint8Array(binary.length);
-				for (let i = 0; i < binary.length; i++) {
-					bytes[i] = binary.charCodeAt(i);
-				}
-				return bytes;
-			};
+		expect(relayFunc(secret)).toBe(true);
+		const listener = listeners[0];
+		if (!listener) throw new Error("relay did not register a listener");
+
+		const rawKey = await crypto.subtle.digest(
+			"SHA-256",
+			new TextEncoder().encode(secret),
+		);
+		const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, [
+			"encrypt",
+			"decrypt",
+		]);
+		const toB64 = (bytes: Uint8Array): string => {
+			let binary = "";
+			for (let i = 0; i < bytes.length; i++) {
+				binary += String.fromCharCode(bytes[i]);
+			}
+			return btoa(binary);
+		};
+		const fromB64 = (b64: string): Uint8Array<ArrayBuffer> => {
+			const binary = atob(b64);
+			const bytes = new Uint8Array(binary.length);
+			for (let i = 0; i < binary.length; i++) {
+				bytes[i] = binary.charCodeAt(i);
+			}
+			return bytes;
+		};
+		const encryptWithAad = async (
+			obj: unknown,
+			aad: string,
+		): Promise<{ iv: string; data: string }> => {
 			const iv = crypto.getRandomValues(new Uint8Array(12));
 			const cipher = await crypto.subtle.encrypt(
-				{ name: "AES-GCM", iv },
+				{ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(aad) },
 				key,
-				new TextEncoder().encode(
-					JSON.stringify({ op: "mintStreamingToken", payload: {} }),
-				),
+				new TextEncoder().encode(JSON.stringify(obj)),
 			);
-			const enc = { iv: toB64(iv), data: toB64(new Uint8Array(cipher)) };
+			return { iv: toB64(iv), data: toB64(new Uint8Array(cipher)) };
+		};
+		const decryptWithAad = async (
+			enc: { iv: string; data: string },
+			aad: string,
+		): Promise<unknown> => {
+			const plain = await crypto.subtle.decrypt(
+				{
+					name: "AES-GCM",
+					iv: fromB64(enc.iv),
+					additionalData: new TextEncoder().encode(aad),
+				},
+				key,
+				fromB64(enc.data),
+			);
+			return JSON.parse(new TextDecoder().decode(plain));
+		};
+
+		return {
+			stubWindow,
+			listener,
+			posted,
+			sendMessage,
+			encryptWithAad,
+			decryptWithAad,
+		};
+	}
+
+	it("round-trips an AAD-bound encrypted request/response and drops a plaintext request while crypto.subtle is available", async () => {
+		const {
+			stubWindow,
+			listener,
+			posted,
+			sendMessage,
+			encryptWithAad,
+			decryptWithAad,
+		} = await setupRelay();
+		try {
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-1",
+			);
 
 			listener({
 				source: stubWindow,
@@ -832,12 +898,8 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2)", () => {
 			expect(respMsg?.type).toBe("btp:pro-response");
 			expect(respMsg?.id).toBe("req-1");
 			const respEnc = respMsg?.enc as { iv: string; data: string };
-			const plainResp = await crypto.subtle.decrypt(
-				{ name: "AES-GCM", iv: fromB64(respEnc.iv) },
-				key,
-				fromB64(respEnc.data),
-			);
-			expect(JSON.parse(new TextDecoder().decode(plainResp))).toEqual({
+			const decrypted = await decryptWithAad(respEnc, "btp:res:req-1");
+			expect(decrypted).toEqual({
 				ok: true,
 				result: { streamingToken: "abc" },
 			});
@@ -853,9 +915,120 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2)", () => {
 					payload: {},
 				},
 			} as unknown as MessageEvent);
-			await new Promise((resolve) => setTimeout(resolve, 0));
+			await tick();
 			expect(sendMessage).not.toHaveBeenCalled();
 			expect(posted).toHaveLength(0);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("drops a replayed encrypted request (same id posted twice) — forwards exactly once", async () => {
+		const { stubWindow, listener, posted, sendMessage, encryptWithAad } =
+			await setupRelay();
+		try {
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-replay",
+			);
+			const msg = {
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-replay", enc },
+			} as unknown as MessageEvent;
+
+			listener(msg);
+			await vi.waitFor(() => expect(posted).toHaveLength(1));
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+
+			listener(msg); // replay: identical envelope under the same wire id
+			await tick();
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+			expect(posted).toHaveLength(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("drops a request envelope rebound to a different wire id, but a correctly-bound envelope still round-trips its AAD", async () => {
+		const {
+			stubWindow,
+			listener,
+			posted,
+			sendMessage,
+			encryptWithAad,
+			decryptWithAad,
+		} = await setupRelay();
+		try {
+			// Encrypted for id "req-a"'s AAD, but posted under wire id "req-b" —
+			// GCM auth fails, so it must never reach sendMessage.
+			const encForA = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-a",
+			);
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-b", enc: encForA },
+			} as unknown as MessageEvent);
+			await tick();
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(posted).toHaveLength(0);
+
+			// Correctly-bound envelope still round-trips; response decrypts only
+			// under "btp:res:" + the same id.
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-c",
+			);
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-c", enc },
+			} as unknown as MessageEvent);
+			await vi.waitFor(() => expect(posted).toHaveLength(1));
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+			const respMsg = posted[0];
+			expect(respMsg?.id).toBe("req-c");
+			const respEnc = respMsg?.enc as { iv: string; data: string };
+			const decrypted = await decryptWithAad(respEnc, "btp:res:req-c");
+			expect(decrypted).toEqual({
+				ok: true,
+				result: { streamingToken: "abc" },
+			});
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("releases the replay claim after an undecryptable envelope, so a genuine request under the same id later forwards", async () => {
+		const { stubWindow, listener, posted, sendMessage, encryptWithAad } =
+			await setupRelay();
+		try {
+			// Undecryptable: valid ciphertext but bound to the wrong AAD, so it
+			// fails GCM auth under the id it's actually posted with.
+			const garbage = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:not-req-x",
+			);
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-x", enc: garbage },
+			} as unknown as MessageEvent);
+			await tick();
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(posted).toHaveLength(0);
+
+			// A genuine envelope under the SAME wire id proves the failed
+			// attempt released its tentative claim rather than poisoning it.
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-x",
+			);
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-x", enc },
+			} as unknown as MessageEvent);
+			await vi.waitFor(() => expect(posted).toHaveLength(1));
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+			expect(posted[0]?.id).toBe("req-x");
 		} finally {
 			vi.unstubAllGlobals();
 		}
