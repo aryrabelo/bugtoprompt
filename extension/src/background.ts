@@ -178,15 +178,32 @@ async function callOverlay(
 }
 
 /**
- * Inject the ISOLATED-world relay content script (P0, issue #82). Runs once
- * per document (guarded by a `__btpProRelay` flag on globalThis so a re-seed
- * on the same document is a no-op): listens for `window.postMessage({type:
- * "btp:pro-request", id, op, payload})` from the MAIN-world overlay, forwards
- * it to the service worker via `chrome.runtime.sendMessage` (ISOLATED-world
+ * Inject the ISOLATED-world relay content script (P1, issue #82, wire
+ * contract v2). Generates a fresh `secret = crypto.randomUUID()` per
+ * injection and passes it as the relay's one `executeScript` arg. The relay
+ * is a self-contained serialized function (no closures over this module —
+ * it runs in the page's ISOLATED world) that derives an AES-GCM key from
+ * SHA-256(secret), listens for `window.postMessage` requests from the
+ * MAIN-world overlay, and forwards only requests it can decrypt under that
+ * key to the service worker via `chrome.runtime.sendMessage` (ISOLATED-world
  * content scripts get a `chrome` global with extension messaging access —
- * page scripts never do), and posts the `{type:"btp:pro-response", id, ...}`
- * reply back. The real Bearer token lives only in the service worker; this
- * relay never sees or stores it.
+ * page scripts never do), replying with an encrypted
+ * `{type:"btp:pro-response", id, enc}`. A `__btpProRelay` flag on
+ * `globalThis` makes re-injection into the same document a no-op (the relay
+ * func returns `false`, and no new secret is seeded); only on a *fresh* init
+ * (`true`) does this function also run a second MAIN-world injection that
+ * hands the same secret to `window.__btpProBridgeSecret.set` (registered by
+ * src/client/pro-bridge.ts at module load) — page scripts cannot observe an
+ * executeScript evaluation, so a passive listener never sees the secret.
+ * Plaintext requests are dropped whenever `crypto.subtle` exists; only on a
+ * degraded insecure-http origin (no `subtle`, so no envelope is possible
+ * anywhere) does the relay fall back to legacy v1 plaintext forwarding. The
+ * real Bearer token lives only in the service worker; this relay never sees
+ * or stores it. Documented residual: an active attacker who hijacks
+ * `window.__btpProBridgeSecret.set` before pro-bridge.ts registers it (i.e.
+ * before the bundle's own module-load runs) can still capture the secret —
+ * equivalent to any other MAIN-world active-attack scenario, not a passive
+ * one.
  */
 export async function injectProRelay(
 	chromeApi: ChromeLike,
@@ -194,15 +211,95 @@ export async function injectProRelay(
 ): Promise<void> {
 	const scripting = chromeApi.scripting;
 	if (!scripting) return;
-	await scripting.executeScript({
+	const secret = crypto.randomUUID();
+	const results = await scripting.executeScript({
 		target: { tabId },
 		world: "ISOLATED",
-		func: () => {
+		func: (secret: string): boolean => {
 			// A well-known one-off global flag for content-script idempotency —
 			// not in Window's ambient type, so this is a genuine unchecked cast.
 			const flagged = globalThis as unknown as { __btpProRelay?: boolean };
-			if (flagged.__btpProRelay) return;
+			if (flagged.__btpProRelay) return false;
 			flagged.__btpProRelay = true;
+
+			// func is serialized into the page and can't close over module
+			// scope, so `chrome` (a content-script global, not in the ambient
+			// DOM lib here) is reached off globalThis instead of an import, and
+			// every crypto/base64 helper below is inlined rather than imported.
+			const globalWithChrome = globalThis as unknown as {
+				chrome: {
+					runtime: { sendMessage(msg: unknown): Promise<unknown> };
+				};
+			};
+			const subtle: SubtleCrypto | undefined = globalThis.crypto?.subtle;
+			// The encrypted paths below only run when an envelope exists, which
+			// requires subtle on both worlds — this guard narrows the type and
+			// turns an impossible state into a loud error instead of `!`.
+			const requireSubtle = (): SubtleCrypto => {
+				if (!subtle) throw new Error("crypto.subtle unavailable");
+				return subtle;
+			};
+
+			const bytesToBase64 = (bytes: Uint8Array): string => {
+				let binary = "";
+				for (let i = 0; i < bytes.length; i++) {
+					binary += String.fromCharCode(bytes[i]);
+				}
+				return btoa(binary);
+			};
+			const base64ToBytes = (b64: string): Uint8Array<ArrayBuffer> => {
+				const binary = atob(b64);
+				const bytes = new Uint8Array(binary.length);
+				for (let i = 0; i < binary.length; i++) {
+					bytes[i] = binary.charCodeAt(i);
+				}
+				return bytes;
+			};
+
+			let keyPromise: Promise<CryptoKey> | undefined;
+			const getKey = (): Promise<CryptoKey> => {
+				if (!keyPromise) {
+					const sub = requireSubtle();
+					keyPromise = sub
+						.digest("SHA-256", new TextEncoder().encode(secret))
+						.then((rawKey) =>
+							sub.importKey("raw", rawKey, "AES-GCM", false, [
+								"encrypt",
+								"decrypt",
+							]),
+						);
+				}
+				return keyPromise;
+			};
+			const encryptEnvelope = async (
+				obj: unknown,
+			): Promise<{ iv: string; data: string }> => {
+				const key = await getKey();
+				const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+				const plain = new TextEncoder().encode(JSON.stringify(obj));
+				const cipher = await requireSubtle().encrypt(
+					{ name: "AES-GCM", iv },
+					key,
+					plain,
+				);
+				return {
+					iv: bytesToBase64(iv),
+					data: bytesToBase64(new Uint8Array(cipher)),
+				};
+			};
+			const decryptEnvelope = async (enc: {
+				iv: string;
+				data: string;
+			}): Promise<unknown> => {
+				const key = await getKey();
+				const plain = await requireSubtle().decrypt(
+					{ name: "AES-GCM", iv: base64ToBytes(enc.iv) },
+					key,
+					base64ToBytes(enc.data),
+				);
+				return JSON.parse(new TextDecoder().decode(plain));
+			};
+
 			window.addEventListener("message", (ev: MessageEvent) => {
 				if (ev.source !== window) return;
 				const data: unknown = ev.data;
@@ -212,27 +309,66 @@ export async function injectProRelay(
 					!("type" in data) ||
 					data.type !== "btp:pro-request" ||
 					!("id" in data) ||
-					typeof data.id !== "string" ||
-					!("op" in data) ||
-					typeof data.op !== "string"
+					typeof data.id !== "string"
 				) {
 					return;
 				}
-				// The `in`/typeof checks above proved the shape at runtime; name the
-				// cast once instead of re-asserting per property access below.
-				const request = data as {
-					id: string;
-					op: string;
-					payload?: unknown;
-				};
-				// func is serialized into the page and can't close over module
-				// scope, so `chrome` (a content-script global, not in the ambient
-				// DOM lib here) is reached off globalThis instead of an import.
-				const globalWithChrome = globalThis as unknown as {
-					chrome: {
-						runtime: { sendMessage(msg: unknown): Promise<unknown> };
-					};
-				};
+				const id = data.id;
+				const enc = "enc" in data ? data.enc : undefined;
+
+				if (enc && typeof enc === "object") {
+					// Encrypted path: only requests that decrypt under this
+					// document's secret are ever forwarded — a page script without
+					// the secret cannot forge one (wire contract v2).
+					if (!subtle) return; // no subtle: a real envelope can't exist here
+					decryptEnvelope(enc as { iv: string; data: string })
+						.then((parsed) => {
+							if (
+								typeof parsed !== "object" ||
+								parsed === null ||
+								!("op" in parsed) ||
+								typeof (parsed as { op: unknown }).op !== "string"
+							) {
+								throw new Error("bad request shape");
+							}
+							const request = parsed as { op: string; payload?: unknown };
+							return globalWithChrome.chrome.runtime
+								.sendMessage({
+									type: "btp:pro-request",
+									op: request.op,
+									payload: request.payload,
+								})
+								.catch((err: unknown) => ({
+									ok: false,
+									error: String(err),
+								}))
+								.then((resp: unknown) => {
+									const respObj =
+										resp && typeof resp === "object"
+											? resp
+											: { ok: false, error: "empty response" };
+									return encryptEnvelope(respObj);
+								});
+						})
+						.then((responseEnc) => {
+							window.postMessage(
+								{ type: "btp:pro-response", id, enc: responseEnc },
+								"/",
+							);
+						})
+						.catch(() => {
+							// Forged/garbage envelope (decrypt or parse failed), or the
+							// response itself couldn't be encrypted — nothing safe to
+							// send back, so drop silently.
+						});
+					return;
+				}
+
+				if (!("op" in data) || typeof data.op !== "string") return;
+				if (subtle) return; // secure context: plaintext requests are dropped
+				// Degraded insecure-http origin (no crypto.subtle anywhere): fall
+				// back to legacy v1 plaintext forwarding.
+				const request = data as { op: string; payload?: unknown };
 				globalWithChrome.chrome.runtime
 					.sendMessage({
 						type: "btp:pro-request",
@@ -243,24 +379,34 @@ export async function injectProRelay(
 						if (!resp || typeof resp !== "object") {
 							throw new Error("empty response");
 						}
-						window.postMessage(
-							{ type: "btp:pro-response", id: request.id, ...resp },
-							"/",
-						);
+						window.postMessage({ type: "btp:pro-response", id, ...resp }, "/");
 					})
 					.catch((err: unknown) => {
 						window.postMessage(
-							{
-								type: "btp:pro-response",
-								id: request.id,
-								ok: false,
-								error: String(err),
-							},
+							{ type: "btp:pro-response", id, ok: false, error: String(err) },
 							"/",
 						);
 					});
 			});
+
+			return true;
 		},
+		args: [secret],
+	});
+	if (results?.[0]?.result !== true) return; // relay already resident: no fresh secret to seed
+	await scripting.executeScript({
+		target: { tabId },
+		world: "MAIN",
+		func: (s: string) => {
+			// window.__btpProBridgeSecret is defined by src/client/pro-bridge.ts
+			// at module load, not in the ambient Window type here — a genuine
+			// unchecked cast, matching the relay's own flag cast above.
+			const bridge = window as unknown as {
+				__btpProBridgeSecret?: { set?: (secret: string) => void };
+			};
+			bridge.__btpProBridgeSecret?.set?.(s);
+		},
+		args: [secret],
 	});
 }
 
@@ -350,15 +496,26 @@ const PRO_OPS: Record<string, ProOpSpec> = {
 };
 
 /**
- * Execute one PRO op on behalf of the ISOLATED-world relay (P0, issue #82).
- * This is the ONLY place the real Bearer token is read and attached — it
- * never leaves the service worker. Confused-deputy posture: any page script
- * on an actively-capturing tab can trigger these named ops (through the
- * relay), so the defense is a closed op table + payload shape validation + a
- * URL built only from the fixed PRO_BASE_URL constant (never the payload).
- * The residual risk is that a hostile page can drive mintStreamingToken /
- * saveArtifact / transcribeBatch / createIssue / listTargets while capture is
- * on — it can never observe or exfiltrate the token itself.
+ * Execute one PRO op on behalf of the ISOLATED-world relay (P0/P1, issue
+ * #82). This is the ONLY place the real Bearer token is read and attached —
+ * it never leaves the service worker. Two independent layers now gate a call
+ * ever reaching this function: (1) `init`'s `btp:pro-request` handler
+ * requires the sender's tab to be actively capturing (`isTabActive`) — a
+ * relay left resident on a tab after `deactivateTab` can no longer drive ops
+ * just by still being there; (2) in secure contexts the relay itself only
+ * forwards requests it decrypted under an AES-GCM envelope keyed by a
+ * per-injection secret that never crosses `window.postMessage` in the open
+ * (wire contract v2, see injectProRelay), so a generic page script observing
+ * postMessage traffic cannot forge one. The closed op table + payload shape
+ * validation + a URL built only from the fixed PRO_BASE_URL constant (never
+ * the payload) remain as defense in depth regardless. Two narrower residuals
+ * remain: (a) a degraded insecure-http origin, where no `crypto.subtle`
+ * exists anywhere and the relay falls back to legacy plaintext forwarding
+ * while the tab is active — any page script there can still drive ops,
+ * exactly as before; (b) an active attacker who hijacks
+ * `window.__btpProBridgeSecret.set` before pro-bridge.ts registers it,
+ * capturing the secret at seed time. Neither residual lets a page observe or
+ * exfiltrate the token itself.
  */
 export async function executeProOp(
 	chromeApi: ChromeLike,
@@ -557,15 +714,24 @@ export function init(chromeApi: ChromeLike): void {
 			return undefined;
 		}
 		if (type === "btp:pro-request") {
-			// Only accept requests carrying a real sender tab (a page context);
-			// drop anything else without invoking executeProOp.
-			if (!sender.tab) {
+			// Only accept requests carrying a real sender tab id, and only act on
+			// them while that tab is actively capturing — otherwise a relay left
+			// resident after deactivateTab (capture off) could still drive
+			// authenticated PRO ops (P1, issue #82 finding 1).
+			const tabId = sender.tab?.id;
+			if (typeof tabId !== "number") {
 				sendResponse({ ok: false, error: "unauthorized" });
 				return undefined;
 			}
-			const req = msg as { op?: unknown; payload?: unknown };
-			const op = typeof req.op === "string" ? req.op : "";
-			void executeProOp(chromeApi, op, req.payload).then(sendResponse);
+			void (async () => {
+				if (!(await isTabActive(chromeApi, tabId))) {
+					sendResponse({ ok: false, error: "unauthorized" });
+					return;
+				}
+				const req = msg as { op?: unknown; payload?: unknown };
+				const op = typeof req.op === "string" ? req.op : "";
+				sendResponse(await executeProOp(chromeApi, op, req.payload));
+			})();
 			return true; // async sendResponse
 		}
 		if (type === "btp:toggle" || type === "btp:state") {

@@ -174,6 +174,43 @@ describe("loadConfig / saveConfig", () => {
 		const cfg2 = await loadConfig(chromeApi);
 		expect(cfg2.proToken).toBe("legacy-sync-tok");
 	});
+
+	it("prefers a local proToken over a legacy sync one, leaves local untouched, and still scrubs sync", async () => {
+		const chromeApi = fakeChrome({ proToken: "legacy-sync-tok" });
+		await chromeApi.storage.local.set({ proToken: "local-tok" });
+
+		const cfg = await loadConfig(chromeApi);
+		expect(cfg.proToken).toBe("local-tok");
+
+		const localGet = await chromeApi.storage.local.get(["proToken"]);
+		expect(localGet.proToken).toBe("local-tok"); // never clobbered by the stale sync value
+
+		const syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBeUndefined();
+		expect(chromeApi.storage.sync.remove).toHaveBeenCalledWith("proToken");
+	});
+
+	it("retries the sync scrub after a failure without throwing or losing the token", async () => {
+		const chromeApi = fakeChrome({ proToken: "legacy-sync-tok" });
+		const realRemove = chromeApi.storage.sync.remove;
+		if (!realRemove) throw new Error("fakeChrome must provide sync.remove");
+		let calls = 0;
+		chromeApi.storage.sync.remove = vi.fn(async (keys: string | string[]) => {
+			calls++;
+			if (calls === 1) throw new Error("sync unavailable");
+			return realRemove(keys);
+		});
+
+		const cfg = await loadConfig(chromeApi);
+		expect(cfg.proToken).toBe("legacy-sync-tok");
+		let syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBe("legacy-sync-tok"); // scrub failed, copy retained for retry
+
+		const cfg2 = await loadConfig(chromeApi);
+		expect(cfg2.proToken).toBe("legacy-sync-tok");
+		syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBeUndefined(); // retried on the next call and succeeded
+	});
 });
 
 describe("candidateBaseUrls (sidecar auto-discovery order)", () => {

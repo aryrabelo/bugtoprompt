@@ -24,6 +24,12 @@ type UpdatedListener = (
 	tab: { url?: string },
 ) => void;
 
+type MessageListener = (
+	msg: unknown,
+	sender: { tab?: { id?: number; url?: string } },
+	sendResponse: (r?: unknown) => void,
+) => boolean | undefined;
+
 interface Harness {
 	chromeApi: ChromeLike;
 	pages: Map<number, PageState>;
@@ -32,6 +38,13 @@ interface Harness {
 	granted: Set<string>;
 	/** tabs.onUpdated listeners registered via init(). */
 	updatedListeners: UpdatedListener[];
+	/** runtime.onMessage listeners registered via init(). */
+	messageListeners: MessageListener[];
+	/** Controls whether the next ISOLATED-world relay injection reports as
+	 *  freshly initialized (result: true) — flip to false to simulate an
+	 *  already-resident relay on the document (injectProRelay then skips the
+	 *  MAIN-world secret seed). */
+	relayState: { fresh: boolean };
 }
 
 function makeHarness(): Harness {
@@ -49,6 +62,8 @@ function makeHarness(): Harness {
 	const localStore = new Map<string, unknown>();
 	const granted = new Set<string>();
 	const updatedListeners: UpdatedListener[] = [];
+	const messageListeners: MessageListener[] = [];
+	const relayState = { fresh: true };
 
 	const chromeApi: ChromeLike = {
 		storage: {
@@ -91,11 +106,22 @@ function makeHarness(): Harness {
 				const world = inj.world as string | undefined;
 				const files = inj.files as string[] | undefined;
 				const args = inj.args as unknown[] | undefined;
-				// The ISOLATED-world relay injection (injectProRelay) carries no
-				// args and isn't the MAIN-world config/js/mount flow — track it
-				// distinctly so tests can assert it fires only when PRO is on.
+				const func = inj.func as
+					| ((...fnArgs: unknown[]) => unknown)
+					| undefined;
+				// The ISOLATED-world relay injection (injectProRelay) carries the
+				// per-injection secret as its one arg; result reflects relayState so
+				// tests can simulate an already-resident relay (fresh: false) and
+				// assert the MAIN-world secret seeder is skipped in that case.
 				if (world === "ISOLATED") {
 					p.ops.push("inject-relay");
+					return [{ result: relayState.fresh }];
+				}
+				// The MAIN-world secret seeder (also part of injectProRelay) is
+				// distinguished from the general config-seed injection below by a
+				// marker in its serialized source, since both carry one string arg.
+				if (func?.toString().includes("__btpProBridgeSecret")) {
+					p.ops.push("inject-relay-secret");
 					return [{}];
 				}
 				if (files?.some((f) => f.includes("bugtoprompt.global.js"))) {
@@ -114,7 +140,6 @@ function makeHarness(): Harness {
 				p.ops.push("inject-config");
 				// Execute the real injected function against a stub window so tests
 				// can assert the exact MAIN-world config it seeds.
-				const func = inj.func as ((cfg: unknown) => void) | undefined;
 				if (func) {
 					const stub = {} as Window & typeof globalThis;
 					vi.stubGlobal("window", stub);
@@ -149,9 +174,24 @@ function makeHarness(): Harness {
 				}),
 			},
 		},
+		runtime: {
+			onMessage: {
+				addListener: vi.fn((cb: MessageListener) => {
+					messageListeners.push(cb);
+				}),
+			},
+		},
 	};
 
-	return { chromeApi, pages, page, granted, updatedListeners };
+	return {
+		chromeApi,
+		pages,
+		page,
+		granted,
+		updatedListeners,
+		messageListeners,
+		relayState,
+	};
 }
 
 describe("ensureOverlay injection order & idempotency", () => {
@@ -194,7 +234,7 @@ describe("ensureOverlay injection order & idempotency", () => {
 		expect(JSON.stringify(h.page(1).injectedGlobal)).not.toContain("sess-tok");
 	});
 
-	it("injects an ISOLATED-world relay script when a PRO session token is stored", async () => {
+	it("injects an ISOLATED-world relay script carrying a fresh per-injection secret when a PRO session token is stored", async () => {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, {
 			...DEFAULT_CONFIG,
@@ -208,6 +248,48 @@ describe("ensureOverlay injection order & idempotency", () => {
 			return injection.world === "ISOLATED";
 		});
 		expect(relayCall).toBeDefined();
+		const relayArgs = (relayCall?.[0] as Record<string, unknown>).args as
+			| unknown[]
+			| undefined;
+		expect(relayArgs).toHaveLength(1);
+		expect(typeof relayArgs?.[0]).toBe("string");
+		expect((relayArgs?.[0] as string).length).toBeGreaterThan(0);
+	});
+
+	it("seeds the MAIN-world secret bridge with the same secret, only when the relay newly initialized", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, {
+			...DEFAULT_CONFIG,
+			proToken: "sess-tok",
+		});
+		expect(h.page(1).ops).toContain("inject-relay-secret");
+		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
+		if (!exec) throw new Error("scripting missing");
+		const relayCall = exec.mock.calls.find(
+			([inj]) => (inj as Record<string, unknown>).world === "ISOLATED",
+		);
+		const seedCall = exec.mock.calls.find(([inj]) => {
+			const func = (inj as Record<string, unknown>).func as
+				| ((...a: unknown[]) => unknown)
+				| undefined;
+			return Boolean(func?.toString().includes("__btpProBridgeSecret"));
+		});
+		expect(seedCall).toBeDefined();
+		expect((seedCall?.[0] as Record<string, unknown>).world).toBe("MAIN");
+		const relaySecret = (relayCall?.[0] as Record<string, unknown>).args;
+		const seedArgs = (seedCall?.[0] as Record<string, unknown>).args;
+		expect(seedArgs).toEqual(relaySecret);
+	});
+
+	it("skips the MAIN-world secret seed when the relay is already resident on the document", async () => {
+		const h = makeHarness();
+		h.relayState.fresh = false;
+		await ensureOverlay(h.chromeApi, 1, {
+			...DEFAULT_CONFIG,
+			proToken: "sess-tok",
+		});
+		expect(h.page(1).ops).toContain("inject-relay");
+		expect(h.page(1).ops).not.toContain("inject-relay-secret");
 	});
 
 	it("does not inject a relay script when no PRO session token is stored", async () => {
@@ -529,6 +611,8 @@ describe("executeProOp (P0 token isolation, issue #82)", () => {
 		expect(call.url).toBe("https://api.bugtoprompt.com/streaming-token");
 		const headers = new Headers(call.init.headers);
 		expect(headers.get("Authorization")).toBe("Bearer test-token");
+		expect(call.init.method).toBe("POST");
+		expect(headers.get("Content-Type")).toBe("application/json");
 	});
 
 	it("rejects an unknown op without calling fetch", async () => {
@@ -570,5 +654,210 @@ describe("executeProOp (P0 token isolation, issue #82)", () => {
 		);
 		expect(result).toEqual({ ok: false, error: "invalid payload" });
 		expect(fetchStub).not.toHaveBeenCalled();
+	});
+});
+
+describe("init btp:pro-request active-tab gate (P1, issue #82 finding 1)", () => {
+	function captureMessageListener(h: Harness): MessageListener {
+		init(h.chromeApi);
+		const listener = h.messageListeners[0];
+		if (!listener) throw new Error("onMessage listener not registered");
+		return listener;
+	}
+
+	it("responds unauthorized synchronously when the sender has no tab id", () => {
+		const h = makeHarness();
+		const listener = captureMessageListener(h);
+		const sendResponse = vi.fn();
+		const result = listener(
+			{ type: "btp:pro-request", op: "mintStreamingToken", payload: {} },
+			{},
+			sendResponse,
+		);
+		expect(result).toBeUndefined();
+		expect(sendResponse).toHaveBeenCalledWith({
+			ok: false,
+			error: "unauthorized",
+		});
+	});
+
+	it("responds unauthorized and never calls fetch when the sender tab is not actively capturing, even with a stored PRO token", async () => {
+		const h = makeHarness();
+		await h.chromeApi.storage.local.set({ proToken: "test-token" });
+		const listener = captureMessageListener(h);
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+		try {
+			const sendResponse = vi.fn();
+			const result = listener(
+				{ type: "btp:pro-request", op: "mintStreamingToken", payload: {} },
+				{ tab: { id: 900 } },
+				sendResponse,
+			);
+			expect(result).toBe(true);
+			await vi.waitFor(() =>
+				expect(sendResponse).toHaveBeenCalledWith({
+					ok: false,
+					error: "unauthorized",
+				}),
+			);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("executes the op once the sender tab is actively capturing", async () => {
+		const h = makeHarness();
+		await h.chromeApi.storage.local.set({ proToken: "test-token" });
+		const listener = captureMessageListener(h);
+		const fetchSpy = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ streamingToken: "abc" }), {
+					status: 200,
+				}),
+		);
+		vi.stubGlobal("fetch", fetchSpy);
+		try {
+			const session = h.chromeApi.storage.session;
+			if (!session) throw new Error("session store missing");
+			await session.set({ "tab:901": { active: true } });
+			const sendResponse = vi.fn();
+			const result = listener(
+				{ type: "btp:pro-request", op: "mintStreamingToken", payload: {} },
+				{ tab: { id: 901 } },
+				sendResponse,
+			);
+			expect(result).toBe(true);
+			await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+			await vi.waitFor(() =>
+				expect(sendResponse).toHaveBeenCalledWith({
+					ok: true,
+					result: { streamingToken: "abc" },
+				}),
+			);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("injectProRelay ISOLATED relay wire behavior (contract v2)", () => {
+	it("round-trips an encrypted request/response and drops a plaintext request while crypto.subtle is available", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, {
+			...DEFAULT_CONFIG,
+			proToken: "sess-tok",
+		});
+		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
+		if (!exec) throw new Error("scripting missing");
+		const relayCall = exec.mock.calls.find(
+			([inj]) => (inj as Record<string, unknown>).world === "ISOLATED",
+		);
+		if (!relayCall) throw new Error("relay call not captured");
+		const relayInj = relayCall[0] as Record<string, unknown>;
+		const relayFunc = relayInj.func as (secret: string) => boolean;
+		const relayArgs = relayInj.args as unknown[];
+		const secret = relayArgs[0] as string;
+
+		const listeners: Array<(ev: MessageEvent) => void> = [];
+		const posted: Array<Record<string, unknown>> = [];
+		const stubWindow = {
+			addEventListener: (_type: string, cb: (ev: MessageEvent) => void) => {
+				listeners.push(cb);
+			},
+			postMessage: (msg: Record<string, unknown>) => {
+				posted.push(msg);
+			},
+		};
+		const sendMessage = vi.fn(async () => ({
+			ok: true,
+			result: { streamingToken: "abc" },
+		}));
+		vi.stubGlobal("window", stubWindow);
+		vi.stubGlobal("chrome", { runtime: { sendMessage } });
+		try {
+			expect(relayFunc(secret)).toBe(true);
+			const listener = listeners[0];
+			if (!listener) throw new Error("relay did not register a listener");
+
+			const rawKey = await crypto.subtle.digest(
+				"SHA-256",
+				new TextEncoder().encode(secret),
+			);
+			const key = await crypto.subtle.importKey(
+				"raw",
+				rawKey,
+				"AES-GCM",
+				false,
+				["encrypt", "decrypt"],
+			);
+			const toB64 = (bytes: Uint8Array): string => {
+				let binary = "";
+				for (let i = 0; i < bytes.length; i++) {
+					binary += String.fromCharCode(bytes[i]);
+				}
+				return btoa(binary);
+			};
+			const fromB64 = (b64: string): Uint8Array<ArrayBuffer> => {
+				const binary = atob(b64);
+				const bytes = new Uint8Array(binary.length);
+				for (let i = 0; i < binary.length; i++) {
+					bytes[i] = binary.charCodeAt(i);
+				}
+				return bytes;
+			};
+			const iv = crypto.getRandomValues(new Uint8Array(12));
+			const cipher = await crypto.subtle.encrypt(
+				{ name: "AES-GCM", iv },
+				key,
+				new TextEncoder().encode(
+					JSON.stringify({ op: "mintStreamingToken", payload: {} }),
+				),
+			);
+			const enc = { iv: toB64(iv), data: toB64(new Uint8Array(cipher)) };
+
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-1", enc },
+			} as unknown as MessageEvent);
+			await vi.waitFor(() => expect(posted).toHaveLength(1));
+
+			expect(sendMessage).toHaveBeenCalledWith({
+				type: "btp:pro-request",
+				op: "mintStreamingToken",
+				payload: {},
+			});
+			const respMsg = posted[0];
+			expect(respMsg?.type).toBe("btp:pro-response");
+			expect(respMsg?.id).toBe("req-1");
+			const respEnc = respMsg?.enc as { iv: string; data: string };
+			const plainResp = await crypto.subtle.decrypt(
+				{ name: "AES-GCM", iv: fromB64(respEnc.iv) },
+				key,
+				fromB64(respEnc.data),
+			);
+			expect(JSON.parse(new TextDecoder().decode(plainResp))).toEqual({
+				ok: true,
+				result: { streamingToken: "abc" },
+			});
+
+			sendMessage.mockClear();
+			posted.length = 0;
+			listener({
+				source: stubWindow,
+				data: {
+					type: "btp:pro-request",
+					id: "req-2",
+					op: "mintStreamingToken",
+					payload: {},
+				},
+			} as unknown as MessageEvent);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(sendMessage).not.toHaveBeenCalled();
+			expect(posted).toHaveLength(0);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

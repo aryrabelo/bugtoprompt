@@ -68,8 +68,11 @@ function readGlobalConfig(): Partial<BugToPromptProps> {
 	if (g.screenshotMode) cfg.screenshotMode = g.screenshotMode;
 	if (typeof g.autoVoice === "boolean") cfg.autoVoice = g.autoVoice;
 	if (typeof g.defaultOpen === "boolean") cfg.defaultOpen = g.defaultOpen;
-	// A bridged config (extension, issue #82) carries no token — it's proof
-	// enough that a page-owner token (`g.pro.token`) is present instead.
+	// Either a page-owner token (`g.pro.token`) or bridged mode (`g.pro.bridged`,
+	// extension issue #82) is a valid PRO credential — bridged mode has no
+	// page-accessible token at all; its guarantee is that authentication is
+	// delegated to the extension's service worker instead (the real token
+	// never enters page-accessible JS, see `client/pro-bridge.ts`).
 	if (g.pro?.baseUrl && (g.pro.token || g.pro.bridged === true)) {
 		const proBase = g.pro.baseUrl.replace(/\/+$/, "");
 		cfg.pro = g.pro.bridged

@@ -1,9 +1,10 @@
 /**
- * jsdom roundtrip tests for the MAIN-world PRO bridge client (P0 fix, issue
- * #82). A fake relay stands in for the extension's content script + service
- * worker: it answers every `btp:pro-request` with a scripted
- * `btp:pro-response`, dispatched as a real `message` event so the client's
- * `window.addEventListener("message", ...)` handling is exercised for real.
+ * jsdom roundtrip tests for the MAIN-world PRO bridge client, wire contract
+ * v2 (issue #82, findings 2+4). A fake relay stands in for the extension's
+ * content script + service worker: it answers every `btp:pro-request` with a
+ * scripted `btp:pro-response`, dispatched as a real `message` event so the
+ * client's `window.addEventListener("message", ...)` handling is exercised
+ * for real.
  *
  * The outbound leg is intercepted via a `window.postMessage` spy rather than
  * relying on jsdom to self-deliver the post — jsdom does not implement the
@@ -11,10 +12,38 @@
  * the document's own origin"; jsdom silently drops it), so a real
  * `postMessage(msg, "/")` never reaches this same window in tests. The spy
  * still asserts the client posted exactly the contract-shaped request.
+ *
+ * The legacy-plaintext suite below imports `createProBridgeClient` statically
+ * and never calls `window.__btpProBridgeSecret.set()` against that module
+ * instance — so it runs in degraded/no-secret mode explicitly, by
+ * construction, regardless of whether this jsdom process happens to expose
+ * `crypto.subtle`. The contract-v2 suite needs the opposite: a *fresh*
+ * `bridgeSecret` per test. Since that's module-scope state (by design — see
+ * pro-bridge.ts), the only way to reset it between tests is a fresh module
+ * instance, via `vi.resetModules()` + a dynamic `import()` (the same pattern
+ * `standalone.test.ts` uses for its own module-load-order test).
  */
+import { webcrypto } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Target } from "./index";
 import { createProBridgeClient } from "./pro-bridge";
+
+// jsdom does not implement SubtleCrypto. Node's own webcrypto is available
+// globally in this Vitest/Node process but jsdom's environment swap can
+// leave `crypto.subtle` undefined; back it with Node's webcrypto in that
+// case. A plain descriptor swap (not `vi.stubGlobal`) so this polyfill isn't
+// undone by any individual test's `vi.restoreAllMocks()`/`unstubAllGlobals()`.
+if (typeof crypto === "undefined" || !crypto.subtle) {
+	Object.defineProperty(globalThis, "crypto", {
+		value: webcrypto,
+		configurable: true,
+		writable: true,
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Legacy (v1) plaintext message shapes + relay
+// ---------------------------------------------------------------------------
 
 interface ProRequestMessage {
 	type: "btp:pro-request";
@@ -28,7 +57,8 @@ function isProRequest(data: unknown): data is ProRequestMessage {
 		typeof data === "object" &&
 		data !== null &&
 		"type" in data &&
-		data.type === "btp:pro-request"
+		data.type === "btp:pro-request" &&
+		"op" in data
 	);
 }
 
@@ -55,11 +85,174 @@ function installRelay(
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Contract v2 encrypted message shapes + crypto (independent of pro-bridge.ts
+// internals — mirrors the wire contract exactly, the same way a real
+// extension relay implementation would).
+// ---------------------------------------------------------------------------
+
+interface Envelope {
+	iv: string;
+	data: string;
+}
+
+interface ProEncryptedRequestMessage {
+	type: "btp:pro-request";
+	id: string;
+	enc: Envelope;
+}
+
+function isEncReq(data: unknown): data is ProEncryptedRequestMessage {
+	return (
+		typeof data === "object" &&
+		data !== null &&
+		"type" in data &&
+		data.type === "btp:pro-request" &&
+		"enc" in data
+	);
+}
+
+function toB64(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary);
+}
+
+function fromB64(b64: string): Uint8Array<ArrayBuffer> {
+	const binary = atob(b64);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+	return bytes;
+}
+
+async function deriveTestKey(secret: string): Promise<CryptoKey> {
+	const raw = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(secret),
+	);
+	return crypto.subtle.importKey("raw", raw, "AES-GCM", false, [
+		"encrypt",
+		"decrypt",
+	]);
+}
+
+async function encryptFor(
+	key: CryptoKey,
+	plaintext: string,
+): Promise<Envelope> {
+	const iv = crypto.getRandomValues(new Uint8Array(12));
+	const ct = await crypto.subtle.encrypt(
+		{ name: "AES-GCM", iv },
+		key,
+		new TextEncoder().encode(plaintext),
+	);
+	return { iv: toB64(iv), data: toB64(new Uint8Array(ct)) };
+}
+
+async function decryptWith(key: CryptoKey, enc: Envelope): Promise<string> {
+	const pt = await crypto.subtle.decrypt(
+		{ name: "AES-GCM", iv: fromB64(enc.iv) },
+		key,
+		fromB64(enc.data),
+	);
+	return new TextDecoder().decode(pt);
+}
+
+/** Install a fake v2 (encrypted) relay: decrypts every outbound request
+ *  under `secret`'s derived key, calls `respond`, and dispatches the
+ *  encrypted reply as a real `message` event — the same shape the
+ *  extension's ISOLATED-world relay produces. Requests that fail to decrypt
+ *  under `secret` are dropped (mirrors the real relay's "garbage in, silence
+ *  out" behavior) rather than crashing the test. */
+function installEncryptedRelay(
+	secret: string,
+	respond: (
+		op: string,
+		payload: unknown,
+	) => { ok: true; result: unknown } | { ok: false; error: string },
+	onRequest?: (
+		op: string,
+		payload: unknown,
+		wire: ProEncryptedRequestMessage,
+	) => void,
+): void {
+	const keyPromise = deriveTestKey(secret);
+	vi.spyOn(window, "postMessage").mockImplementation((message: unknown) => {
+		if (!isEncReq(message)) return;
+		void (async () => {
+			const key = await keyPromise;
+			let op: string;
+			let payload: unknown;
+			try {
+				const parsed: unknown = JSON.parse(await decryptWith(key, message.enc));
+				if (
+					!parsed ||
+					typeof parsed !== "object" ||
+					!("op" in parsed) ||
+					typeof parsed.op !== "string"
+				) {
+					return;
+				}
+				op = parsed.op;
+				payload = "payload" in parsed ? parsed.payload : undefined;
+			} catch {
+				return;
+			}
+			onRequest?.(op, payload, message);
+			const outcome = respond(op, payload);
+			const enc = await encryptFor(key, JSON.stringify(outcome));
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "btp:pro-response", id: message.id, enc },
+					source: window,
+				}),
+			);
+		})();
+	});
+}
+
+/** Fresh module instance of pro-bridge.ts, so `bridgeSecret` (module-scope,
+ *  by design) starts unset regardless of what earlier tests did. Re-runs the
+ *  module's top-level `window.__btpProBridgeSecret = { set(...) }`
+ *  registration, so `setSecret` below always targets the returned client's
+ *  own module instance — never a sibling test's. */
+async function freshBridgeModule(): Promise<{
+	createProBridgeClient: typeof createProBridgeClient;
+	setSecret: (secret: string) => void;
+}> {
+	vi.resetModules();
+	// Exception to ts-no-dynamic-import: module-loading boundary test — the
+	// module specifier is static, but we deliberately re-evaluate the module
+	// fresh so its module-scope `bridgeSecret` starts unset (mirrors
+	// standalone.test.ts's own resetModules()+dynamic-import pattern).
+	const mod = await import("./pro-bridge");
+	const setter = window.__btpProBridgeSecret;
+	if (!setter) {
+		throw new Error(
+			"pro-bridge.ts did not register window.__btpProBridgeSecret",
+		);
+	}
+	return {
+		createProBridgeClient: mod.createProBridgeClient,
+		setSecret: (secret: string) => setter.set(secret),
+	};
+}
+
+/** Real wall-clock wait. Exception to ts-no-test-timers: proving the
+ *  client's promise does *not* settle on a forged response has no event to
+ *  await — there is no "nothing happened" signal — so a short, bounded
+ *  delay is the only way to assert that negative. Kept short and used once. */
+function wait(ms: number): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, ms);
+	return promise;
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("createProBridgeClient (P0 fix, issue #82)", () => {
+describe("createProBridgeClient (P0 fix, issue #82) — legacy v1 plaintext relay, degraded/no-secret mode", () => {
 	it('mintStreamingToken posts op "mintStreamingToken" and resolves with the relayed result', async () => {
 		let capturedOp: string | undefined;
 		let capturedPayload: unknown;
@@ -86,7 +279,21 @@ describe("createProBridgeClient (P0 fix, issue #82)", () => {
 		);
 	});
 
-	it("saveArtifact/transcribeBatch/createIssue/listTargets post the exact contract op + payload", async () => {
+	it("saveArtifact rejects locally without posting anything — capture bytes must never leave the page plaintext", async () => {
+		const postSpy = vi.spyOn(window, "postMessage");
+
+		await expect(
+			createProBridgeClient().saveArtifact({
+				artifact: { sessionId: "s1" } as never,
+				audioBase64: "aa",
+				screenshotsBase64: ["bb"],
+			}),
+		).rejects.toThrow(/refusing to send capture bytes/);
+
+		expect(postSpy).not.toHaveBeenCalled();
+	});
+
+	it("transcribeBatch/createIssue/listTargets post the exact contract op + payload", async () => {
 		const seen: { op: string; payload: unknown }[] = [];
 		installRelay(
 			() => ({ ok: true, result: {} }),
@@ -94,24 +301,11 @@ describe("createProBridgeClient (P0 fix, issue #82)", () => {
 		);
 		const client = createProBridgeClient();
 
-		await client.saveArtifact({
-			artifact: { sessionId: "s1" } as never,
-			audioBase64: "aa",
-			screenshotsBase64: ["bb"],
-		});
 		await client.transcribeBatch("s1", "t1");
 		await client.createIssue({ sessionId: "s1", prompt: "p" });
 		await client.listTargets("proj-1");
 
 		expect(seen).toEqual([
-			{
-				op: "saveArtifact",
-				payload: {
-					artifact: { sessionId: "s1" },
-					audioBase64: "aa",
-					screenshotsBase64: ["bb"],
-				},
-			},
 			{ op: "transcribeBatch", payload: { sessionId: "s1", targetId: "t1" } },
 			{ op: "createIssue", payload: { sessionId: "s1", prompt: "p" } },
 			{ op: "listTargets", payload: { projectId: "proj-1" } },
@@ -129,7 +323,10 @@ describe("createProBridgeClient (P0 fix, issue #82)", () => {
 
 	it("matches concurrent requests to their own response by id (no cross-talk)", async () => {
 		installRelay((_op, payload) => {
-			const targetId = (payload as { targetId?: string }).targetId;
+			const targetId =
+				payload && typeof payload === "object" && "targetId" in payload
+					? payload.targetId
+					: undefined;
 			return { ok: true, result: { token: `tok-${targetId}`, expiresAt: 0 } };
 		});
 		const client = createProBridgeClient();
@@ -158,5 +355,233 @@ describe("createProBridgeClient (P0 fix, issue #82)", () => {
 		).length;
 		expect(adds).toBe(1);
 		expect(removes).toBe(1);
+	});
+});
+
+describe("createProBridgeClient — contract v2 encrypted relay", () => {
+	it("encrypted round trip: the wire request carries only `enc` (no plaintext op/payload); response resolves with the relayed result", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		const secret = "secret-A";
+		setSecret(secret);
+
+		let capturedOp: string | undefined;
+		let capturedPayload: unknown;
+		let wire: ProEncryptedRequestMessage | undefined;
+		installEncryptedRelay(
+			secret,
+			() => ({ ok: true, result: { token: "tok-v2", expiresAt: 111 } }),
+			(op, payload, msg) => {
+				capturedOp = op;
+				capturedPayload = payload;
+				wire = msg;
+			},
+		);
+
+		const result = await createProBridgeClient().mintStreamingToken("t1");
+
+		expect(capturedOp).toBe("mintStreamingToken");
+		expect(capturedPayload).toEqual({ targetId: "t1" });
+		expect(result).toEqual({ token: "tok-v2", expiresAt: 111 });
+		expect(wire?.enc).toBeTruthy();
+		expect(wire).not.toHaveProperty("op");
+		expect(wire).not.toHaveProperty("payload");
+	});
+
+	it("ignores a plaintext-shaped forged response and an enc response under the wrong key — only the genuine encrypted reply resolves the request", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		const secret = "secret-B";
+		setSecret(secret);
+
+		let capturedId: string | undefined;
+		vi.spyOn(window, "postMessage").mockImplementation((message: unknown) => {
+			if (isEncReq(message)) capturedId = message.id;
+		});
+
+		const pending = createProBridgeClient().mintStreamingToken("t1");
+		await vi.waitFor(() => {
+			expect(capturedId).toBeDefined();
+		});
+		if (capturedId === undefined) {
+			throw new Error("encrypted request id was never captured");
+		}
+		const id = capturedId;
+
+		let settled = false;
+		pending.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+
+		// (a) plaintext-shaped forged response, correct id — ignored in
+		// encrypted mode because it has no `enc` field.
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "btp:pro-response",
+					id,
+					ok: true,
+					result: { evil: "plaintext" },
+				},
+				source: window,
+			}),
+		);
+
+		// (b) enc response encrypted under a DIFFERENT key, correct id —
+		// decrypts to garbage/fails auth and is dropped.
+		const wrongKey = await deriveTestKey("a-completely-different-secret");
+		const forgedEnc = await encryptFor(
+			wrongKey,
+			JSON.stringify({ ok: true, result: { evil: "wrong-key" } }),
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "btp:pro-response", id, enc: forgedEnc },
+				source: window,
+			}),
+		);
+
+		await wait(50);
+		expect(settled).toBe(false);
+
+		// (c) the genuine encrypted response, same id, correct key — resolves.
+		const key = await deriveTestKey(secret);
+		const genuineEnc = await encryptFor(
+			key,
+			JSON.stringify({ ok: true, result: { token: "real-tok", expiresAt: 1 } }),
+		);
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: { type: "btp:pro-response", id, enc: genuineEnc },
+				source: window,
+			}),
+		);
+
+		await expect(pending).resolves.toEqual({
+			token: "real-tok",
+			expiresAt: 1,
+		});
+	});
+
+	it("saveArtifact (encrypted mode): the wire message contains neither the audio nor screenshot base64 bytes", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		const secret = "secret-C";
+		setSecret(secret);
+
+		let wireJson: string | undefined;
+		installEncryptedRelay(
+			secret,
+			() => ({ ok: true, result: { dir: "d", sessionId: "s1" } }),
+			(_op, _payload, wire) => {
+				wireJson = JSON.stringify(wire);
+			},
+		);
+
+		await createProBridgeClient().saveArtifact({
+			artifact: { sessionId: "s1" } as never,
+			audioBase64: "AUDIO_MARKER_BASE64_BYTES",
+			screenshotsBase64: ["SCREENSHOT_MARKER_BASE64_BYTES"],
+		});
+
+		if (wireJson === undefined) {
+			throw new Error("wire message was never captured");
+		}
+		expect(wireJson).not.toContain("AUDIO_MARKER_BASE64_BYTES");
+		expect(wireJson).not.toContain("SCREENSHOT_MARKER_BASE64_BYTES");
+	});
+
+	it("saveArtifact (degraded mode, no crypto.subtle): rejects locally without ever posting the payload", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		setSecret("secret-D"); // a delivered secret alone isn't enough without subtle.
+
+		const originalCrypto = globalThis.crypto;
+		Object.defineProperty(globalThis, "crypto", {
+			value: {
+				getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+			},
+			configurable: true,
+			writable: true,
+		});
+		try {
+			const postSpy = vi.spyOn(window, "postMessage");
+
+			await expect(
+				createProBridgeClient().saveArtifact({
+					artifact: { sessionId: "s1" } as never,
+					audioBase64: "aa",
+					screenshotsBase64: ["bb"],
+				}),
+			).rejects.toThrow(/refusing to send capture bytes/);
+
+			expect(postSpy).not.toHaveBeenCalled();
+		} finally {
+			Object.defineProperty(globalThis, "crypto", {
+				value: originalCrypto,
+				configurable: true,
+				writable: true,
+			});
+		}
+	});
+
+	it('secret setter hygiene: set("") is ignored — the request still uses the degraded/plaintext path', async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+		setSecret("");
+
+		let sawEncrypted = false;
+		installRelay(
+			() => ({ ok: true, result: [] }),
+			() => {
+				sawEncrypted = false;
+			},
+		);
+		vi.spyOn(window, "postMessage").mockImplementation((message: unknown) => {
+			if (isEncReq(message)) sawEncrypted = true;
+			if (!isProRequest(message)) return;
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "btp:pro-response",
+						id: message.id,
+						ok: true,
+						result: [],
+					},
+					source: window,
+				}),
+			);
+		});
+
+		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual(
+			[],
+		);
+		expect(sawEncrypted).toBe(false);
+	});
+
+	it("secret setter hygiene: setting a new secret replaces the old one for subsequent requests", async () => {
+		const { createProBridgeClient, setSecret } = await freshBridgeModule();
+
+		setSecret("secret-old");
+		installEncryptedRelay("secret-old", () => ({
+			ok: true,
+			result: { round: 1 },
+		}));
+		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual({
+			round: 1,
+		});
+		vi.restoreAllMocks();
+
+		// A relay keyed to the NEW secret only succeeds if the client actually
+		// re-derived its key — a stale cached key from "secret-old" would fail
+		// to decrypt against this relay and the request would never resolve.
+		setSecret("secret-new");
+		installEncryptedRelay("secret-new", () => ({
+			ok: true,
+			result: { round: 2 },
+		}));
+		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual({
+			round: 2,
+		});
 	});
 });

@@ -383,30 +383,45 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 }
 
 /** Load the stored config, falling back to defaults for any unset/invalid field.
- *  proToken lives in chrome.storage.local (a credential, never synced); this
- *  also runs a one-shot migration off an older chrome.storage.sync copy so
- *  the token stops propagating to every signed-in device. */
+ *  proToken lives in chrome.storage.local (a credential, never synced); a local
+ *  token always wins over a legacy chrome.storage.sync copy. The legacy-sync
+ *  scrub runs unconditionally (independent of local-token precedence) so a
+ *  stale synced token can never resurrect a stale session on another device:
+ *  it is migrated to local only when no local token exists yet (never clobber
+ *  a newer local token), then the sync copy is always removed. The migrate
+ *  write happens before the scrub attempt so a crash between the two never
+ *  leaves zero copies. The scrub itself is wrapped in try/catch — on failure
+ *  the sync copy is left in place and retried the next time loadConfig runs
+ *  (every SW operation), so a transient failure can't strand the legacy token
+ *  forever. */
 export async function loadConfig(chromeApi: ChromeLike): Promise<SyncConfig> {
 	const raw = await chromeApi.storage.sync.get([...SYNC_KEYS, "proToken"]);
 	const cfg = coerceConfig(raw ?? {});
 	const local = await chromeApi.storage.local.get(["proToken"]);
 	const localToken =
 		typeof local?.proToken === "string" ? local.proToken.trim() : "";
-	if (localToken) {
-		cfg.proToken = localToken;
-		return cfg;
-	}
 	const legacyToken =
 		typeof raw?.proToken === "string" ? raw.proToken.trim() : "";
 	if (legacyToken) {
-		cfg.proToken = legacyToken;
-		await chromeApi.storage.local.set({ proToken: legacyToken });
-		if (chromeApi.storage.sync.remove) {
-			await chromeApi.storage.sync.remove("proToken");
-		} else {
-			await chromeApi.storage.sync.set({ proToken: "" });
+		// Migrate first (never clobbering a newer local token), THEN scrub —
+		// that order is what keeps a crash between the two from ever leaving
+		// the user with zero copies of the token.
+		if (!localToken) {
+			await chromeApi.storage.local.set({ proToken: legacyToken });
+		}
+		try {
+			if (chromeApi.storage.sync.remove) {
+				await chromeApi.storage.sync.remove("proToken");
+			} else {
+				await chromeApi.storage.sync.set({ proToken: "" });
+			}
+		} catch {
+			// Scrub failed (e.g. offline) — leave the legacy copy in sync and
+			// retry on the next loadConfig call. Never let this throw or cost
+			// the user their session.
 		}
 	}
+	cfg.proToken = localToken || legacyToken;
 	return cfg;
 }
 
