@@ -1033,4 +1033,66 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 			vi.unstubAllGlobals();
 		}
 	});
+	it("round-3 P0 regression: a >10k flood of secret-less garbage cannot evict a processed id — replaying the captured genuine ciphertext never forwards twice", async () => {
+		const { stubWindow, listener, posted, sendMessage, encryptWithAad } =
+			await setupRelay();
+		try {
+			// 1. One genuine op forwards (and its id becomes processed).
+			const enc = await encryptWithAad(
+				{ op: "createIssue", payload: { sessionId: "s1", prompt: "p" } },
+				"btp:req:req-victim",
+			);
+			const genuine = {
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-victim", enc },
+			} as unknown as MessageEvent;
+			listener(genuine);
+			await vi.waitFor(() => expect(posted).toHaveLength(1));
+			expect(sendMessage).toHaveBeenCalledTimes(1);
+
+			// 2. The exploit: flood more than the FIFO cap with cheap
+			// envelopes an attacker can mint WITHOUT the secret (they never
+			// decrypt). Under the round-2 guard these advanced the eviction
+			// queue at claim time and pushed req-victim out of the replay
+			// window; now only successful decrypts can advance it.
+			const garbage = { iv: "AAAAAAAAAAAAAAAA", data: "Z2FyYmFnZQ==" };
+			for (let i = 0; i < 10_001; i++) {
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: `flood-${i}`, enc: garbage },
+				} as unknown as MessageEvent);
+			}
+			await tick();
+
+			// 3. Replay the passively-captured genuine ciphertext.
+			listener(genuine);
+			await tick();
+			expect(sendMessage).toHaveBeenCalledTimes(1); // exactly once, ever
+			expect(posted).toHaveLength(1);
+
+			// 4. The in-flight flood guard is transient: once the garbage
+			// decrypt failures settle, a fresh genuine op still forwards.
+			const encAfter = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-after",
+			);
+			await vi.waitFor(() => {
+				// Re-posting on retry is safe: a drop from a full in-flight
+				// set records nothing, and a success makes later posts
+				// replay-drops without a second forward.
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: "req-after", enc: encAfter },
+				} as unknown as MessageEvent);
+				expect(sendMessage).toHaveBeenCalledTimes(2);
+			});
+			expect(sendMessage).toHaveBeenLastCalledWith({
+				type: "btp:pro-request",
+				op: "mintStreamingToken",
+				payload: {},
+			});
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });

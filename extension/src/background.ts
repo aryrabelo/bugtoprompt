@@ -193,12 +193,14 @@ async function callOverlay(
  * (`"btp:req:" + id` for requests, `"btp:res:" + id` for responses), so an
  * envelope captured off one wire id and replayed under another fails GCM
  * authentication and is dropped — no cross-id mix-and-match. The relay also
- * keeps a per-document `seenIds` set (FIFO-capped at 10,000): a request id
- * is claimed synchronously before its async decrypt starts, so a duplicate
- * arriving in the same message burst — or any later replay of a captured
- * envelope — is dropped without a second decrypt or a second
- * `sendMessage` forward; a garbage/undecryptable envelope releases its
- * claim so a genuine retry under the same id isn't permanently poisoned. A
+ * keeps a per-document replay guard split into two structures (round 3):
+ * a bounded `inflightIds` set of tentative claims taken synchronously
+ * before each async decrypt (released on decrypt failure, so garbage never
+ * poisons a genuine id), and a `processedIds` set (FIFO-capped at 10,000)
+ * that ids enter ONLY after a successful decrypt — eviction is therefore
+ * driven exclusively by authenticated traffic, so a flood of secret-less
+ * garbage can never push an already-forwarded id out of the window and
+ * make its captured ciphertext replayable. A
  * `__btpProRelay` flag on `globalThis` makes re-injection into the same
  * document a no-op (the relay func returns `false`, and no new secret is
  * seeded); only on a *fresh* init (`true`) does this function also run a
@@ -322,33 +324,50 @@ export async function injectProRelay(
 				return JSON.parse(new TextDecoder().decode(plain));
 			};
 
-			// Per-document replay guard (wire contract v2.1 §2): a request id
-			// is claimed the instant it's seen, before the async decrypt even
-			// starts, so a duplicate arriving in the same message burst is
-			// dropped too, not just a later replay. FIFO-capped at 10,000 —
-			// oldest ids are evicted first; evicting an id whose claim was
-			// already released on decrypt failure is harmless (delete on an
-			// absent Set entry is a no-op). Not used by the degraded
-			// plaintext path below: there's no crypto there to tell an
-			// attacker's forged message apart from the client's, so replay
-			// tracking would be theater — documented residual, unchanged
-			// from v1.
-			const seenIds = new Set<string>();
-			const seenIdQueue: string[] = [];
-			const MAX_SEEN_IDS = 10_000;
-			const claimId = (id: string): void => {
-				seenIds.add(id);
-				seenIdQueue.push(id);
-				if (seenIdQueue.length > MAX_SEEN_IDS) {
-					const evicted = seenIdQueue.shift();
-					if (evicted !== undefined) seenIds.delete(evicted);
+			// Per-document replay guard (wire contract v2.1 §2, hardened in
+			// round 3): TWO structures, so unauthenticated traffic can never
+			// evict a genuine processed id out of the replay window.
+			//  - `inflightIds`: tentative claims, taken synchronously the
+			//    instant a wire id is first seen — before its async decrypt
+			//    starts — so a duplicate arriving in the same message burst
+			//    is dropped too. Released on decrypt/parse failure (garbage
+			//    must not poison a genuine id). Capped: under a flood of
+			//    secret-less envelopes, NEW requests are dropped while the
+			//    flood drains (fail closed — a transient DoS at worst)
+			//    instead of the set growing without bound.
+			//  - `processedIds`: ids whose decrypt SUCCEEDED. Enqueued into
+			//    the evictable FIFO only at that point, so only
+			//    authenticated envelopes — which require the secret — can
+			//    advance the eviction window. A captured genuine ciphertext
+			//    replayed after any amount of garbage flooding still hits
+			//    this set and is dropped (the round-3 P0: eviction driven by
+			//    claim-time enqueueing let cheap garbage push a forwarded id
+			//    out of the window and replay it).
+			// Not used by the degraded plaintext path below: there's no
+			// crypto there to tell an attacker's forged message apart from
+			// the client's, so replay tracking would be theater — documented
+			// residual, unchanged from v1.
+			const inflightIds = new Set<string>();
+			const MAX_INFLIGHT_IDS = 1_000;
+			const processedIds = new Set<string>();
+			const processedQueue: string[] = [];
+			const MAX_PROCESSED_IDS = 10_000;
+			const markProcessed = (id: string): void => {
+				inflightIds.delete(id);
+				processedIds.add(id);
+				processedQueue.push(id);
+				if (processedQueue.length > MAX_PROCESSED_IDS) {
+					const evicted = processedQueue.shift();
+					if (evicted !== undefined) processedIds.delete(evicted);
 				}
 			};
 			// Decrypt + forward one encrypted request. Split into two try
-			// blocks so the seenIds claim is only released on a decrypt/parse
-			// failure (garbage, or an envelope lifted from another wire id —
-			// AAD mismatch) — once sendMessage has actually run, the claim
-			// stays forever so a replay can never trigger a second forward.
+			// blocks so the tentative in-flight claim is only released on a
+			// decrypt/parse failure (garbage, or an envelope lifted from
+			// another wire id — AAD mismatch); the moment decrypt succeeds
+			// the id is marked processed FOREVER (document lifetime, modulo
+			// the authenticated-only FIFO cap), so a replay can never
+			// trigger a second forward.
 			const handleEncryptedRequest = async (
 				id: string,
 				enc: { iv: string; data: string },
@@ -371,9 +390,14 @@ export async function injectProRelay(
 					// failed before anything was forwarded. Release the
 					// tentative claim: a genuine retry under the same id must
 					// not be permanently poisoned by an attacker's garbage.
-					seenIds.delete(id);
+					inflightIds.delete(id);
 					return;
 				}
+				// Decrypt succeeded under this document's secret: promote the
+				// id to the processed set BEFORE forwarding, so nothing —
+				// including a concurrent replay racing the forward — can run
+				// the op twice.
+				markProcessed(id);
 				try {
 					const resp = await globalWithChrome.chrome.runtime
 						.sendMessage({
@@ -422,8 +446,14 @@ export async function injectProRelay(
 					// one, and a captured envelope replayed or rebound to
 					// another id fails AAD auth (wire contract v2.1).
 					if (!subtle) return; // no subtle: a real envelope can't exist here
-					if (seenIds.has(id)) return; // replay: already claimed, drop
-					claimId(id); // tentative claim before the async decrypt
+					// Replay or same-burst duplicate: processed ids are
+					// permanent (authenticated-only FIFO); in-flight ids are
+					// tentative. Either way, drop without a second decrypt.
+					if (processedIds.has(id) || inflightIds.has(id)) return;
+					// Flood guard: bounded tentative claims — under a burst of
+					// secret-less garbage, fail closed instead of growing.
+					if (inflightIds.size >= MAX_INFLIGHT_IDS) return;
+					inflightIds.add(id); // tentative claim before the async decrypt
 					void handleEncryptedRequest(id, enc as { iv: string; data: string });
 					return;
 				}
