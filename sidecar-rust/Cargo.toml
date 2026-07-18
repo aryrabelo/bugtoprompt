@@ -21,6 +21,7 @@ sha2 = "0.10"
 rand = "0.8"
 parking_lot = "0.12"
 url = "2"
+plist = "1"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "blocking"] }

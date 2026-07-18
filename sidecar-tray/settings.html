@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<!--
+  BugToPrompt Settings UI (issue #58, PRD §8). Self-contained: no network, no
+  bundler. Loaded into a wry (Tauri) webview by `settings_window.rs` via
+  include_str!. Talks to Rust over wry IPC:
+    JS → Rust: window.ipc.postMessage(JSON.stringify({type, ...}))
+    Rust → JS: window.__btp.onState / onUvxStatus / onInstallProgress / onSaved
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BugToPrompt Settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0; padding: 16px; background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .status { color: #2e7d32; font-weight: 600; margin-bottom: 14px; }
+  fieldset {
+    border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+    border-radius: 8px; margin: 0 0 14px; padding: 12px 14px;
+  }
+  legend { font-weight: 600; padding: 0 4px; }
+  label, .grouplabel { display: block; margin: 8px 0 3px; font-weight: 500; }
+  input, select {
+    font: inherit; padding: 5px 7px; width: 100%;
+    border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+    border-radius: 5px; background: Field; color: FieldText;
+  }
+  input:disabled, select:disabled { opacity: .5; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 5px 0; }
+  .row input { flex: 1; }
+  button {
+    font: inherit; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+    background: color-mix(in srgb, CanvasText 8%, Canvas);
+    color: CanvasText;
+  }
+  button.primary { background: #0a66c2; color: #fff; border-color: #0a66c2; }
+  button.icon { padding: 4px 9px; }
+  .uvx { margin: 6px 0; }
+  .uvx .ready { color: #2e7d32; }
+  .uvx .missing { color: #c62828; }
+  .hint { opacity: .6; font-size: 12px; }
+  .actions { display: flex; justify-content: space-between; margin-top: 4px; }
+  #installLog { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .8; }
+</style>
+</head>
+<body>
+  <h1>BugToPrompt Settings</h1>
+  <div class="status" id="status">● Sidecar starting…</div>
+
+  <fieldset>
+    <legend>Account</legend>
+    <label for="tier">Tier</label>
+    <select id="tier">
+      <option value="lite">Lite</option>
+      <option value="pro">Pro</option>
+    </select>
+    <label for="email">Email</label>
+    <input id="email" type="email" placeholder="you@example.com" />
+    <!-- Login flow is issue #61; disabled stub until then. -->
+    <button id="loginPro" type="button" disabled title="Available with Pro hosted backend (#61)">Login to Pro →</button>
+  </fieldset>
+
+  <fieldset>
+    <legend>Transcription</legend>
+    <label for="engine">Engine</label>
+    <select id="engine">
+      <option value="local">Local (Parakeet via uvx)</option>
+      <option value="cloud" disabled>Cloud (AssemblyAI — #60)</option>
+    </select>
+    <div class="uvx">uvx status: <span id="uvxStatus" class="hint">checking…</span></div>
+    <button id="installUvx" type="button" class="icon" style="display:none">Install uv (uvx)</button>
+    <div id="installLog"></div>
+    <label for="assemblyaiKey">Cloud key (AssemblyAI)</label>
+    <input id="assemblyaiKey" type="password" placeholder="Pro only" />
+  </fieldset>
+
+  <fieldset>
+    <legend>GitHub</legend>
+    <label for="githubMode">Mode</label>
+    <select id="githubMode">
+      <option value="local">Local (gh CLI)</option>
+      <option value="hosted" disabled>Hosted (Pro — #61)</option>
+    </select>
+    <div class="grouplabel">Repos</div>
+    <div id="repos"></div>
+    <button id="addRepo" type="button" class="icon">+ Add repo</button>
+    <div class="hint">Format: owner/repo or owner/repo#branch</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Security</legend>
+    <div class="grouplabel">Allowed origins</div>
+    <div id="origins"></div>
+    <button id="addOrigin" type="button" class="icon">+ Add origin</button>
+  </fieldset>
+
+  <div class="actions">
+    <button id="save" type="button" class="primary">Save</button>
+    <button id="quit" type="button">Quit App</button>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+  var $ = (id) => document.getElementById(id);
+  function post(msg) { if (window.ipc) window.ipc.postMessage(JSON.stringify(msg)); }
+
+  function makeRow(container, value, placeholder) {
+    var row = document.createElement("div");
+    row.className = "row";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.value = value || "";
+    input.placeholder = placeholder || "";
+    var del = document.createElement("button");
+    del.className = "icon";
+    del.textContent = "✕";
+    del.title = "Remove";
+    del.addEventListener("click", () => { container.removeChild(row); });
+    row.appendChild(input);
+    row.appendChild(del);
+    container.appendChild(row);
+    return input;
+  }
+  function collectRows(container) {
+    var out = [];
+    container.querySelectorAll("input").forEach((el) => {
+      var v = el.value.trim();
+      if (v) out.push(v);
+    });
+    return out;
+  }
+
+  // finding #11: only http(s) origins, persisted as the canonical `origin`
+  // (scheme://host[:port]) so they can actually match a browser Origin header.
+  function canonicalOrigin(value) {
+    try {
+      const u = new URL(value);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      return u.origin;
+    } catch (_e) {
+      return null;
+    }
+  }
+  function collectOrigins(container) {
+    var out = [];
+    var seen = {};
+    container.querySelectorAll("input").forEach((el) => {
+      var v = el.value.trim();
+      if (!v) return;
+      var origin = canonicalOrigin(v);
+      if (!origin || seen[origin]) return; // drop invalid + duplicates
+      seen[origin] = true;
+      el.value = origin; // reflect the canonical form back to the user
+      out.push(origin);
+    });
+    return out;
+  }
+
+  // finding #14: assign a persisted select value only when it maps to a known
+  // option; otherwise fall back rather than silently erasing it. A *disabled*
+  // option still counts as known — a migrated "cloud" preference (#12) is kept
+  // (shown, un-clobbered on save) even though the user can't newly pick it.
+  function setSelect(el, value, fallback) {
+    var known = Array.prototype.some.call(el.options, (o) => o.value === value);
+    el.value = known ? value : fallback;
+  }
+
+  function applyTierState() {
+    var pro = $("tier").value === "pro";
+    $("assemblyaiKey").disabled = !pro;
+    // Cloud engine stays disabled until the hosted relay lands (#60).
+  }
+
+  // ---- Rust → JS bridge --------------------------------------------------
+  window.__btp = {
+    onState: (s) => {
+      $("status").textContent = s.running
+        ? `● Sidecar running on ${s.host}:${s.port}`
+        : "● Sidecar not running";
+      setSelect($("tier"), s.tier || "lite", "lite");
+      $("email").value = s.email || "";
+      setSelect($("engine"), s.transcription_engine || "local", "local");
+      $("assemblyaiKey").value = s.assemblyai_key || "";
+      setSelect($("githubMode"), s.github_mode || "local", "local");
+      $("origins").innerHTML = "";
+      (s.allowed_origins || []).forEach((o) => {
+        makeRow($("origins"), o, "https://example.com");
+      });
+      $("repos").innerHTML = "";
+      (s.repos || []).forEach((r) => {
+        makeRow($("repos"), r, "owner/repo#branch");
+      });
+      window.__btp.onUvxStatus(s.uvx_status || "checking");
+      applyTierState();
+    },
+    onUvxStatus: (status) => {
+      var el = $("uvxStatus");
+      if (status === "ready") { el.textContent = "✓ ready"; el.className = "ready"; }
+      else if (status === "missing") { el.textContent = "✗ not installed"; el.className = "missing"; }
+      else { el.textContent = "checking…"; el.className = "hint"; }
+      // finding #15: re-enable the install button once the (post-install) probe
+      // resolves.
+      var btn = $("installUvx");
+      btn.style.display = status === "missing" ? "inline-block" : "none";
+      btn.disabled = false;
+      btn.textContent = "Install uv (uvx)";
+    },
+    onInstallProgress: (line) => {
+      $("installLog").textContent += `${line}\n`;
+    },
+    onSaved: (ok) => {
+      var btn = $("save");
+      btn.textContent = ok ? "Saved ✓" : "Save failed";
+      setTimeout(() => { btn.textContent = "Save"; }, 1500);
+    }
+  };
+
+  // ---- Wiring ------------------------------------------------------------
+  $("tier").addEventListener("change", applyTierState);
+  $("addOrigin").addEventListener("click", () => {
+    makeRow($("origins"), "", "https://example.com").focus();
+  });
+  $("addRepo").addEventListener("click", () => {
+    makeRow($("repos"), "", "owner/repo#branch").focus();
+  });
+  $("installUvx").addEventListener("click", () => {
+    // finding #15: prevent re-entrant installs while one runs.
+    $("installLog").textContent = "";
+    var btn = $("installUvx");
+    btn.disabled = true;
+    btn.textContent = "Installing…";
+    post({ type: "installUvx" });
+  });
+  $("quit").addEventListener("click", () => { post({ type: "quit" }); });
+  $("save").addEventListener("click", () => {
+    post({
+      type: "save",
+      config: {
+        tier: $("tier").value,
+        email: $("email").value.trim(),
+        transcriptionEngine: $("engine").value,
+        assemblyaiKey: $("assemblyaiKey").value.trim(),
+        githubMode: $("githubMode").value,
+        repos: collectRows($("repos")),
+        allowedOrigins: collectOrigins($("origins"))
+      }
+    });
+  });
+
+  post({ type: "ready" });
+})();
+</script>
+</body>
+</html>
