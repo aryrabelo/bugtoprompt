@@ -114,23 +114,21 @@ impl PersistedConfig {
                 }
             }
         }
-        // A uniquely-named temp sibling (created O_EXCL) keeps concurrent
-        // tray/sidecar saves from sharing one `config.toml.tmp` and corrupting
-        // it; the temp is fsync'd, then atomically renamed into place.
-        let tmp = tmp_sibling(path);
-        if let Err(err) = write_private(&tmp, text.as_bytes()) {
+        // Write to a uniquely-named temp sibling (O_EXCL, fsync'd) then rename
+        // atomically. `write_private` retries on a name collision (a reused PID
+        // after restart could otherwise resurrect an old temp name).
+        let tmp = write_private(path, text.as_bytes())?;
+        if let Err(err) = std::fs::rename(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(err);
         }
-        // rename is atomic on the same filesystem and preserves the temp
-        // file's 0600 mode; on failure the temp is cleaned up.
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                let _ = std::fs::remove_file(&tmp);
-                Err(err)
-            }
+        // Durability: fsync the parent directory so the renamed entry survives
+        // power loss — the rename is atomic, but its directory entry can still
+        // be buffered.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fsync_dir(parent)?;
         }
+        Ok(())
     }
 }
 
@@ -153,42 +151,103 @@ fn bak_sibling(path: &Path) -> PathBuf {
 }
 
 /// A uniquely-named `.tmp` sibling of `path` for the atomic write. The name
-/// carries the pid + a per-call counter so two savers (tray + sidecar) never
-/// collide on one shared temp file and corrupt it.
+/// carries the pid, a per-call counter, and a random suffix so two savers
+/// (tray + sidecar) never collide — and a reused PID after a restart (counter
+/// reset to 0) still can't reproduce a previous name.
 fn tmp_sibling(path: &Path) -> PathBuf {
+    use rand::Rng;
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    sibling_with_ext(path, &format!("tmp.{}.{n}", std::process::id()))
+    let rand: u64 = rand::thread_rng().gen();
+    sibling_with_ext(path, &format!("tmp.{}.{n}.{rand:016x}", std::process::id()))
 }
 
-/// Create `path` exclusively (`O_EXCL`), write `bytes`, force owner-only
-/// (0600) permissions on Unix, and fsync. Exclusive creation means a stale or
-/// racing temp file is never silently reused, and the fsync guarantees the
-/// bytes reach disk before the caller's atomic rename exposes the file. On
-/// non-Unix the mode hardening is a best-effort no-op.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Create an exclusive (`O_EXCL`, 0600 on Unix) file, retrying with a fresh
+/// candidate from `next` when a name is already taken (a reused PID after a
+/// restart can resurrect an old temp name). Returns the open file and its path.
+fn create_exclusive(
+    mut next: impl FnMut() -> PathBuf,
+) -> std::io::Result<(std::fs::File, PathBuf)> {
     use std::fs::OpenOptions;
-    use std::io::Write;
+    let mut last_err = None;
+    for _ in 0..16 {
+        let candidate = next();
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&candidate) {
+            Ok(file) => return Ok((file, candidate)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not create a unique temp config file",
+        )
+    }))
+}
 
-    let mut opts = OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+/// Write `bytes` to a freshly-created unique temp sibling of `path` — exclusive
+/// (`O_EXCL`) creation, owner-only (0600) on Unix, and fsync — returning the
+/// temp path for the caller's atomic rename. Exclusive creation (with retry on
+/// a taken name) means a stale or racing temp is never silently reused, and the
+/// fsync guarantees the bytes reach disk before the rename exposes the file.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    let (mut file, tmp) = create_exclusive(|| tmp_sibling(path))?;
+    let result = (|| {
+        // Force exactly 0600 regardless of umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()
+    })();
+    if let Err(e) = result {
+        drop(file);
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    let mut file = opts.open(path)?;
-    file.write_all(bytes)?;
-    // Force exactly 0600 regardless of umask.
-    #[cfg(unix)]
+    Ok(tmp)
+}
+
+/// fsync the directory `dir` so a create/rename of an entry within it is
+/// durable across power loss — the rename is atomic, but the directory entry
+/// can still sit in the page cache. On macOS a plain `fsync` only reaches the
+/// drive's write cache, so `F_FULLFSYNC` forces a flush to permanent storage,
+/// falling back to `fsync` when the filesystem rejects it.
+#[cfg(unix)]
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(dir)?;
+    #[cfg(target_os = "macos")]
     {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::io::AsRawFd;
+        // F_FULLFSYNC from <sys/fcntl.h>; fcntl(fd, F_FULLFSYNC) takes no arg.
+        const F_FULLFSYNC: std::ffi::c_int = 51;
+        extern "C" {
+            fn fcntl(fd: std::ffi::c_int, cmd: std::ffi::c_int, ...) -> std::ffi::c_int;
+        }
+        // SAFETY: `file` owns a valid fd for the duration of the call.
+        if unsafe { fcntl(file.as_raw_fd(), F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+        // Unsupported (e.g. some network/FUSE FS) → fall back to plain fsync.
     }
-    // fsync so the subsequent atomic rename can't expose a partially written
-    // (or empty) config after a crash.
     file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn fsync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Resolve the persisted config path: `BUGTOPROMPT_CONFIG` override, else
@@ -722,5 +781,34 @@ mod tests {
             !leftover_tmp,
             "no temp file should remain after concurrent saves"
         );
+    }
+
+    #[test]
+    fn create_exclusive_retries_past_a_taken_name() {
+        // A reused PID after restart can resurrect a temp name; the exclusive
+        // create must skip a taken candidate and use a fresh one instead of
+        // failing AlreadyExists and blocking the save.
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("taken.tmp");
+        std::fs::write(&taken, b"stale").unwrap();
+        let fresh = dir.path().join("fresh.tmp");
+        // next() yields the taken name first (→ AlreadyExists), then a free one.
+        let mut candidates = vec![fresh.clone(), taken.clone()];
+        let (file, got) = create_exclusive(|| candidates.pop().unwrap()).unwrap();
+        assert_eq!(got, fresh, "must retry past the taken name");
+        drop(file);
+        assert!(fresh.exists());
+        // The stale file is untouched.
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "stale");
+    }
+
+    #[test]
+    fn create_exclusive_gives_up_after_persistent_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("always.tmp");
+        std::fs::write(&taken, b"x").unwrap();
+        // Always hand back the taken name → every attempt is AlreadyExists.
+        let err = create_exclusive(|| taken.clone()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     }
 }

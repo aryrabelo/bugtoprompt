@@ -107,11 +107,13 @@ pub fn spawn_uvx_probe(tx: Sender<Worker>) {
     });
 }
 
-/// Directory `uv` installs `uvx` into. Mirrors the uv (cargo-dist) installer's
-/// install-dir precedence — `UV_INSTALL_DIR` > `XDG_BIN_HOME` >
-/// `$XDG_DATA_HOME/../bin` > `$HOME/.local/bin` — so a probe right after an
-/// install looks where the installer actually placed the binary, not just
-/// `~/.local/bin`.
+/// Directory `uv` installs `uvx` into. Mirrors the pinned installer's
+/// (0.11.29) install-dir precedence — `UV_INSTALL_DIR`, then
+/// `CARGO_DIST_FORCE_INSTALL_DIR`, then `UV_UNMANAGED_INSTALL`, then
+/// `XDG_BIN_HOME`, then `$XDG_DATA_HOME/../bin`, then `$HOME/.local/bin` — so a
+/// probe right after an install looks where the installer actually placed the
+/// binary. The three force vars use the installer's "flat" layout (the dir
+/// itself).
 fn uv_install_bin_dir() -> Option<std::path::PathBuf> {
     resolve_uv_install_bin_dir(|k| std::env::var_os(k))
 }
@@ -122,8 +124,16 @@ fn resolve_uv_install_bin_dir(
     use std::path::PathBuf;
     // `-n` semantics: an empty env var is treated as unset, like the installer.
     let non_empty = |key: &str| get(key).filter(|v| !v.is_empty());
-    if let Some(dir) = non_empty("UV_INSTALL_DIR") {
-        return Some(PathBuf::from(dir));
+    // Forced install dirs (flat layout: the binary lands in the dir itself),
+    // checked in the installer's order.
+    for key in [
+        "UV_INSTALL_DIR",
+        "CARGO_DIST_FORCE_INSTALL_DIR",
+        "UV_UNMANAGED_INSTALL",
+    ] {
+        if let Some(dir) = non_empty(key) {
+            return Some(PathBuf::from(dir));
+        }
     }
     if let Some(dir) = non_empty("XDG_BIN_HOME") {
         return Some(PathBuf::from(dir));
@@ -306,6 +316,49 @@ mod tests {
         assert_eq!(
             resolve_uv_install_bin_dir(env_lookup(m)),
             Some(PathBuf::from("/opt/uv"))
+        );
+
+        // CARGO_DIST_FORCE_INSTALL_DIR is next when UV_INSTALL_DIR is unset,
+        // ahead of XDG/HOME.
+        let m = HashMap::from([
+            ("CARGO_DIST_FORCE_INSTALL_DIR", "/forced"),
+            ("XDG_BIN_HOME", "/xdg/bin"),
+            ("HOME", "/home/u"),
+        ]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/forced"))
+        );
+
+        // UV_UNMANAGED_INSTALL is used as the install dir (flat layout).
+        let m = HashMap::from([
+            ("UV_UNMANAGED_INSTALL", "/unmanaged"),
+            ("XDG_BIN_HOME", "/xdg/bin"),
+        ]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/unmanaged"))
+        );
+
+        // UV_INSTALL_DIR outranks both force overrides.
+        let m = HashMap::from([
+            ("UV_INSTALL_DIR", "/opt/uv"),
+            ("CARGO_DIST_FORCE_INSTALL_DIR", "/forced"),
+            ("UV_UNMANAGED_INSTALL", "/unmanaged"),
+        ]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/opt/uv"))
+        );
+
+        // CARGO_DIST_FORCE_INSTALL_DIR outranks UV_UNMANAGED_INSTALL.
+        let m = HashMap::from([
+            ("CARGO_DIST_FORCE_INSTALL_DIR", "/forced"),
+            ("UV_UNMANAGED_INSTALL", "/unmanaged"),
+        ]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/forced"))
         );
 
         // then XDG_BIN_HOME.

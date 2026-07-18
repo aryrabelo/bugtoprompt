@@ -96,8 +96,13 @@ fn legacy_repo_entry(value: &serde_json::Value) -> Option<RawRepoEntry> {
             .map(str::to_string)
     };
     let repo = str_field("repo").or_else(|| str_field("id"))?;
+    // Preserve a custom target `id` only when a distinct `repo` was given; when
+    // `id` merely stood in as the repo (the `{ "id": ... }` fallback), there is
+    // no separate custom id. Dropping a real custom id would change target
+    // identity and can collapse distinct targets that de-dupe by ID.
+    let id = str_field("repo").and_then(|_| str_field("id"));
     Some(RawRepoEntry::Obj {
-        id: None,
+        id,
         name: str_field("name"),
         repo,
         branch: str_field("branch"),
@@ -445,5 +450,26 @@ mod tests {
         let mut env2 = BTreeMap::new();
         env2.insert("BUGTOPROMPT_PORT".to_string(), "4127".to_string());
         assert_eq!(config_from_launch_agent_env(&env2).port, Some(4127));
+    }
+
+    #[test]
+    fn legacy_repo_preserves_custom_id_distinct_from_repo() {
+        // `{ "id": "custom", "repo": "owner/repo" }` — the custom target id must
+        // survive so config de-dup by ID doesn't collapse distinct targets.
+        let mut env = BTreeMap::new();
+        env.insert(
+            "BUGTOPROMPT_CONFIG".to_string(),
+            r#"{"repos":[{"id":"custom","repo":"owner/repo","branch":"dev"}]}"#.to_string(),
+        );
+        let cfg = config_from_launch_agent_env(&env);
+        assert_eq!(
+            cfg.repos,
+            Some(vec![RawRepoEntry::Obj {
+                id: Some("custom".to_string()),
+                name: None,
+                repo: "owner/repo".to_string(),
+                branch: Some("dev".to_string()),
+            }])
+        );
     }
 }
