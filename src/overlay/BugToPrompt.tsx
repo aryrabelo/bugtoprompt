@@ -28,6 +28,7 @@ import {
 	createFetchClient,
 	type ProConfig,
 } from "../client";
+import { createProBridgeClient } from "../client/pro-bridge";
 import { promptTitle, renderPrompt, transcriptText } from "../render";
 import type { CaptureEvent, TranscriptSegment } from "../schema";
 import { Button } from "../ui/button";
@@ -219,8 +220,8 @@ function useAutoConfig({
 		let cancelled = false;
 		// Rebuild from primitive deps — the seeded pro object identity is unstable across renders.
 		const proConfig: ProConfig | undefined =
-			pro?.baseUrl && pro?.token
-				? { baseUrl: pro.baseUrl, token: pro.token }
+			pro?.baseUrl && (pro.token || pro.bridged)
+				? { baseUrl: pro.baseUrl, token: pro.token, bridged: pro.bridged }
 				: undefined;
 		const run = async (): Promise<void> => {
 			const base = resolveBaseUrl(baseUrl);
@@ -231,9 +232,15 @@ function useAutoConfig({
 			// client and enable issue/token minting even when the optional
 			// `GET {base}/bugtoprompt/config` probe doesn't answer. The probe is
 			// only required for same-origin zero-config discovery (empty base).
-			if (cfg || base) {
+			// Valid PRO credentials (bridged or token) are themselves proof of a
+			// backend too (P1 fix, issue #82) — otherwise a bridged-only install
+			// (no baseUrl/meta/window base, just `pro.bridged`) stayed stuck on
+			// the local fallback client forever.
+			if (cfg || base || proConfig) {
 				setAuto({
-					client: createFetchClient(base, proConfig),
+					client: proConfig?.bridged
+						? createProBridgeClient()
+						: createFetchClient(base, proConfig),
 					modes:
 						modesProp ??
 						cfg?.modes ??
@@ -249,7 +256,15 @@ function useAutoConfig({
 		return () => {
 			cancelled = true;
 		};
-	}, [clientProp, baseUrl, modesProp, projectIdProp, pro?.baseUrl, pro?.token]);
+	}, [
+		clientProp,
+		baseUrl,
+		modesProp,
+		projectIdProp,
+		pro?.baseUrl,
+		pro?.token,
+		pro?.bridged,
+	]);
 
 	// Derived effective values — when an explicit client is provided it takes
 	// precedence and the classic single-client contract is preserved.

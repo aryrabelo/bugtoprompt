@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_CONFIG } from "./config";
+import { type ChromeLike, DEFAULT_CONFIG } from "./config";
 import {
 	buildRows,
 	fetchHealth,
 	fetchProSession,
 	type HealthPayload,
 	healthPill,
+	initPopup,
 	offlineHint,
 	popupMode,
 } from "./popup";
@@ -377,5 +378,104 @@ describe("offlineHint", () => {
 
 	it("falls back to a generic message without an origin", () => {
 		expect(offlineHint(undefined)).toMatch(/Sidecar offline/);
+	});
+});
+
+describe("initPopup — pro button (DOM wiring)", () => {
+	function mountPopupDom(): void {
+		document.body.innerHTML = `
+			<span id="status-pill"></span>
+			<p id="target"></p>
+			<section id="rows"></section>
+			<button id="start" type="button"></button>
+			<div class="pro">
+				<button id="pro-login" type="button">Login to Pro</button>
+				<span id="pro-hint"></span>
+			</div>
+			<p id="error"></p>
+		`;
+	}
+
+	/** Drain pending microtasks (promise chains) without touching real timers
+	 *  or guessing a wall-clock duration — the click handler's async work is
+	 *  a chain of native-Promise awaits with no macrotask boundary of its own. */
+	async function flushMicrotasks(): Promise<void> {
+		for (let i = 0; i < 30; i++) {
+			await Promise.resolve();
+		}
+	}
+
+	function fakeChrome(): ChromeLike {
+		const syncStore: Record<string, unknown> = {};
+		const localStore: Record<string, unknown> = {};
+		return {
+			storage: {
+				sync: {
+					get: vi.fn(async () => ({ ...syncStore })),
+					set: vi.fn(async (items: Record<string, unknown>) => {
+						Object.assign(syncStore, items);
+					}),
+				},
+				local: {
+					get: vi.fn(async () => ({ ...localStore })),
+					set: vi.fn(async (items: Record<string, unknown>) => {
+						Object.assign(localStore, items);
+					}),
+				},
+			},
+			// A loopback tab so popupMode resolves to "toggle" (never "blocked",
+			// which would return before the pro button is wired at all).
+			tabs: {
+				query: vi.fn(async () => [{ id: 1, url: "http://localhost:3000/" }]),
+			},
+		};
+	}
+
+	it("shows a retry hint and leaves no unhandled rejection when saveConfig rejects mid pro-login (P2)", async () => {
+		mountPopupDom();
+		const chromeApi = fakeChrome();
+		// fetchProSession succeeds (so the click handler reaches saveConfig);
+		// every other request (sidecar discovery/health) fails harmlessly —
+		// both fetchHealth and discoverBaseUrl already tolerate that.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				if (String(input).includes("/api/auth/get-session")) {
+					return new Response(
+						JSON.stringify({ session: { token: "new-token" } }),
+						{ status: 200 },
+					);
+				}
+				throw new Error("no network");
+			}),
+		);
+		// The saveConfig() the click handler awaits ends in storage.local.set —
+		// reject exactly that call to exercise the failure path.
+		vi.mocked(chromeApi.storage.local.set).mockRejectedValueOnce(
+			new Error("disk full"),
+		);
+		const onUnhandledRejection = vi.fn();
+		process.on("unhandledRejection", onUnhandledRejection);
+		try {
+			await initPopup(chromeApi);
+			const proBtn = document.getElementById("pro-login");
+			if (!(proBtn instanceof HTMLButtonElement)) {
+				throw new Error("pro-login button missing from fixture");
+			}
+			proBtn.click();
+			// Flush the click handler's async IIFE (fetchProSession → saveConfig →
+			// reject → finally → .catch) past its microtask chain.
+			await flushMicrotasks();
+			const hintEl = document.getElementById("pro-hint");
+			expect(hintEl?.textContent).toBe(
+				"Couldn't update the Pro session — try again.",
+			);
+			// finally still released the button regardless of the rejection.
+			expect(proBtn.disabled).toBe(false);
+		} finally {
+			process.off("unhandledRejection", onUnhandledRejection);
+			vi.unstubAllGlobals();
+		}
+		expect(onUnhandledRejection).not.toHaveBeenCalled();
 	});
 });

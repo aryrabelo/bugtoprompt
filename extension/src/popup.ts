@@ -261,7 +261,7 @@ function renderRows(list: HTMLElement, rows: CapabilityRow[]): void {
 	}
 }
 
-async function initPopup(chromeApi: ChromeLike): Promise<void> {
+export async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	const pillEl = document.getElementById("status-pill");
 	const targetEl = document.getElementById("target");
 	const rowsEl = document.getElementById("rows");
@@ -435,7 +435,13 @@ async function initPopup(chromeApi: ChromeLike): Promise<void> {
 					proBusy = false;
 					proBtn.disabled = false;
 				}
-			})();
+			})().catch(() => {
+				// saveConfig/fetchProSession rejected (e.g. storage.local.set
+				// threw): the finally above already released proBusy/disabled, so
+				// this only needs to surface the failure instead of leaving no
+				// feedback and an unhandled rejection.
+				proHintEl.textContent = "Couldn't update the Pro session — try again.";
+			});
 		});
 	}
 

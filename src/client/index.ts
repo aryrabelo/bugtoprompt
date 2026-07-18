@@ -122,23 +122,39 @@ async function postJson<T>(
 }
 
 /**
- * PRO remote service credentials (issue #8). When provided to
- * {@link createFetchClient}, every request is routed to `pro.baseUrl`
- * instead of the local/self-hosted base and carries an `Authorization:
- * Bearer` header — enabling server-side voice transcription and remote
- * artifact upload + issue filing.
+ * PRO remote service credentials (issue #8, hardened for #82). When provided
+ * to {@link createFetchClient}, every request is routed to `pro.baseUrl`
+ * instead of the local/self-hosted base — enabling server-side voice
+ * transcription and remote artifact upload + issue filing.
+ *
+ * - `token`: page-owner embedding. The embedding page itself holds the
+ *   token (it controls its own page, so this is no worse than any other
+ *   client-side secret it already has). Used directly as an `Authorization:
+ *   Bearer` header by {@link createFetchClient}.
+ * - `bridged`: seeded by the browser extension (issue #82 P0 fix). The
+ *   extension mints a token but never exposes it to page-accessible JS —
+ *   instead it hands the overlay `{ baseUrl, bridged: true }` and every
+ *   authenticated call is relayed through {@link createProBridgeClient}
+ *   (`../client/pro-bridge`) to the extension's service worker, where the
+ *   real Bearer token is attached out of page reach. The raw token must
+ *   NEVER appear on `window.__BUGTOPROMPT__.pro` or any other
+ *   page-accessible global.
  */
 export interface ProConfig {
 	baseUrl: string;
-	token: string;
+	token?: string;
+	bridged?: boolean;
 }
 
 /**
  * A reference HTTP implementation over `fetch`. Maps each BugToPromptClient
  * method to the documented REST contract at `baseUrl`. When `pro` is given,
- * every endpoint below is instead served from `pro.baseUrl` with an
- * `Authorization: Bearer ${pro.token}` header attached (PRO remote service,
- * issue #8) — behavior is otherwise byte-identical.
+ * every endpoint below is instead served from `pro.baseUrl` (trailing
+ * slashes stripped) and, when `pro.token` is set, carries an `Authorization:
+ * Bearer ${pro.token}` header (PRO remote service, issue #8) — behavior is
+ * otherwise byte-identical. `pro.bridged` configs never reach this client —
+ * the overlay routes those to {@link createProBridgeClient} instead, so no
+ * token is ever required or sent here in that case.
  *
  * Paths: POST /streaming-token, POST /artifact, POST /transcribe,
  *        POST /issue, GET /targets?projectId=
@@ -147,8 +163,10 @@ export function createFetchClient(
 	baseUrl: string,
 	pro?: ProConfig,
 ): BugToPromptClient {
-	const base = pro?.baseUrl ?? baseUrl;
-	const auth = pro ? { Authorization: `Bearer ${pro.token}` } : undefined;
+	const base = (pro?.baseUrl ?? baseUrl).replace(/\/+$/, "");
+	const auth = pro?.token
+		? { Authorization: `Bearer ${pro.token}` }
+		: undefined;
 	return {
 		mintStreamingToken(targetId?: string) {
 			const body: Record<string, unknown> = {};

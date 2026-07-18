@@ -55,12 +55,26 @@ describe("isLoopbackHttpUrl (options validation)", () => {
 });
 
 function fakeChrome(store: Record<string, unknown> = {}): ChromeLike {
+	const localStore: Record<string, unknown> = {};
 	return {
 		storage: {
 			sync: {
 				get: vi.fn(async () => ({ ...store })),
 				set: vi.fn(async (items: Record<string, unknown>) => {
 					Object.assign(store, items);
+				}),
+				remove: vi.fn(async (keys: string | string[]) => {
+					for (const k of Array.isArray(keys) ? keys : [keys]) delete store[k];
+				}),
+			},
+			local: {
+				get: vi.fn(async () => ({ ...localStore })),
+				set: vi.fn(async (items: Record<string, unknown>) => {
+					Object.assign(localStore, items);
+				}),
+				remove: vi.fn(async (keys: string | string[]) => {
+					for (const k of Array.isArray(keys) ? keys : [keys])
+						delete localStore[k];
 				}),
 			},
 		},
@@ -121,7 +135,7 @@ describe("loadConfig / saveConfig", () => {
 		expect(reloaded.baseUrl).toBe("http://127.0.0.1:4127");
 	});
 
-	it("proToken defaults to empty, persists through saveConfig, and coerces non-string garbage to empty", async () => {
+	it("proToken defaults to empty, persists through saveConfig via chrome.storage.local, and coerces non-string garbage to empty", async () => {
 		const chromeApi = fakeChrome();
 		expect((await loadConfig(chromeApi)).proToken).toBe("");
 		const merged = await saveConfig(chromeApi, { proToken: "sess-tok" });
@@ -131,6 +145,71 @@ describe("loadConfig / saveConfig", () => {
 
 		const garbage = await loadConfig(fakeChrome({ proToken: 42 }));
 		expect(garbage.proToken).toBe("");
+	});
+
+	it("never writes proToken into chrome.storage.sync — it lives in chrome.storage.local only", async () => {
+		const chromeApi = fakeChrome();
+		await saveConfig(chromeApi, { proToken: "sess-tok" });
+		const syncCalls = vi.mocked(chromeApi.storage.sync.set).mock.calls;
+		for (const [payload] of syncCalls) {
+			expect(payload).not.toHaveProperty("proToken");
+		}
+		const localGet = await chromeApi.storage.local.get(["proToken"]);
+		expect(localGet.proToken).toBe("sess-tok");
+	});
+
+	it("migrates a legacy chrome.storage.sync proToken to chrome.storage.local on loadConfig and scrubs it from sync", async () => {
+		const chromeApi = fakeChrome({ proToken: "legacy-sync-tok" });
+		const cfg = await loadConfig(chromeApi);
+		expect(cfg.proToken).toBe("legacy-sync-tok");
+
+		const localGet = await chromeApi.storage.local.get(["proToken"]);
+		expect(localGet.proToken).toBe("legacy-sync-tok");
+
+		const syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBeUndefined();
+		expect(chromeApi.storage.sync.remove).toHaveBeenCalledWith("proToken");
+
+		// Idempotent: a second load doesn't re-migrate (sync has nothing left).
+		const cfg2 = await loadConfig(chromeApi);
+		expect(cfg2.proToken).toBe("legacy-sync-tok");
+	});
+
+	it("prefers a local proToken over a legacy sync one, leaves local untouched, and still scrubs sync", async () => {
+		const chromeApi = fakeChrome({ proToken: "legacy-sync-tok" });
+		await chromeApi.storage.local.set({ proToken: "local-tok" });
+
+		const cfg = await loadConfig(chromeApi);
+		expect(cfg.proToken).toBe("local-tok");
+
+		const localGet = await chromeApi.storage.local.get(["proToken"]);
+		expect(localGet.proToken).toBe("local-tok"); // never clobbered by the stale sync value
+
+		const syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBeUndefined();
+		expect(chromeApi.storage.sync.remove).toHaveBeenCalledWith("proToken");
+	});
+
+	it("retries the sync scrub after a failure without throwing or losing the token", async () => {
+		const chromeApi = fakeChrome({ proToken: "legacy-sync-tok" });
+		const realRemove = chromeApi.storage.sync.remove;
+		if (!realRemove) throw new Error("fakeChrome must provide sync.remove");
+		let calls = 0;
+		chromeApi.storage.sync.remove = vi.fn(async (keys: string | string[]) => {
+			calls++;
+			if (calls === 1) throw new Error("sync unavailable");
+			return realRemove(keys);
+		});
+
+		const cfg = await loadConfig(chromeApi);
+		expect(cfg.proToken).toBe("legacy-sync-tok");
+		let syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBe("legacy-sync-tok"); // scrub failed, copy retained for retry
+
+		const cfg2 = await loadConfig(chromeApi);
+		expect(cfg2.proToken).toBe("legacy-sync-tok");
+		syncGet = await chromeApi.storage.sync.get(["proToken"]);
+		expect(syncGet.proToken).toBeUndefined(); // retried on the next call and succeeded
 	});
 });
 
