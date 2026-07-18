@@ -25,7 +25,7 @@
     border-radius: 8px; margin: 0 0 14px; padding: 12px 14px;
   }
   legend { font-weight: 600; padding: 0 4px; }
-  label { display: block; margin: 8px 0 3px; font-weight: 500; }
+  label, .grouplabel { display: block; margin: 8px 0 3px; font-weight: 500; }
   input, select {
     font: inherit; padding: 5px 7px; width: 100%;
     border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
@@ -64,7 +64,7 @@
     <label for="email">Email</label>
     <input id="email" type="email" placeholder="you@example.com" />
     <!-- Login flow is issue #61; disabled stub until then. -->
-    <button id="loginPro" disabled title="Available with Pro hosted backend (#61)">Login to Pro →</button>
+    <button id="loginPro" type="button" disabled title="Available with Pro hosted backend (#61)">Login to Pro →</button>
   </fieldset>
 
   <fieldset>
@@ -75,7 +75,7 @@
       <option value="cloud" disabled>Cloud (AssemblyAI — #60)</option>
     </select>
     <div class="uvx">uvx status: <span id="uvxStatus" class="hint">checking…</span></div>
-    <button id="installUvx" class="icon" style="display:none">Install uv (uvx)</button>
+    <button id="installUvx" type="button" class="icon" style="display:none">Install uv (uvx)</button>
     <div id="installLog"></div>
     <label for="assemblyaiKey">Cloud key (AssemblyAI)</label>
     <input id="assemblyaiKey" type="password" placeholder="Pro only" />
@@ -88,28 +88,28 @@
       <option value="local">Local (gh CLI)</option>
       <option value="hosted" disabled>Hosted (Pro — #61)</option>
     </select>
-    <label>Repos</label>
+    <div class="grouplabel">Repos</div>
     <div id="repos"></div>
-    <button id="addRepo" class="icon">+ Add repo</button>
+    <button id="addRepo" type="button" class="icon">+ Add repo</button>
     <div class="hint">Format: owner/repo or owner/repo#branch</div>
   </fieldset>
 
   <fieldset>
     <legend>Security</legend>
-    <label>Allowed origins</label>
+    <div class="grouplabel">Allowed origins</div>
     <div id="origins"></div>
-    <button id="addOrigin" class="icon">+ Add origin</button>
+    <button id="addOrigin" type="button" class="icon">+ Add origin</button>
   </fieldset>
 
   <div class="actions">
-    <button id="save" class="primary">Save</button>
-    <button id="quit">Quit App</button>
+    <button id="save" type="button" class="primary">Save</button>
+    <button id="quit" type="button">Quit App</button>
   </div>
 
 <script>
-(function () {
+(() => {
   "use strict";
-  var $ = function (id) { return document.getElementById(id); };
+  var $ = (id) => document.getElementById(id);
   function post(msg) { if (window.ipc) window.ipc.postMessage(JSON.stringify(msg)); }
 
   function makeRow(container, value, placeholder) {
@@ -123,7 +123,7 @@
     del.className = "icon";
     del.textContent = "✕";
     del.title = "Remove";
-    del.addEventListener("click", function () { container.removeChild(row); });
+    del.addEventListener("click", () => { container.removeChild(row); });
     row.appendChild(input);
     row.appendChild(del);
     container.appendChild(row);
@@ -131,7 +131,7 @@
   }
   function collectRows(container) {
     var out = [];
-    container.querySelectorAll("input").forEach(function (el) {
+    container.querySelectorAll("input").forEach((el) => {
       var v = el.value.trim();
       if (v) out.push(v);
     });
@@ -142,7 +142,7 @@
   // (scheme://host[:port]) so they can actually match a browser Origin header.
   function canonicalOrigin(value) {
     try {
-      var u = new URL(value);
+      const u = new URL(value);
       if (u.protocol !== "http:" && u.protocol !== "https:") return null;
       return u.origin;
     } catch (_e) {
@@ -150,8 +150,9 @@
     }
   }
   function collectOrigins(container) {
-    var out = [], seen = {};
-    container.querySelectorAll("input").forEach(function (el) {
+    var out = [];
+    var seen = {};
+    container.querySelectorAll("input").forEach((el) => {
       var v = el.value.trim();
       if (!v) return;
       var origin = canonicalOrigin(v);
@@ -168,9 +169,7 @@
   // option still counts as known — a migrated "cloud" preference (#12) is kept
   // (shown, un-clobbered on save) even though the user can't newly pick it.
   function setSelect(el, value, fallback) {
-    var known = Array.prototype.some.call(el.options, function (o) {
-      return o.value === value;
-    });
+    var known = Array.prototype.some.call(el.options, (o) => o.value === value);
     el.value = known ? value : fallback;
   }
 
@@ -182,9 +181,9 @@
 
   // ---- Rust → JS bridge --------------------------------------------------
   window.__btp = {
-    onState: function (s) {
+    onState: (s) => {
       $("status").textContent = s.running
-        ? "● Sidecar running on " + s.host + ":" + s.port
+        ? `● Sidecar running on ${s.host}:${s.port}`
         : "● Sidecar not running";
       setSelect($("tier"), s.tier || "lite", "lite");
       $("email").value = s.email || "";
@@ -192,17 +191,17 @@
       $("assemblyaiKey").value = s.assemblyai_key || "";
       setSelect($("githubMode"), s.github_mode || "local", "local");
       $("origins").innerHTML = "";
-      (s.allowed_origins || []).forEach(function (o) {
+      (s.allowed_origins || []).forEach((o) => {
         makeRow($("origins"), o, "https://example.com");
       });
       $("repos").innerHTML = "";
-      (s.repos || []).forEach(function (r) {
+      (s.repos || []).forEach((r) => {
         makeRow($("repos"), r, "owner/repo#branch");
       });
       window.__btp.onUvxStatus(s.uvx_status || "checking");
       applyTierState();
     },
-    onUvxStatus: function (status) {
+    onUvxStatus: (status) => {
       var el = $("uvxStatus");
       if (status === "ready") { el.textContent = "✓ ready"; el.className = "ready"; }
       else if (status === "missing") { el.textContent = "✗ not installed"; el.className = "missing"; }
@@ -214,25 +213,25 @@
       btn.disabled = false;
       btn.textContent = "Install uv (uvx)";
     },
-    onInstallProgress: function (line) {
-      $("installLog").textContent += line + "\n";
+    onInstallProgress: (line) => {
+      $("installLog").textContent += `${line}\n`;
     },
-    onSaved: function (ok) {
+    onSaved: (ok) => {
       var btn = $("save");
       btn.textContent = ok ? "Saved ✓" : "Save failed";
-      setTimeout(function () { btn.textContent = "Save"; }, 1500);
+      setTimeout(() => { btn.textContent = "Save"; }, 1500);
     }
   };
 
   // ---- Wiring ------------------------------------------------------------
   $("tier").addEventListener("change", applyTierState);
-  $("addOrigin").addEventListener("click", function () {
+  $("addOrigin").addEventListener("click", () => {
     makeRow($("origins"), "", "https://example.com").focus();
   });
-  $("addRepo").addEventListener("click", function () {
+  $("addRepo").addEventListener("click", () => {
     makeRow($("repos"), "", "owner/repo#branch").focus();
   });
-  $("installUvx").addEventListener("click", function () {
+  $("installUvx").addEventListener("click", () => {
     // finding #15: prevent re-entrant installs while one runs.
     $("installLog").textContent = "";
     var btn = $("installUvx");
@@ -240,8 +239,8 @@
     btn.textContent = "Installing…";
     post({ type: "installUvx" });
   });
-  $("quit").addEventListener("click", function () { post({ type: "quit" }); });
-  $("save").addEventListener("click", function () {
+  $("quit").addEventListener("click", () => { post({ type: "quit" }); });
+  $("save").addEventListener("click", () => {
     post({
       type: "save",
       config: {
