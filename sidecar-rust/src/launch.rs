@@ -62,6 +62,18 @@ pub fn disable_legacy_launch_agent() -> LegacyDisable {
 /// running job, RE-checks the final state, and only renames the plist when the
 /// job is positively confirmed not loaded.
 pub fn disable_legacy_launch_agent_at(plist: &Path) -> LegacyDisable {
+    disable_with(plist, job_state, unload_job)
+}
+
+/// Core orchestration for [`disable_legacy_launch_agent_at`], with the launchd
+/// interactions injected so the load-race and fail-safe paths can be tested
+/// hermetically — real `launchctl` behaviour differs in CI, which has no
+/// launchd session. `probe` reports whether the job is loaded; `unload` stops it.
+fn disable_with(
+    plist: &Path,
+    probe: impl Fn(&str) -> JobState,
+    unload: impl Fn(&Path),
+) -> LegacyDisable {
     if !plist.exists() {
         return LegacyDisable::NotPresent;
     }
@@ -75,13 +87,13 @@ pub fn disable_legacy_launch_agent_at(plist: &Path) -> LegacyDisable {
         return LegacyDisable::Unknown;
     };
     // Stop it if it is currently loaded (unload by path is a no-op otherwise).
-    if job_state(&label) == JobState::Loaded {
-        unload_job(plist);
+    if probe(&label) == JobState::Loaded {
+        unload(plist);
     }
     // Re-query the FINAL state: only a job that is positively not loaded is safe
     // to disable. A still-loaded job (incl. one that (re)loaded during the race)
     // or an unknown state must not be renamed beside.
-    match outcome_for_final_state(job_state(&label)) {
+    match outcome_for_final_state(probe(&label)) {
         Ok(()) => match rename_disabled(plist) {
             Ok(disabled) => {
                 tracing::info!(
@@ -260,18 +272,99 @@ mod tests {
     }
 
     #[test]
-    fn disable_renames_when_the_job_is_not_loaded() {
-        // The fixture's Label is a unique name launchd does not know, so
-        // job_state is NotLoaded and the full path resolves to Disabled.
+    fn disable_with_not_loaded_renames_to_disabled() {
         let dir = tempfile::tempdir().unwrap();
         let plist = dir.path().join("legacy.plist");
         fs::write(&plist, PLIST_XML).unwrap();
-
-        assert_eq!(
-            disable_legacy_launch_agent_at(&plist),
-            LegacyDisable::Disabled
+        let unloads = std::cell::Cell::new(0u32);
+        let outcome = disable_with(
+            &plist,
+            |_| JobState::NotLoaded,
+            |_| unloads.set(unloads.get() + 1),
         );
+        assert_eq!(outcome, LegacyDisable::Disabled);
+        assert_eq!(unloads.get(), 0, "no unload needed when not loaded");
         assert!(!plist.exists(), "plist should have been renamed aside");
         assert!(plist.with_extension("plist.disabled").exists());
+    }
+
+    #[test]
+    fn disable_with_loaded_then_stopped_renames() {
+        // A successful unload: Loaded on the first probe, NotLoaded after.
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("legacy.plist");
+        fs::write(&plist, PLIST_XML).unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let unloaded = std::cell::Cell::new(false);
+        let outcome = disable_with(
+            &plist,
+            |_| {
+                let n = calls.get();
+                calls.set(n + 1);
+                if n == 0 {
+                    JobState::Loaded
+                } else {
+                    JobState::NotLoaded
+                }
+            },
+            |_| unloaded.set(true),
+        );
+        assert_eq!(outcome, LegacyDisable::Disabled);
+        assert!(unloaded.get(), "must attempt unload when loaded");
+        assert!(!plist.exists());
+    }
+
+    #[test]
+    fn disable_with_still_loaded_blocks_and_keeps_plist() {
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("legacy.plist");
+        fs::write(&plist, PLIST_XML).unwrap();
+        let outcome = disable_with(&plist, |_| JobState::Loaded, |_| {});
+        assert_eq!(outcome, LegacyDisable::StillRunning);
+        assert!(plist.exists(), "must not rename beside a still-loaded job");
+    }
+
+    #[test]
+    fn disable_with_job_loading_after_first_check_blocks() {
+        // Finding #1 race: NotLoaded on the first probe (so no unload), then
+        // Loaded on the recheck — must block, not rename.
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("legacy.plist");
+        fs::write(&plist, PLIST_XML).unwrap();
+        let calls = std::cell::Cell::new(0u32);
+        let unloaded = std::cell::Cell::new(false);
+        let outcome = disable_with(
+            &plist,
+            |_| {
+                let n = calls.get();
+                calls.set(n + 1);
+                if n == 0 {
+                    JobState::NotLoaded
+                } else {
+                    JobState::Loaded
+                }
+            },
+            |_| unloaded.set(true),
+        );
+        assert_eq!(outcome, LegacyDisable::StillRunning);
+        assert!(
+            !unloaded.get(),
+            "first check was NotLoaded, so no unload attempted"
+        );
+        assert!(
+            plist.exists(),
+            "must not rename beside a job that raced into loaded"
+        );
+    }
+
+    #[test]
+    fn disable_with_unknown_state_blocks_and_keeps_plist() {
+        // Finding #3: an undeterminable state must not rename the plist aside.
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("legacy.plist");
+        fs::write(&plist, PLIST_XML).unwrap();
+        let outcome = disable_with(&plist, |_| JobState::Unknown, |_| {});
+        assert_eq!(outcome, LegacyDisable::Unknown);
+        assert!(plist.exists());
     }
 }
