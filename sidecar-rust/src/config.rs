@@ -97,12 +97,39 @@ impl PersistedConfig {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // If an existing config is present but unparseable, `load_persisted`
+        // silently treated it as defaults — so overwriting here would lose a
+        // hand-edited-but-broken file without a trace. Preserve it as
+        // `<name>.bak` first (best effort) so the edit is recoverable.
+        if path.exists() && read_toml(path).is_none() {
+            let bak = bak_sibling(path);
+            match std::fs::copy(path, &bak) {
+                Ok(_) => tracing::warn!(
+                    "backed up unparseable {} to {} before overwriting",
+                    path.display(),
+                    bak.display()
+                ),
+                Err(err) => {
+                    tracing::warn!("could not back up unparseable {}: {err}", path.display())
+                }
+            }
+        }
         let tmp = tmp_sibling(path);
         write_private(&tmp, text.as_bytes())?;
         // rename is atomic on the same filesystem and preserves the temp
         // file's 0600 mode.
         std::fs::rename(&tmp, path)
     }
+}
+
+/// A `.bak` sibling of `path`, for preserving an unparseable config.
+fn bak_sibling(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
+    name.push(".bak");
+    path.with_file_name(name)
 }
 
 /// A `.tmp` sibling of `path` for the atomic write.
@@ -561,6 +588,34 @@ mod tests {
         // and no temp sibling is left behind.
         assert_eq!(read_toml(&path).unwrap(), cfg);
         assert!(!dir.path().join("config.toml.tmp").exists());
+
+        // The unparseable original is preserved as config.toml.bak, not lost.
+        let bak = dir.path().join("config.toml.bak");
+        assert!(bak.exists(), "corrupt config should be backed up");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "this is not = valid toml [[["
+        );
+    }
+
+    #[test]
+    fn save_does_not_back_up_a_valid_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        PersistedConfig {
+            port: Some(4127),
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        // Overwriting a valid config must not create a spurious .bak.
+        PersistedConfig {
+            port: Some(5000),
+            ..Default::default()
+        }
+        .save(&path)
+        .unwrap();
+        assert!(!dir.path().join("config.toml.bak").exists());
     }
 
     #[test]
