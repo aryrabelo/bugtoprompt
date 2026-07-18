@@ -44,8 +44,44 @@ fn read_plist_env(plist_path: &Path) -> BTreeMap<String, String> {
     out
 }
 
-/// Build a [`PersistedConfig`] from LaunchAgent env vars. Uses the same var
-/// names `config::Config` reads, so this is a straight port of the Node env.
+/// The legacy Node `BUGTOPROMPT_CONFIG` JSON shape (camelCase), a subset of
+/// `loadRawConfig()`/`buildConfig()` in `server/github-issue-service.mjs`.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyJsonConfig {
+    issue_mode: Option<bool>,
+    repos: Option<Vec<RawRepoEntry>>,
+    project_id: Option<String>,
+    screenshot_mode: Option<String>,
+    env: Option<String>,
+    default_mode: Option<String>,
+}
+
+/// Parse the legacy `BUGTOPROMPT_CONFIG` env value — inline JSON (`{...}`) or a
+/// path to a JSON file — mirroring the Node sidecar's `loadRawConfig()`.
+fn read_legacy_config(env: &BTreeMap<String, String>) -> Option<LegacyJsonConfig> {
+    let raw = env.get("BUGTOPROMPT_CONFIG")?.trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    let text = if raw.starts_with('{') {
+        raw
+    } else {
+        std::fs::read_to_string(&raw).ok()?
+    };
+    match serde_json::from_str(&text) {
+        Ok(cfg) => Some(cfg),
+        Err(err) => {
+            tracing::warn!("failed to parse legacy BUGTOPROMPT_CONFIG: {err}");
+            None
+        }
+    }
+}
+
+/// Build a [`PersistedConfig`] from LaunchAgent env vars. A legacy
+/// `BUGTOPROMPT_CONFIG` JSON (finding #3) forms the base; individual
+/// `BUGTOPROMPT_*` env vars overlay on top (present-only, never clobbering a
+/// legacy value with `None`), matching the Node env precedence.
 pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> PersistedConfig {
     let get = |k: &str| env.get(k).cloned().filter(|s| !s.is_empty());
     let split_list = |raw: String| -> Vec<String> {
@@ -57,31 +93,67 @@ pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> Persisted
     };
 
     let mut cfg = PersistedConfig::default();
+    if let Some(legacy) = read_legacy_config(env) {
+        cfg.issue_mode = legacy.issue_mode;
+        cfg.project_id = legacy.project_id;
+        cfg.screenshot_mode = legacy.screenshot_mode;
+        cfg.env = legacy.env;
+        cfg.default_mode = legacy.default_mode;
+        cfg.repos = legacy.repos;
+    }
+
     if env.get("BUGTOPROMPT_ENABLE_ISSUES").map(String::as_str) == Some("1") {
         cfg.issue_mode = Some(true);
     }
-    cfg.project_id = get("BUGTOPROMPT_PROJECT_ID");
-    cfg.screenshot_mode = get("BUGTOPROMPT_SCREENSHOT_MODE");
-    cfg.env = get("BUGTOPROMPT_ENV");
-    cfg.token = get("BUGTOPROMPT_TOKEN");
-    cfg.host = get("BUGTOPROMPT_HOST");
-    cfg.port = get("BUGTOPROMPT_PORT").and_then(|p| p.parse().ok());
-    cfg.assemblyai_key = get("ASSEMBLYAI_API_KEY");
+    if let Some(v) = get("BUGTOPROMPT_PROJECT_ID") {
+        cfg.project_id = Some(v);
+    }
+    if let Some(v) = get("BUGTOPROMPT_SCREENSHOT_MODE") {
+        cfg.screenshot_mode = Some(v);
+    }
+    if let Some(v) = get("BUGTOPROMPT_ENV") {
+        cfg.env = Some(v);
+    }
+    if let Some(v) = get("BUGTOPROMPT_TOKEN") {
+        cfg.token = Some(v);
+    }
+    if let Some(v) = get("BUGTOPROMPT_HOST") {
+        cfg.host = Some(v);
+    }
+    if let Some(v) = get("BUGTOPROMPT_PORT").and_then(|p| p.parse().ok()) {
+        cfg.port = Some(v);
+    }
+    if let Some(v) = get("ASSEMBLYAI_API_KEY") {
+        cfg.assemblyai_key = Some(v);
+    }
+
+    // Preserve the legacy transcription preference (finding #12) instead of
+    // silently falling back to local when uvx is present.
+    if let Some(t) = get("BUGTOPROMPT_TRANSCRIBE") {
+        cfg.transcription_engine = match t.as_str() {
+            "assemblyai" | "cloud" => Some("cloud".to_string()),
+            "local" | "parakeet" => Some("local".to_string()),
+            _ => None, // "auto" / unknown → no explicit preference
+        };
+    }
+
     if let Some(origins) = get("BUGTOPROMPT_ALLOWED_ORIGINS") {
         let list = split_list(origins);
         if !list.is_empty() {
             cfg.allowed_origins = Some(list);
         }
     }
+
+    // Repos: legacy `repos` (base) plus env `BUGTOPROMPT_REPOS` appended,
+    // mirroring the Node buildConfig merge order.
     if let Some(repos) = get("BUGTOPROMPT_REPOS") {
-        let list: Vec<RawRepoEntry> = split_list(repos)
-            .into_iter()
-            .map(RawRepoEntry::Str)
-            .collect();
+        let mut list = cfg.repos.take().unwrap_or_default();
+        list.extend(split_list(repos).into_iter().map(RawRepoEntry::Str));
         if !list.is_empty() {
             cfg.repos = Some(list);
         }
     }
+
     cfg
 }
 
@@ -212,5 +284,62 @@ mod tests {
         let migrated = migrate_from_launch_agent(&plist, &config).unwrap();
         assert!(!migrated);
         assert!(!config.exists());
+    }
+    #[test]
+    fn merges_legacy_bugtoprompt_config_file_and_transcribe_pref() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("legacy.github.json");
+        std::fs::write(
+            &legacy,
+            r#"{"issueMode":true,"projectId":"legacy-proj","repos":["acme/web","acme/api#dev"]}"#,
+        )
+        .unwrap();
+        let plist_body = format!(
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<plist version=\"1.0\"><dict>\n",
+                "<key>EnvironmentVariables</key><dict>\n",
+                "<key>BUGTOPROMPT_CONFIG</key><string>{}</string>\n",
+                "<key>BUGTOPROMPT_TRANSCRIBE</key><string>assemblyai</string>\n",
+                "<key>BUGTOPROMPT_REPOS</key><string>extra/repo</string>\n",
+                "</dict></dict></plist>\n"
+            ),
+            legacy.display()
+        );
+        let plist = dir.path().join("agent.plist");
+        let config = dir.path().join("config.toml");
+        std::fs::write(&plist, plist_body).unwrap();
+
+        assert!(migrate_from_launch_agent(&plist, &config).unwrap());
+        let parsed: PersistedConfig =
+            toml::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        // Legacy JSON fields imported (finding #3)...
+        assert_eq!(parsed.issue_mode, Some(true));
+        assert_eq!(parsed.project_id.as_deref(), Some("legacy-proj"));
+        // ...legacy transcribe preference preserved as cloud (finding #12)...
+        assert_eq!(parsed.transcription_engine.as_deref(), Some("cloud"));
+        // ...and env BUGTOPROMPT_REPOS appended after the legacy repos.
+        assert_eq!(
+            parsed.repos,
+            Some(vec![
+                RawRepoEntry::Str("acme/web".to_string()),
+                RawRepoEntry::Str("acme/api#dev".to_string()),
+                RawRepoEntry::Str("extra/repo".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_inline_legacy_json_and_transcribe() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "BUGTOPROMPT_CONFIG".to_string(),
+            r#"{"issueMode":true,"repos":["a/b"]}"#.to_string(),
+        );
+        env.insert("BUGTOPROMPT_TRANSCRIBE".to_string(), "local".to_string());
+        let cfg = config_from_launch_agent_env(&env);
+        assert_eq!(cfg.issue_mode, Some(true));
+        assert_eq!(cfg.repos, Some(vec![RawRepoEntry::Str("a/b".to_string())]));
+        assert_eq!(cfg.transcription_engine.as_deref(), Some("local"));
     }
 }

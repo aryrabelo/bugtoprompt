@@ -15,7 +15,7 @@ use tao::event_loop::EventLoopWindowTarget;
 use tao::window::{Window, WindowBuilder};
 use wry::{WebView, WebViewBuilder};
 
-use sidecar_rust::preflight::UV_INSTALL_COMMAND;
+use sidecar_rust::preflight::{UV_INSTALL_SHA256, UV_INSTALL_URL, UV_VERSION};
 
 const SETTINGS_HTML: &str = include_str!("../settings.html");
 
@@ -107,53 +107,142 @@ pub fn spawn_uvx_probe(tx: Sender<Worker>) {
     });
 }
 
-/// Run the `uv` installer (PRD §6 one-click install), streaming merged output
-/// lines back, then re-probe so the status flips to ready on success. Output
-/// is merged (`2>&1`) and drained from a single stream so a chatty `curl`
-/// progress bar on stderr can never fill a pipe and deadlock the child.
+/// Directory `uv` installs `uvx` into (`~/.local/bin`). Used to re-probe right
+/// after an install, before the updated PATH is visible to this already-running
+/// process (finding #8).
+fn uv_install_bin_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("bin"))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Re-probe `uvx` with `~/.local/bin` prepended to PATH so a just-installed
+/// binary is found even though this process's inherited PATH predates it.
+fn probe_uvx_after_install() -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    rt.block_on(async {
+        // Mirrors preflight::detect_local_engine, but with an augmented PATH.
+        let mut cmd = tokio::process::Command::new("uvx");
+        cmd.args(["parakeet-mlx", "--version"]).kill_on_drop(true);
+        if let Some(dir) = uv_install_bin_dir() {
+            let existing = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths: Vec<std::path::PathBuf> = std::env::split_paths(&existing).collect();
+            paths.insert(0, dir);
+            if let Ok(joined) = std::env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
+        }
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), cmd.output()).await,
+            Ok(Ok(out)) if out.status.success()
+        )
+    })
+}
+
+/// Install `uv` (PRD §6) as separate, individually-checked steps: download the
+/// pinned installer, verify its SHA-256, then execute it. A failed or tampered
+/// download can no longer be reported as success (finding #7), and the
+/// post-install probe is PATH-aware (finding #8).
 pub fn spawn_uvx_install(tx: Sender<Worker>) {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
 
     thread::spawn(move || {
-        let _ = tx.send(Worker::InstallLine(format!("$ {UV_INSTALL_COMMAND}")));
-        let child = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{UV_INSTALL_COMMAND} 2>&1"))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
-        let mut child = match child {
-            Ok(c) => c,
+        let send = |line: String| {
+            let _ = tx.send(Worker::InstallLine(line));
+        };
+
+        // 1. Download the pinned installer to a temp file (checked).
+        send(format!("Downloading uv {UV_VERSION} installer…"));
+        let tmp =
+            std::env::temp_dir().join(format!("bugtoprompt-uv-install-{}.sh", std::process::id()));
+        match Command::new("curl")
+            .args(["-fLsS", UV_INSTALL_URL, "-o"])
+            .arg(&tmp)
+            .status()
+        {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                send(format!("download failed: curl exited with {s}"));
+                let _ = std::fs::remove_file(&tmp);
+                return;
+            }
             Err(err) => {
-                let _ = tx.send(Worker::InstallLine(format!(
-                    "failed to start installer: {err}"
-                )));
+                send(format!("download failed: {err}"));
+                return;
+            }
+        }
+
+        // 2. Verify the checksum BEFORE executing (finding #4).
+        let bytes = match std::fs::read(&tmp) {
+            Ok(b) => b,
+            Err(err) => {
+                send(format!("could not read installer: {err}"));
+                let _ = std::fs::remove_file(&tmp);
                 return;
             }
         };
+        let digest = sha256_hex(&bytes);
+        if digest != UV_INSTALL_SHA256 {
+            send(format!(
+                "checksum mismatch — refusing to run installer (expected {UV_INSTALL_SHA256}, got {digest})"
+            ));
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        send("Checksum verified. Running installer…".to_string());
+
+        // 3. Execute the verified script (checked). stdout + stderr are drained
+        //    concurrently so neither pipe can fill and deadlock the child.
+        let mut child = match Command::new("sh")
+            .arg(&tmp)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(err) => {
+                send(format!("failed to start installer: {err}"));
+                let _ = std::fs::remove_file(&tmp);
+                return;
+            }
+        };
+        if let Some(err_out) = child.stderr.take() {
+            let tx_err = tx.clone();
+            thread::spawn(move || {
+                for line in BufReader::new(err_out).lines().map_while(Result::ok) {
+                    let _ = tx_err.send(Worker::InstallLine(line));
+                }
+            });
+        }
         if let Some(out) = child.stdout.take() {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
-                let _ = tx.send(Worker::InstallLine(line));
+                send(line);
             }
         }
-        match child.wait() {
-            Ok(status) if status.success() => {
-                let _ = tx.send(Worker::InstallLine("✓ uv installed".to_string()));
-            }
-            Ok(status) => {
-                let _ = tx.send(Worker::InstallLine(format!("installer exited: {status}")));
-            }
-            Err(err) => {
-                let _ = tx.send(Worker::InstallLine(format!("installer wait failed: {err}")));
-            }
+        let ok = matches!(child.wait(), Ok(status) if status.success());
+        let _ = std::fs::remove_file(&tmp);
+        if ok {
+            send("✓ uv installed".to_string());
+        } else {
+            send("installer failed".to_string());
         }
-        // Re-probe regardless so the indicator reflects reality.
-        let ready = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map(|rt| rt.block_on(sidecar_rust::preflight::detect_local_engine()))
-            .unwrap_or(false);
-        let _ = tx.send(Worker::Uvx(ready));
+
+        // 4. Re-probe with a PATH that includes the new install dir (finding #8).
+        let _ = tx.send(Worker::Uvx(probe_uvx_after_install()));
     });
 }

@@ -216,10 +216,14 @@ fn main() {
     });
 }
 
-/// Persist a settings save, then restart the server so it picks up the new
-/// CORS allowlist / host / port. Restart-on-save is acceptable for v1 per the
-/// #58 acceptance criteria; hot-reload is a nice-to-have. Returns whether the
-/// config file was written.
+/// Validate, persist, then restart the server so it picks up the new CORS
+/// allowlist / host / port / transcription preference. Restart-on-save is
+/// acceptable for v1 per the #58 acceptance criteria; hot-reload is a
+/// nice-to-have. Returns whether the config was written.
+///
+/// The effective config is validated BEFORE anything is written or the
+/// supervisor is replaced (finding #10): saving issue mode with zero repos
+/// would restart an immediately-invalid sidecar, so that save is rejected.
 fn save_and_restart(
     payload: settings_ui::SavePayload,
     supervisor: &mut Option<Supervisor>,
@@ -231,6 +235,14 @@ fn save_and_restart(
         return false;
     };
     let next = settings_ui::apply_save(config::load_persisted(), payload);
+
+    // Build the effective config and validate it before touching disk.
+    let effective = Config::from_persisted(next.clone());
+    if effective.issue_mode && effective.targets.is_empty() {
+        tracing::warn!("refusing to save: issue mode enabled but no repository configured");
+        return false;
+    }
+
     if let Err(err) = next.save(&path) {
         tracing::error!("failed to write {}: {err}", path.display());
         return false;
@@ -238,10 +250,9 @@ fn save_and_restart(
     if let Some(mut sup) = supervisor.take() {
         sup.shutdown();
     }
-    let cfg = Config::load();
-    *running_host = cfg.host.clone();
-    *running_port = cfg.port;
-    *supervisor = Some(Supervisor::spawn(cfg));
+    *running_host = effective.host.clone();
+    *running_port = effective.port;
+    *supervisor = Some(Supervisor::spawn(effective));
     info!(
         "settings saved; server restarted on {}:{}",
         running_host, running_port

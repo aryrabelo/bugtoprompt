@@ -31,9 +31,12 @@ pub struct Target {
 pub enum RawRepoEntry {
     Str(String),
     Obj {
+        #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         repo: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
     },
 }
@@ -81,17 +84,59 @@ pub struct PersistedConfig {
 }
 
 impl PersistedConfig {
-    /// Serialize to TOML and write atomically-ish to `path`, creating parent
-    /// directories. Called by the Settings UI "Save" and by the first-run
-    /// LaunchAgent migration.
+    /// Serialize to TOML and write to `path` atomically with owner-only
+    /// (0600) permissions, creating parent directories.
+    ///
+    /// The file holds the bearer token + AssemblyAI key, so it must not be
+    /// world-readable. And the write is atomic (temp sibling + rename) so a
+    /// crash mid-write leaves the previous config intact rather than a
+    /// truncated file that `load_persisted` would silently reset to defaults.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let text = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, text)
+        let tmp = tmp_sibling(path);
+        write_private(&tmp, text.as_bytes())?;
+        // rename is atomic on the same filesystem and preserves the temp
+        // file's 0600 mode.
+        std::fs::rename(&tmp, path)
     }
+}
+
+/// A `.tmp` sibling of `path` for the atomic write.
+fn tmp_sibling(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// Write `bytes` to `path`, forcing owner-only (0600) permissions on Unix.
+/// On non-Unix the mode hardening is a best-effort no-op.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(bytes)?;
+    // Force 0600 even if the temp file somehow pre-existed with a looser mode.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.flush()
 }
 
 /// Resolve the persisted config path: `BUGTOPROMPT_CONFIG` override, else
@@ -179,12 +224,22 @@ pub struct Config {
     pub allowed_origins: HashSet<String>,
     pub token: Option<String>,
     pub assemblyai_key: Option<String>,
+    /// User's transcription engine preference ("local" | "cloud"), honored by
+    /// `preflight::resolve_transcription_provider`. `None` = auto.
+    pub transcription_engine: Option<String>,
     pub captures_root: PathBuf,
 }
 
 impl Config {
     pub fn load() -> Self {
         Self::from_env_and_raw(load_persisted(), &EnvReader)
+    }
+
+    /// Build the effective runtime config from an in-memory persisted config
+    /// (layered under the real environment), without re-reading the file. The
+    /// Settings UI uses this to validate a pending save before writing it.
+    pub fn from_persisted(raw: PersistedConfig) -> Self {
+        Self::from_env_and_raw(raw, &EnvReader)
     }
 
     /// Testable core: takes the persisted file config and an env reader so
@@ -258,6 +313,18 @@ impl Config {
 
         let assemblyai_key = env.get("ASSEMBLYAI_API_KEY").or(raw.assemblyai_key);
 
+        // Transcription engine preference: env `BUGTOPROMPT_TRANSCRIBE`
+        // ("local" | "assemblyai"/"cloud"; "auto" or unknown → no explicit
+        // preference) overrides the persisted value.
+        let transcription_engine = env
+            .get("BUGTOPROMPT_TRANSCRIBE")
+            .and_then(|t| match t.as_str() {
+                "assemblyai" | "cloud" => Some("cloud".to_string()),
+                "local" | "parakeet" => Some("local".to_string()),
+                _ => None,
+            })
+            .or(raw.transcription_engine);
+
         // ponytail: testability-only override, not part of the frozen wire
         // contract. Node has no equivalent — it always writes under
         // `process.cwd()/.bugtoprompt/captures`; production keeps that
@@ -285,6 +352,7 @@ impl Config {
             allowed_origins,
             token,
             assemblyai_key,
+            transcription_engine,
             captures_root,
         }
     }
@@ -454,5 +522,74 @@ mod tests {
         assert!(cfg.allowed_origins.contains("http://localhost:3000"));
         assert_eq!(cfg.targets.len(), 1);
         assert_eq!(cfg.targets[0].id, "acme/web");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn save_writes_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let cfg = PersistedConfig {
+            token: Some("secret-bearer".to_string()),
+            assemblyai_key: Some("sk-secret".to_string()),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "config with secrets must be 0600, got {mode:o}"
+        );
+    }
+
+    #[test]
+    fn save_is_atomic_and_replaces_a_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Simulate a prior crash that left a truncated/corrupt file.
+        std::fs::write(&path, "this is not = valid toml [[[").unwrap();
+        assert!(read_toml(&path).is_none(), "precondition: file is corrupt");
+
+        let cfg = PersistedConfig {
+            port: Some(4127),
+            tier: Some("pro".to_string()),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+
+        // The corrupt content is fully replaced with a complete, parseable file
+        // and no temp sibling is left behind.
+        assert_eq!(read_toml(&path).unwrap(), cfg);
+        assert!(!dir.path().join("config.toml.tmp").exists());
+    }
+
+    #[test]
+    fn structured_obj_repos_round_trip_through_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let cfg = PersistedConfig {
+            repos: Some(vec![
+                RawRepoEntry::Obj {
+                    id: Some("custom-id".to_string()),
+                    name: Some("My Web".to_string()),
+                    repo: "acme/web".to_string(),
+                    branch: Some("dev".to_string()),
+                },
+                // All-None fields — exactly what homogenize_repos emits for a
+                // promoted bare-string row; toml would reject these without
+                // skip_serializing_if.
+                RawRepoEntry::Obj {
+                    id: None,
+                    name: None,
+                    repo: "acme/api".to_string(),
+                    branch: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        // Must not error serializing the table form (skip_serializing_if drops
+        // the None fields) and must round-trip identically.
+        cfg.save(&path).unwrap();
+        assert_eq!(read_toml(&path).unwrap(), cfg);
     }
 }

@@ -72,7 +72,7 @@
     <label for="engine">Engine</label>
     <select id="engine">
       <option value="local">Local (Parakeet via uvx)</option>
-      <option value="cloud">Cloud (AssemblyAI — Pro)</option>
+      <option value="cloud" disabled>Cloud (AssemblyAI — #60)</option>
     </select>
     <div class="uvx">uvx status: <span id="uvxStatus" class="hint">checking…</span></div>
     <button id="installUvx" class="icon" style="display:none">Install uv (uvx)</button>
@@ -138,13 +138,46 @@
     return out;
   }
 
+  // finding #11: only http(s) origins, persisted as the canonical `origin`
+  // (scheme://host[:port]) so they can actually match a browser Origin header.
+  function canonicalOrigin(value) {
+    try {
+      var u = new URL(value);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+      return u.origin;
+    } catch (_e) {
+      return null;
+    }
+  }
+  function collectOrigins(container) {
+    var out = [], seen = {};
+    container.querySelectorAll("input").forEach(function (el) {
+      var v = el.value.trim();
+      if (!v) return;
+      var origin = canonicalOrigin(v);
+      if (!origin || seen[origin]) return; // drop invalid + duplicates
+      seen[origin] = true;
+      el.value = origin; // reflect the canonical form back to the user
+      out.push(origin);
+    });
+    return out;
+  }
+
+  // finding #14: assign a persisted select value only when it maps to a known
+  // option; otherwise fall back rather than silently erasing it. A *disabled*
+  // option still counts as known — a migrated "cloud" preference (#12) is kept
+  // (shown, un-clobbered on save) even though the user can't newly pick it.
+  function setSelect(el, value, fallback) {
+    var known = Array.prototype.some.call(el.options, function (o) {
+      return o.value === value;
+    });
+    el.value = known ? value : fallback;
+  }
+
   function applyTierState() {
     var pro = $("tier").value === "pro";
     $("assemblyaiKey").disabled = !pro;
-    // "cloud" engine and "hosted" github require Pro.
-    Array.prototype.forEach.call($("engine").options, function (o) {
-      if (o.value === "cloud") o.disabled = !pro;
-    });
+    // Cloud engine stays disabled until the hosted relay lands (#60).
   }
 
   // ---- Rust → JS bridge --------------------------------------------------
@@ -153,11 +186,11 @@
       $("status").textContent = s.running
         ? "● Sidecar running on " + s.host + ":" + s.port
         : "● Sidecar not running";
-      $("tier").value = s.tier || "lite";
+      setSelect($("tier"), s.tier || "lite", "lite");
       $("email").value = s.email || "";
-      $("engine").value = s.transcription_engine || "local";
+      setSelect($("engine"), s.transcription_engine || "local", "local");
       $("assemblyaiKey").value = s.assemblyai_key || "";
-      $("githubMode").value = s.github_mode || "local";
+      setSelect($("githubMode"), s.github_mode || "local", "local");
       $("origins").innerHTML = "";
       (s.allowed_origins || []).forEach(function (o) {
         makeRow($("origins"), o, "https://example.com");
@@ -174,7 +207,12 @@
       if (status === "ready") { el.textContent = "✓ ready"; el.className = "ready"; }
       else if (status === "missing") { el.textContent = "✗ not installed"; el.className = "missing"; }
       else { el.textContent = "checking…"; el.className = "hint"; }
-      $("installUvx").style.display = status === "missing" ? "inline-block" : "none";
+      // finding #15: re-enable the install button once the (post-install) probe
+      // resolves.
+      var btn = $("installUvx");
+      btn.style.display = status === "missing" ? "inline-block" : "none";
+      btn.disabled = false;
+      btn.textContent = "Install uv (uvx)";
     },
     onInstallProgress: function (line) {
       $("installLog").textContent += line + "\n";
@@ -195,7 +233,11 @@
     makeRow($("repos"), "", "owner/repo#branch").focus();
   });
   $("installUvx").addEventListener("click", function () {
+    // finding #15: prevent re-entrant installs while one runs.
     $("installLog").textContent = "";
+    var btn = $("installUvx");
+    btn.disabled = true;
+    btn.textContent = "Installing…";
     post({ type: "installUvx" });
   });
   $("quit").addEventListener("click", function () { post({ type: "quit" }); });
@@ -209,7 +251,7 @@
         assemblyaiKey: $("assemblyaiKey").value.trim(),
         githubMode: $("githubMode").value,
         repos: collectRows($("repos")),
-        allowedOrigins: collectRows($("origins"))
+        allowedOrigins: collectOrigins($("origins"))
       }
     });
   });

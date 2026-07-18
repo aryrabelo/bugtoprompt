@@ -121,6 +121,7 @@ mod tests {
             allowed_origins: HashSet::new(),
             token: None,
             assemblyai_key: None,
+            transcription_engine: None,
             captures_root: std::env::temp_dir()
                 .join("sidecar-tray-tests")
                 .join(port.to_string()),

@@ -46,9 +46,20 @@ pub async fn detect_gh_state() -> GhState {
     }
 }
 
-/// Shell one-liner the Settings UI runs when `uvx` is missing (PRD §6):
-/// installs Astral's `uv` (which provides `uvx`).
-pub const UV_INSTALL_COMMAND: &str = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+/// Pinned uv version whose installer we download and verify (finding #4). Bump
+/// deliberately, together with `UV_INSTALL_SHA256`.
+pub const UV_VERSION: &str = "0.11.29";
+
+/// Versioned (immutable) installer URL for [`UV_VERSION`]. The unversioned
+/// `https://astral.sh/uv/install.sh` is a moving target and must not be piped
+/// straight into a shell.
+pub const UV_INSTALL_URL: &str = "https://astral.sh/uv/0.11.29/install.sh";
+
+/// SHA-256 of the installer served at [`UV_INSTALL_URL`]. The Settings UI
+/// downloads the script, verifies this digest, and only then executes it — so a
+/// rewritten or man-in-the-middled installer never runs.
+pub const UV_INSTALL_SHA256: &str =
+    "504a79fd2ed0dcd47e7f04f0792cfd0871f62e24a7fe40fa8ae0f563a369f2bd";
 
 /// Probe whether the parakeet-mlx CLI is available through `uvx`.
 pub async fn detect_local_engine() -> bool {
@@ -82,33 +93,48 @@ impl TranscriptionState {
     }
 }
 
-/// Which backend serves `POST /transcribe` — local takes precedence over a
-/// configured AssemblyAI key. Real routing lands in #55; #54 only needs this
-/// for `GET /bugtoprompt/config`'s `transcriptionProvider` field.
+/// Which backend serves `POST /transcribe`. An explicit `engine_pref`
+/// ("local" | "cloud") is honored when it is actually available; otherwise the
+/// default precedence applies (local over a configured AssemblyAI key). Real
+/// routing lands in #55/#60; #54 only needs this for `GET /bugtoprompt/config`.
 pub fn resolve_transcription_provider(
     local_ready: bool,
     assemblyai_key: Option<&str>,
+    engine_pref: Option<&str>,
 ) -> &'static str {
+    let has_key = assemblyai_key.is_some_and(|k| !k.is_empty());
+    match engine_pref {
+        Some("cloud") if has_key => return "assemblyai",
+        Some("local") if local_ready => return "local",
+        _ => {}
+    }
     if local_ready {
         return "local";
     }
-    if assemblyai_key.is_some_and(|k| !k.is_empty()) {
+    if has_key {
         return "assemblyai";
     }
     "unconfigured"
 }
 
-/// Resolve `GET /health`'s `transcription` field: local engine ready →
-/// "local" (LITE default), else a configured cloud key → "ready", else
-/// "unconfigured".
+/// Resolve `GET /health`'s `transcription` field, honoring the same explicit
+/// `engine_pref` as [`resolve_transcription_provider`]: cloud pref + key →
+/// "ready", local pref + engine ready → "local", else default precedence.
 pub fn detect_transcription_state(
     local_ready: bool,
     assemblyai_key: Option<&str>,
+    engine_pref: Option<&str>,
 ) -> TranscriptionState {
+    let has_key = assemblyai_key.is_some_and(|k| !k.is_empty());
+    match engine_pref {
+        Some("cloud") if has_key => return TranscriptionState::Ready,
+        Some("local") if local_ready => return TranscriptionState::Local,
+        _ => {}
+    }
     if local_ready {
         return TranscriptionState::Local;
     }
-    if assemblyai_key.is_some_and(|k| !k.is_empty()) {
+    if has_key {
         return TranscriptionState::Ready;
     }
     TranscriptionState::Unconfigured
@@ -146,16 +172,50 @@ mod tests {
     }
 
     #[test]
-    fn transcription_provider_prefers_local() {
-        assert_eq!(resolve_transcription_provider(true, Some("key")), "local");
+    fn transcription_provider_prefers_local_by_default() {
         assert_eq!(
-            resolve_transcription_provider(false, Some("key")),
+            resolve_transcription_provider(true, Some("key"), None),
+            "local"
+        );
+        assert_eq!(
+            resolve_transcription_provider(false, Some("key"), None),
             "assemblyai"
         );
-        assert_eq!(resolve_transcription_provider(false, None), "unconfigured");
         assert_eq!(
-            resolve_transcription_provider(false, Some("")),
+            resolve_transcription_provider(false, None, None),
             "unconfigured"
+        );
+        assert_eq!(
+            resolve_transcription_provider(false, Some(""), None),
+            "unconfigured"
+        );
+    }
+
+    #[test]
+    fn transcription_provider_honors_explicit_engine_pref() {
+        // Cloud preferred over a ready local engine when a key exists.
+        assert_eq!(
+            resolve_transcription_provider(true, Some("key"), Some("cloud")),
+            "assemblyai"
+        );
+        // Cloud pref with no key falls back to local.
+        assert_eq!(
+            resolve_transcription_provider(true, None, Some("cloud")),
+            "local"
+        );
+        // Local pref is honored.
+        assert_eq!(
+            resolve_transcription_provider(true, Some("key"), Some("local")),
+            "local"
+        );
+        // Health state mirrors the same preference.
+        assert_eq!(
+            detect_transcription_state(true, Some("key"), Some("cloud")),
+            TranscriptionState::Ready
+        );
+        assert_eq!(
+            detect_transcription_state(true, Some("key"), Some("local")),
+            TranscriptionState::Local
         );
     }
 

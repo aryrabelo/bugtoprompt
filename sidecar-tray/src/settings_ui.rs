@@ -28,9 +28,11 @@ pub struct UiState {
 }
 
 /// The subset of settings the webview edits. Camel-case matches the JSON the
-/// `save` message carries under `config`.
+/// `save` message carries under `config`. No `serde(default)`: every field must
+/// be present, so a partial/older payload fails to parse and is rejected rather
+/// than silently clearing the omitted settings (finding #5).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavePayload {
     pub tier: String,
     pub email: String,
@@ -120,9 +122,59 @@ pub fn state_json(
         .unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Split `owner/repo#branch` into `(repo, Option<branch>)`.
+fn split_repo_spec(spec: &str) -> (String, Option<String>) {
+    let mut parts = spec.splitn(2, '#');
+    let repo = parts.next().unwrap_or("").trim().to_string();
+    let branch = parts
+        .next()
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(str::to_string);
+    (repo, branch)
+}
+
+/// The `owner/repo` key of an entry, ignoring any branch.
+fn repo_key(entry: &RawRepoEntry) -> String {
+    match entry {
+        RawRepoEntry::Str(s) => s.split('#').next().unwrap_or("").trim().to_string(),
+        RawRepoEntry::Obj { repo, .. } => repo.trim().to_string(),
+    }
+}
+
+/// TOML cannot serialize an array mixing bare strings and tables. If any
+/// structured entry survived the merge, promote every entry to the table form
+/// so the array is homogeneous (and round-trips).
+fn homogenize_repos(entries: Vec<RawRepoEntry>) -> Vec<RawRepoEntry> {
+    if !entries
+        .iter()
+        .any(|e| matches!(e, RawRepoEntry::Obj { .. }))
+    {
+        return entries;
+    }
+    entries
+        .into_iter()
+        .map(|e| match e {
+            RawRepoEntry::Str(s) => {
+                let (repo, branch) = split_repo_spec(&s);
+                RawRepoEntry::Obj {
+                    id: None,
+                    name: None,
+                    repo,
+                    branch,
+                }
+            }
+            obj => obj,
+        })
+        .collect()
+}
+
 /// Merge a webview save payload into the current persisted config. Empty
 /// strings/lists clear a field (become `None`); `issue_mode`, `project_id`,
 /// `token`, `host`, `port` and other non-UI fields are preserved as-is.
+/// Repo rows that match an existing structured entry keep their `id`/`name`
+/// (finding #6); repo/origin rows are de-duplicated preserving first-seen order
+/// (finding #13).
 pub fn apply_save(mut cfg: PersistedConfig, payload: SavePayload) -> PersistedConfig {
     let opt = |s: String| {
         let t = s.trim().to_string();
@@ -134,20 +186,38 @@ pub fn apply_save(mut cfg: PersistedConfig, payload: SavePayload) -> PersistedCo
     cfg.assemblyai_key = opt(payload.assemblyai_key);
     cfg.github_mode = opt(payload.github_mode);
 
-    let repos: Vec<RawRepoEntry> = payload
-        .repos
-        .into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(RawRepoEntry::Str)
-        .collect();
-    cfg.repos = if repos.is_empty() { None } else { Some(repos) };
+    let current = cfg.repos.take().unwrap_or_default();
+    let mut merged: Vec<RawRepoEntry> = Vec::new();
+    let mut seen_repos = std::collections::HashSet::new();
+    for spec in payload.repos {
+        let (repo, branch) = split_repo_spec(&spec);
+        if repo.is_empty() || !seen_repos.insert(repo.clone()) {
+            continue;
+        }
+        match current.iter().find(|e| repo_key(e) == repo) {
+            Some(RawRepoEntry::Obj { id, name, .. }) => merged.push(RawRepoEntry::Obj {
+                id: id.clone(),
+                name: name.clone(),
+                repo,
+                branch,
+            }),
+            _ => merged.push(RawRepoEntry::Str(spec.trim().to_string())),
+        }
+    }
+    let merged = homogenize_repos(merged);
+    cfg.repos = if merged.is_empty() {
+        None
+    } else {
+        Some(merged)
+    };
 
+    let mut seen_origins = std::collections::HashSet::new();
     let origins: Vec<String> = payload
         .allowed_origins
         .into_iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .filter(|s| seen_origins.insert(s.clone()))
         .collect();
     cfg.allowed_origins = if origins.is_empty() {
         None
@@ -255,5 +325,76 @@ mod tests {
         assert!(json.contains("\"transcription_engine\":\"local\""));
         assert!(json.contains("acme/api#dev"), "json:{json}");
         assert!(json.contains("https://x.example"));
+    }
+    #[test]
+    fn rejects_partial_save_payload() {
+        // Missing githubMode/repos/allowedOrigins → must not parse (finding #5)
+        // so omitted settings are never silently cleared.
+        assert_eq!(
+            parse_ipc(
+                r#"{"type":"save","config":{"tier":"pro","email":"","transcriptionEngine":"local","assemblyaiKey":""}}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn apply_save_preserves_structured_repo_and_dedups() {
+        let cur = PersistedConfig {
+            repos: Some(vec![RawRepoEntry::Obj {
+                id: Some("custom-id".to_string()),
+                name: Some("My Web".to_string()),
+                repo: "acme/web".to_string(),
+                branch: Some("main".to_string()),
+            }]),
+            ..Default::default()
+        };
+        let payload = SavePayload {
+            tier: "lite".to_string(),
+            email: String::new(),
+            transcription_engine: "local".to_string(),
+            assemblyai_key: String::new(),
+            github_mode: "local".to_string(),
+            repos: vec![
+                "acme/web#dev".to_string(),
+                "acme/new".to_string(),
+                "acme/web".to_string(), // duplicate repo → dropped (finding #13)
+            ],
+            allowed_origins: vec![
+                "https://a.example".to_string(),
+                "https://a.example".to_string(), // duplicate → dropped
+                "https://b.example".to_string(),
+            ],
+        };
+        let next = apply_save(cur, payload);
+        let repos = next.repos.unwrap();
+        assert_eq!(repos.len(), 2, "acme/web deduped");
+        // id/name preserved, branch updated to dev (finding #6); homogenized to
+        // Obj because a structured entry is present.
+        assert_eq!(
+            repos[0],
+            RawRepoEntry::Obj {
+                id: Some("custom-id".to_string()),
+                name: Some("My Web".to_string()),
+                repo: "acme/web".to_string(),
+                branch: Some("dev".to_string()),
+            }
+        );
+        assert_eq!(
+            repos[1],
+            RawRepoEntry::Obj {
+                id: None,
+                name: None,
+                repo: "acme/new".to_string(),
+                branch: None,
+            }
+        );
+        assert_eq!(
+            next.allowed_origins,
+            Some(vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string(),
+            ])
+        );
     }
 }
