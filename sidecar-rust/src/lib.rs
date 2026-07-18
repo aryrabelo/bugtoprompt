@@ -21,12 +21,14 @@ pub mod app;
 pub mod config;
 pub mod gh;
 pub mod handlers;
+pub mod launch;
 pub mod migrate;
 pub mod mw;
 pub mod preflight;
 pub mod security;
 pub mod state;
 pub mod transcribe;
+pub mod updater;
 
 /// Bind the axum server on `config.host:config.port` and serve until
 /// `shutdown` resolves. Spawns the same background `gh`/transcription
