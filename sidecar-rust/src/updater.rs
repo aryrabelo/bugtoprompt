@@ -105,12 +105,19 @@ fn parse_release_obj(value: &serde_json::Value) -> Option<VersionedRelease> {
     Some((ReleaseInfo { tag, html_url }, version))
 }
 
-/// Number of releases requested per page and the page cap. GitHub returns
-/// releases newest-first; we scan up to `MAX_PAGES` so a highest-semver release
-/// on a later page (e.g. after many patch backports) is not missed, while the
-/// bound keeps a misconfigured repo from looping forever.
+/// Releases requested per page. GitHub returns releases newest-first.
 const PER_PAGE: usize = 100;
-const MAX_PAGES: u32 = 10;
+
+/// Safety bound only. The real terminator is the first short (not-full) page —
+/// see [`is_last_page`] — so every page of a normal repo is scanned. This cap
+/// merely prevents an unbounded loop if the API kept returning full pages
+/// forever; 100 pages = 10k releases, far beyond any real repo.
+const MAX_PAGES: u32 = 100;
+
+/// A page with fewer than [`PER_PAGE`] releases is the last one.
+fn is_last_page(raw_count: usize) -> bool {
+    raw_count < PER_PAGE
+}
 
 /// Parse a GitHub `/releases` page into `(raw_count, usable_releases)`.
 /// `raw_count` is the number of release objects the API returned — used to
@@ -191,8 +198,9 @@ pub fn check_for_update(repo: &str, current: &str) -> Option<ReleaseInfo> {
                 best = Some((info, version));
             }
         }
-        // A short page (fewer than requested) is the last one.
-        if raw_count < PER_PAGE {
+        // Stop at the first not-full page — the natural end of the release list.
+        // MAX_PAGES is only a safety net if the API never returns a short page.
+        if is_last_page(raw_count) {
             break;
         }
     }
@@ -397,6 +405,15 @@ mod tests {
             stable("v0.3.0"),
         ])));
         assert_eq!(highest_newer(merged, (0, 1, 0)).unwrap().tag, "v0.4.0");
+    }
+
+    #[test]
+    fn is_last_page_detects_a_not_full_page() {
+        // Finding: a full page means "keep scanning"; only a short page ends it,
+        // so a repo with >MAX_PAGES*PER_PAGE releases is not cut off by the cap.
+        assert!(is_last_page(0));
+        assert!(is_last_page(99));
+        assert!(!is_last_page(100));
     }
 
     #[test]
