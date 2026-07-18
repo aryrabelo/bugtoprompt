@@ -44,16 +44,20 @@ fn main() {
 
     // Retire the legacy Node LaunchAgent (issue #59): stop the old daemon and
     // rename its plist so exactly one process binds the port and launchd never
-    // reloads it at the next login. Runs before we bind. If the old job is still
-    // running (unload failed), abort with a clear message instead of racing into
-    // a doomed bind that would silently leave nothing listening.
-    if sidecar_rust::launch::disable_legacy_launch_agent()
-        == sidecar_rust::launch::LegacyDisable::StillRunning
-    {
-        eprintln!(
-            "bugtoprompt: the legacy LaunchAgent daemon is still running and holding the port. Run `launchctl unload ~/Library/LaunchAgents/com.bugtoprompt.sidecar.plist` (or reboot), then relaunch."
-        );
-        std::process::exit(1);
+    // reloads it at the next login. Runs before we bind. Any outcome other than
+    // "cleanly disabled" or "nothing to disable" is unsafe — starting anyway
+    // would double-bind now (StillRunning), leave the old plist to relaunch at
+    // next login (RenameFailed), or proceed without knowing the job's state
+    // (Unknown) — so abort with a clear, actionable message.
+    match sidecar_rust::launch::disable_legacy_launch_agent() {
+        sidecar_rust::launch::LegacyDisable::NotPresent
+        | sidecar_rust::launch::LegacyDisable::Disabled => {}
+        outcome => {
+            eprintln!(
+                "bugtoprompt: could not safely retire the legacy LaunchAgent ({outcome:?}). Run `launchctl unload ~/Library/LaunchAgents/com.bugtoprompt.sidecar.plist` and remove/rename that plist, then relaunch. Refusing to start a second process on the port."
+            );
+            std::process::exit(1);
+        }
     }
 
     let config = Config::load();
@@ -354,16 +358,31 @@ fn open_logs_dir() {
 /// GitHub `owner/repo` the updater polls for new releases (issue #59, PRD §10).
 const UPDATE_REPO: &str = "aryrabelo/bugtoprompt";
 
-/// Build the login-item auto-launcher for the currently-running executable.
+/// The `.app` bundle a packaged executable lives inside, so auto-launch
+/// registers `/Applications/BugToPrompt.app` rather than the inner
+/// `Contents/MacOS/BugToPrompt` (which macOS Login Items cannot relaunch
+/// correctly). Falls back to `exe` itself when not inside a bundle, e.g. under
+/// `cargo run` during development.
+fn app_bundle_path(exe: &std::path::Path) -> std::path::PathBuf {
+    exe.ancestors()
+        .find(|p| p.extension().is_some_and(|ext| ext == "app"))
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| exe.to_path_buf())
+}
+
+/// Build the login-item auto-launcher for the running app.
 /// `None` (logged) when the exe path or the platform registration is
 /// unavailable, so auto-launch simply degrades to off rather than crashing.
 fn build_auto_launch() -> Option<auto_launch::AutoLaunch> {
     let exe = std::env::current_exe()
         .inspect_err(|err| tracing::warn!("auto-launch: cannot resolve current exe: {err}"))
         .ok()?;
+    // Register the .app bundle, not the inner Contents/MacOS/ executable, so a
+    // packaged build launches correctly from Login Items.
+    let target = app_bundle_path(&exe);
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name("BugToPrompt")
-        .set_app_path(&exe.to_string_lossy())
+        .set_app_path(&target.to_string_lossy())
         // Register a macOS Login Item (AppleScript backend) — the modern,
         // user-visible mechanism in System Settings > General > Login Items —
         // NOT a LaunchAgent plist, which is exactly what #59 retires. `false`
@@ -461,5 +480,26 @@ fn apply_update_result(item: &MenuItem, url: &mut Option<String>, available: Opt
             *url = Some(release.html_url);
         }
         None => item.set_text("Up to date"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::app_bundle_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn app_bundle_path_returns_the_dot_app_for_a_packaged_exe() {
+        let exe = Path::new("/Applications/BugToPrompt.app/Contents/MacOS/BugToPrompt");
+        assert_eq!(
+            app_bundle_path(exe),
+            PathBuf::from("/Applications/BugToPrompt.app")
+        );
+    }
+
+    #[test]
+    fn app_bundle_path_falls_back_to_the_exe_outside_a_bundle() {
+        let exe = Path::new("/Users/dev/project/target/debug/sidecar-tray");
+        assert_eq!(app_bundle_path(exe), PathBuf::from(exe));
     }
 }

@@ -5,12 +5,14 @@
 //! on login and binds to port 4127. The new tray app owns that port itself, so
 //! if both were live they would double-bind it. On startup the tray calls
 //! [`disable_legacy_launch_agent`] BEFORE it spawns its own server: it stops the
-//! running legacy job (releasing the port) and, only once it has confirmed the
-//! job is actually gone, renames the plist so launchd never reloads it on the
-//! next login. If the job could NOT be stopped, it reports [`LegacyDisable::StillRunning`]
-//! and leaves the plist in place so the caller can surface a clear error instead
-//! of racing into a doomed bind. The one-time env import lives separately in
-//! [`crate::migrate`]; this module only tears the old daemon down.
+//! running legacy job and, only once it has POSITIVELY confirmed the job is no
+//! longer loaded, renames the plist so launchd never reloads it at the next
+//! login. Any state it cannot confirm — the job is still loaded, or launchd/the
+//! plist could not be inspected — is treated as unsafe ([`LegacyDisable::StillRunning`]
+//! / [`LegacyDisable::Unknown`]) and the plist is left untouched so the caller
+//! can surface a clear error instead of racing into a doomed bind. The one-time
+//! env import lives separately in [`crate::migrate`]; this module only tears the
+//! old daemon down.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,14 +24,28 @@ use crate::migrate::default_launch_agent_path;
 pub enum LegacyDisable {
     /// No legacy plist was found — nothing to do.
     NotPresent,
-    /// The job was stopped (or never loaded) and the plist renamed aside.
+    /// The job was confirmed stopped and the plist renamed aside.
     Disabled,
     /// The job is still loaded after the unload attempt: the port is NOT free,
     /// so the plist was left in place. The caller must not bind the port.
     StillRunning,
-    /// The job was stopped but the plist could not be renamed (fs error). The
-    /// port is free for this session; launchd may reload it at the next login.
+    /// The job was stopped but the plist could not be renamed (fs error). Left
+    /// active, launchd would reload it at the next login, so the caller must
+    /// treat this as blocking rather than start a soon-to-collide second daemon.
     RenameFailed,
+    /// The legacy job's state could not be determined — the plist was
+    /// unparseable, or `launchctl` could not be run. Fail safe: assume it might
+    /// be running rather than renaming its plist and starting beside it.
+    Unknown,
+}
+
+/// Whether launchd currently has the legacy job loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JobState {
+    Loaded,
+    NotLoaded,
+    /// `launchctl` could not be run — the real state is unknown.
+    Unknown,
 }
 
 /// Stop and permanently disable the legacy LaunchAgent at the default path.
@@ -43,48 +59,66 @@ pub fn disable_legacy_launch_agent() -> LegacyDisable {
 }
 
 /// [`disable_legacy_launch_agent`] against an explicit plist path. Stops the
-/// running job, verifies it actually stopped, and only then renames the plist.
+/// running job, RE-checks the final state, and only renames the plist when the
+/// job is positively confirmed not loaded.
 pub fn disable_legacy_launch_agent_at(plist: &Path) -> LegacyDisable {
     if !plist.exists() {
         return LegacyDisable::NotPresent;
     }
-    let label = read_label(plist);
-    let loaded_before = label.as_deref().map(is_job_loaded).unwrap_or(false);
-    if loaded_before {
-        unload_job(plist);
-    }
-    let loaded_after = label.as_deref().map(is_job_loaded).unwrap_or(false);
-    if !stop_succeeded(loaded_before, loaded_after) {
+    // Without the Label we cannot verify whether the job is running; treat an
+    // unparseable plist as UNKNOWN (fail safe) rather than assuming it is absent.
+    let Some(label) = read_label(plist) else {
         tracing::error!(
-            "legacy LaunchAgent {} is still running after unload; leaving its plist in place so the port is not double-bound",
+            "legacy LaunchAgent plist {} is unreadable/unparseable; cannot verify it is stopped",
             plist.display()
         );
-        return LegacyDisable::StillRunning;
+        return LegacyDisable::Unknown;
+    };
+    // Stop it if it is currently loaded (unload by path is a no-op otherwise).
+    if job_state(&label) == JobState::Loaded {
+        unload_job(plist);
     }
-    match rename_disabled(plist) {
-        Ok(disabled) => {
-            tracing::info!(
-                "disabled legacy LaunchAgent: {} -> {}",
-                plist.display(),
-                disabled.display()
-            );
-            LegacyDisable::Disabled
-        }
-        Err(err) => {
-            tracing::warn!(
-                "legacy LaunchAgent stopped but its plist {} could not be renamed: {err}",
+    // Re-query the FINAL state: only a job that is positively not loaded is safe
+    // to disable. A still-loaded job (incl. one that (re)loaded during the race)
+    // or an unknown state must not be renamed beside.
+    match outcome_for_final_state(job_state(&label)) {
+        Ok(()) => match rename_disabled(plist) {
+            Ok(disabled) => {
+                tracing::info!(
+                    "disabled legacy LaunchAgent: {} -> {}",
+                    plist.display(),
+                    disabled.display()
+                );
+                LegacyDisable::Disabled
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "legacy LaunchAgent stopped but its plist {} could not be renamed: {err}",
+                    plist.display()
+                );
+                LegacyDisable::RenameFailed
+            }
+        },
+        Err(outcome) => {
+            tracing::error!(
+                "legacy LaunchAgent {} is not confirmed stopped ({outcome:?}); leaving its plist in place",
                 plist.display()
             );
-            LegacyDisable::RenameFailed
+            outcome
         }
     }
 }
 
-/// Whether the legacy job is now stopped: it either was never loaded, or the
-/// unload attempt actually cleared it. A job that was loaded and is STILL loaded
-/// means the port was not released, so we must not proceed.
-fn stop_succeeded(loaded_before: bool, loaded_after: bool) -> bool {
-    !(loaded_before && loaded_after)
+/// Map the legacy job's final state (after our stop attempt) to whether it is
+/// safe to disable the plist. Only a positively-not-loaded job is safe; a still
+/// loaded job (findings #1: incl. a load that raced our first query) or an
+/// undeterminable state (finding #3) is a fail-safe block.
+fn outcome_for_final_state(state: JobState) -> Result<(), LegacyDisable> {
+    match state {
+        JobState::NotLoaded => Ok(()),
+        JobState::Loaded => Err(LegacyDisable::StillRunning),
+        JobState::Unknown => Err(LegacyDisable::Unknown),
+    }
 }
 
 /// The plist's launchd `Label`, needed to query whether the job is loaded.
@@ -97,20 +131,24 @@ fn read_label(plist: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether launchd currently has the job loaded (`launchctl list <label>` exits 0).
-fn is_job_loaded(label: &str) -> bool {
-    Command::new("launchctl")
-        .arg("list")
-        .arg(label)
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+/// Query whether launchd has the job loaded. A clean non-zero exit means "not
+/// loaded"; a failure to even run `launchctl` is [`JobState::Unknown`] (finding
+/// #3) rather than a false "not loaded".
+fn job_state(label: &str) -> JobState {
+    match Command::new("launchctl").arg("list").arg(label).status() {
+        Ok(status) if status.success() => JobState::Loaded,
+        Ok(_) => JobState::NotLoaded,
+        Err(err) => {
+            tracing::warn!("could not run launchctl to inspect {label}: {err}");
+            JobState::Unknown
+        }
+    }
 }
 
 /// Ask launchd to unload the legacy job so it releases the port. The deprecated
 /// `unload` form works across every launchd vintage without needing the uid;
-/// its exit code is unreliable (non-zero when not loaded), so the caller
-/// confirms the real state via [`is_job_loaded`] rather than trusting it here.
+/// its exit code is unreliable, so the caller re-checks the real state via
+/// [`job_state`] rather than trusting it here.
 fn unload_job(plist: &Path) {
     match Command::new("launchctl").arg("unload").arg(plist).status() {
         Ok(status) if status.success() => tracing::info!("unloaded legacy LaunchAgent job"),
@@ -146,12 +184,19 @@ mod tests {
 "#;
 
     #[test]
-    fn stop_succeeded_truth_table() {
-        // Finding #2: only "was loaded AND still loaded" is a failure.
-        assert!(stop_succeeded(false, false)); // never loaded
-        assert!(stop_succeeded(true, false)); // unloaded successfully
-        assert!(!stop_succeeded(true, true)); // could not stop -> not safe
-        assert!(stop_succeeded(false, true)); // wasn't ours to begin with
+    fn only_a_not_loaded_final_state_is_safe_to_disable() {
+        // Findings #1 + #3: a still-loaded job (incl. one that raced our first
+        // query) and an undeterminable state must both block; only a positively
+        // not-loaded job is safe to rename.
+        assert_eq!(outcome_for_final_state(JobState::NotLoaded), Ok(()));
+        assert_eq!(
+            outcome_for_final_state(JobState::Loaded),
+            Err(LegacyDisable::StillRunning)
+        );
+        assert_eq!(
+            outcome_for_final_state(JobState::Unknown),
+            Err(LegacyDisable::Unknown)
+        );
     }
 
     #[test]
@@ -201,9 +246,23 @@ mod tests {
     }
 
     #[test]
+    fn disable_reports_unknown_when_plist_is_unparseable() {
+        // Finding #3: an unreadable plist (no Label) is UNKNOWN, not "absent" —
+        // we must not rename it aside and start beside a possibly-running job.
+        let dir = tempfile::tempdir().unwrap();
+        let plist = dir.path().join("garbage.plist");
+        fs::write(&plist, "this is not a plist").unwrap();
+        assert_eq!(
+            disable_legacy_launch_agent_at(&plist),
+            LegacyDisable::Unknown
+        );
+        assert!(plist.exists(), "unparseable plist must be left in place");
+    }
+
+    #[test]
     fn disable_renames_when_the_job_is_not_loaded() {
         // The fixture's Label is a unique name launchd does not know, so
-        // is_job_loaded is false and the full path resolves to Disabled.
+        // job_state is NotLoaded and the full path resolves to Disabled.
         let dir = tempfile::tempdir().unwrap();
         let plist = dir.path().join("legacy.plist");
         fs::write(&plist, PLIST_XML).unwrap();
