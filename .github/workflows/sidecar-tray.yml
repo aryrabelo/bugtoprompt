@@ -1,0 +1,38 @@
+name: sidecar-tray
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sidecar-tray/**"
+      # The tray depends on sidecar-rust via a path dependency, so its build
+      # can break when the library changes.
+      - "sidecar-rust/**"
+      - ".github/workflows/sidecar-tray.yml"
+  pull_request:
+    paths:
+      - "sidecar-tray/**"
+      - "sidecar-rust/**"
+      - ".github/workflows/sidecar-tray.yml"
+
+jobs:
+  tray:
+    name: fmt · clippy · test
+    # macOS runner: tray uses tao/tray-icon + wry (WKWebView), macOS-only crates.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: sidecar-tray
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidecar-tray
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # The supervisor test binds an ephemeral port; serialize like the
+      # sidecar-rust job to avoid the pre-bind/release/rebind race.
+      - run: cargo test -- --test-threads=1
