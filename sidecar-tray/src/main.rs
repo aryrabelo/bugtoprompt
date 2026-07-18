@@ -43,9 +43,18 @@ fn main() {
     sidecar_rust::migrate::run_first_run_migration();
 
     // Retire the legacy Node LaunchAgent (issue #59): stop the old daemon and
-    // rename its plist so exactly one process binds port 4127 and launchd never
-    // reloads it at the next login. Runs before we bind the port; best effort.
-    sidecar_rust::launch::disable_legacy_launch_agent();
+    // rename its plist so exactly one process binds the port and launchd never
+    // reloads it at the next login. Runs before we bind. If the old job is still
+    // running (unload failed), abort with a clear message instead of racing into
+    // a doomed bind that would silently leave nothing listening.
+    if sidecar_rust::launch::disable_legacy_launch_agent()
+        == sidecar_rust::launch::LegacyDisable::StillRunning
+    {
+        eprintln!(
+            "bugtoprompt: the legacy LaunchAgent daemon is still running and holding the port. Run `launchctl unload ~/Library/LaunchAgents/com.bugtoprompt.sidecar.plist` (or reboot), then relaunch."
+        );
+        std::process::exit(1);
+    }
 
     let config = Config::load();
     let mut running_port = config.port;
@@ -355,6 +364,12 @@ fn build_auto_launch() -> Option<auto_launch::AutoLaunch> {
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name("BugToPrompt")
         .set_app_path(&exe.to_string_lossy())
+        // Register a macOS Login Item (AppleScript backend) — the modern,
+        // user-visible mechanism in System Settings > General > Login Items —
+        // NOT a LaunchAgent plist, which is exactly what #59 retires. `false`
+        // is the crate default today; set it explicitly so a future default
+        // change can't silently reintroduce the plist backend.
+        .set_use_launch_agent(false)
         .build()
         .inspect_err(|err| tracing::warn!("auto-launch: builder failed: {err}"))
         .ok()
