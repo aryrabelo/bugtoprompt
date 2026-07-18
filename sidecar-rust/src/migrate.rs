@@ -50,7 +50,7 @@ fn read_plist_env(plist_path: &Path) -> BTreeMap<String, String> {
 #[serde(rename_all = "camelCase")]
 struct LegacyJsonConfig {
     issue_mode: Option<bool>,
-    repos: Option<Vec<RawRepoEntry>>,
+    repos: Option<Vec<serde_json::Value>>,
     project_id: Option<String>,
     screenshot_mode: Option<String>,
     env: Option<String>,
@@ -78,6 +78,32 @@ fn read_legacy_config(env: &BTreeMap<String, String>) -> Option<LegacyJsonConfig
     }
 }
 
+/// Convert one legacy JSON `repos` entry into a [`RawRepoEntry`]. Accepts a
+/// bare `"owner/repo#branch"` string or a Node-shaped object keyed by either
+/// `repo` or `id` — a legacy `{ "id": "owner/repo" }` must NOT discard the
+/// whole migration. Entries carrying no usable repo are dropped, not fatal.
+fn legacy_repo_entry(value: &serde_json::Value) -> Option<RawRepoEntry> {
+    if let Some(s) = value.as_str() {
+        let s = s.trim();
+        return (!s.is_empty()).then(|| RawRepoEntry::Str(s.to_string()));
+    }
+    let obj = value.as_object()?;
+    let str_field = |k: &str| {
+        obj.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let repo = str_field("repo").or_else(|| str_field("id"))?;
+    Some(RawRepoEntry::Obj {
+        id: None,
+        name: str_field("name"),
+        repo,
+        branch: str_field("branch"),
+    })
+}
+
 /// Build a [`PersistedConfig`] from LaunchAgent env vars. A legacy
 /// `BUGTOPROMPT_CONFIG` JSON (finding #3) forms the base; individual
 /// `BUGTOPROMPT_*` env vars overlay on top (present-only, never clobbering a
@@ -99,7 +125,10 @@ pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> Persisted
         cfg.screenshot_mode = legacy.screenshot_mode;
         cfg.env = legacy.env;
         cfg.default_mode = legacy.default_mode;
-        cfg.repos = legacy.repos;
+        cfg.repos = legacy.repos.and_then(|entries| {
+            let list: Vec<RawRepoEntry> = entries.iter().filter_map(legacy_repo_entry).collect();
+            (!list.is_empty()).then_some(list)
+        });
     }
 
     if env.get("BUGTOPROMPT_ENABLE_ISSUES").map(String::as_str) == Some("1") {
@@ -120,7 +149,12 @@ pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> Persisted
     if let Some(v) = get("BUGTOPROMPT_HOST") {
         cfg.host = Some(v);
     }
-    if let Some(v) = get("BUGTOPROMPT_PORT").and_then(|p| p.parse().ok()) {
+    // Treat 0 (or an unparseable value) as absent so the legacy default port
+    // (4127) is used instead of an ephemeral OS-assigned port.
+    if let Some(v) = get("BUGTOPROMPT_PORT")
+        .and_then(|p| p.parse::<u16>().ok())
+        .filter(|&p| p != 0)
+    {
         cfg.port = Some(v);
     }
     if let Some(v) = get("ASSEMBLYAI_API_KEY") {
@@ -341,5 +375,75 @@ mod tests {
         assert_eq!(cfg.issue_mode, Some(true));
         assert_eq!(cfg.repos, Some(vec![RawRepoEntry::Str("a/b".to_string())]));
         assert_eq!(cfg.transcription_engine.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn legacy_repo_id_fallback_preserves_migration() {
+        // A legacy `{ "id": "owner/repo" }` repo must not discard the whole
+        // JSON migration (project_id, issue_mode, etc.).
+        let mut env = BTreeMap::new();
+        env.insert(
+            "BUGTOPROMPT_CONFIG".to_string(),
+            r#"{"issueMode":true,"projectId":"p","repos":[{"id":"acme/web"},{"id":"acme/api","branch":"dev"}]}"#
+                .to_string(),
+        );
+        let cfg = config_from_launch_agent_env(&env);
+        assert_eq!(cfg.issue_mode, Some(true));
+        assert_eq!(cfg.project_id.as_deref(), Some("p"));
+        assert_eq!(
+            cfg.repos,
+            Some(vec![
+                RawRepoEntry::Obj {
+                    id: None,
+                    name: None,
+                    repo: "acme/web".to_string(),
+                    branch: None,
+                },
+                RawRepoEntry::Obj {
+                    id: None,
+                    name: None,
+                    repo: "acme/api".to_string(),
+                    branch: Some("dev".to_string()),
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn legacy_unsupported_repo_entries_are_filtered_not_fatal() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "BUGTOPROMPT_CONFIG".to_string(),
+            r#"{"issueMode":true,"repos":[{"unknown":"x"},"a/b",{"id":"c/d"}]}"#.to_string(),
+        );
+        let cfg = config_from_launch_agent_env(&env);
+        assert_eq!(cfg.issue_mode, Some(true), "migration kept");
+        assert_eq!(
+            cfg.repos,
+            Some(vec![
+                RawRepoEntry::Str("a/b".to_string()),
+                RawRepoEntry::Obj {
+                    id: None,
+                    name: None,
+                    repo: "c/d".to_string(),
+                    branch: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn port_zero_is_ignored_falls_back_to_default() {
+        let mut env = BTreeMap::new();
+        env.insert("BUGTOPROMPT_PORT".to_string(), "0".to_string());
+        assert_eq!(
+            config_from_launch_agent_env(&env).port,
+            None,
+            "PORT=0 must not be imported"
+        );
+
+        let mut env2 = BTreeMap::new();
+        env2.insert("BUGTOPROMPT_PORT".to_string(), "4127".to_string());
+        assert_eq!(config_from_launch_agent_env(&env2).port, Some(4127));
     }
 }

@@ -114,42 +114,65 @@ impl PersistedConfig {
                 }
             }
         }
+        // A uniquely-named temp sibling (created O_EXCL) keeps concurrent
+        // tray/sidecar saves from sharing one `config.toml.tmp` and corrupting
+        // it; the temp is fsync'd, then atomically renamed into place.
         let tmp = tmp_sibling(path);
-        write_private(&tmp, text.as_bytes())?;
+        if let Err(err) = write_private(&tmp, text.as_bytes()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err);
+        }
         // rename is atomic on the same filesystem and preserves the temp
-        // file's 0600 mode.
-        std::fs::rename(&tmp, path)
+        // file's 0600 mode; on failure the temp is cleaned up.
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(err)
+            }
+        }
     }
+}
+
+/// Build a sibling of `path` with `.<ext>` appended to the file name
+/// (`config.toml` → `config.toml.bak`). Falls back to a `config.toml` base
+/// name when `path` has no file-name component.
+fn sibling_with_ext(path: &Path, ext: &str) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
+    name.push(".");
+    name.push(ext);
+    path.with_file_name(name)
 }
 
 /// A `.bak` sibling of `path`, for preserving an unparseable config.
 fn bak_sibling(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
-    name.push(".bak");
-    path.with_file_name(name)
+    sibling_with_ext(path, "bak")
 }
 
-/// A `.tmp` sibling of `path` for the atomic write.
+/// A uniquely-named `.tmp` sibling of `path` for the atomic write. The name
+/// carries the pid + a per-call counter so two savers (tray + sidecar) never
+/// collide on one shared temp file and corrupt it.
 fn tmp_sibling(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
-    name.push(".tmp");
-    path.with_file_name(name)
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    sibling_with_ext(path, &format!("tmp.{}.{n}", std::process::id()))
 }
 
-/// Write `bytes` to `path`, forcing owner-only (0600) permissions on Unix.
-/// On non-Unix the mode hardening is a best-effort no-op.
+/// Create `path` exclusively (`O_EXCL`), write `bytes`, force owner-only
+/// (0600) permissions on Unix, and fsync. Exclusive creation means a stale or
+/// racing temp file is never silently reused, and the fsync guarantees the
+/// bytes reach disk before the caller's atomic rename exposes the file. On
+/// non-Unix the mode hardening is a best-effort no-op.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::fs::OpenOptions;
     use std::io::Write;
 
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -157,13 +180,15 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let mut file = opts.open(path)?;
     file.write_all(bytes)?;
-    // Force 0600 even if the temp file somehow pre-existed with a looser mode.
+    // Force exactly 0600 regardless of umask.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    file.flush()
+    // fsync so the subsequent atomic rename can't expose a partially written
+    // (or empty) config after a crash.
+    file.sync_all()
 }
 
 /// Resolve the persisted config path: `BUGTOPROMPT_CONFIG` override, else
@@ -585,9 +610,13 @@ mod tests {
         cfg.save(&path).unwrap();
 
         // The corrupt content is fully replaced with a complete, parseable file
-        // and no temp sibling is left behind.
+        // and no uniquely-named temp sibling (.tmp.<pid>.<n>) is left behind.
         assert_eq!(read_toml(&path).unwrap(), cfg);
-        assert!(!dir.path().join("config.toml.tmp").exists());
+        let leftover_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains(".tmp"));
+        assert!(!leftover_tmp, "atomic save must not leave a temp file");
 
         // The unparseable original is preserved as config.toml.bak, not lost.
         let bak = dir.path().join("config.toml.bak");
@@ -646,5 +675,52 @@ mod tests {
         // the None fields) and must round-trip identically.
         cfg.save(&path).unwrap();
         assert_eq!(read_toml(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn tmp_sibling_names_are_unique_per_call() {
+        // Concurrent savers must not share one temp path (finding: atomic save).
+        let path = std::path::Path::new("/tmp/x/config.toml");
+        let a = tmp_sibling(path);
+        let b = tmp_sibling(path);
+        assert_ne!(a, b, "each save must get its own temp file");
+        assert_ne!(a, bak_sibling(path));
+        assert_eq!(a.parent(), path.parent(), "temp must be a sibling");
+    }
+
+    #[test]
+    fn concurrent_saves_do_not_corrupt_the_file() {
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let path = Arc::new(dir.path().join("config.toml"));
+        let handles: Vec<_> = (0..16u16)
+            .map(|i| {
+                let path = Arc::clone(&path);
+                std::thread::spawn(move || {
+                    PersistedConfig {
+                        port: Some(4000 + i),
+                        ..Default::default()
+                    }
+                    .save(&path)
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Whichever writer won last, the file is a complete, parseable config —
+        // never a torn/interleaved write — and no temp sibling leaks.
+        let parsed = read_toml(path.as_path()).expect("final config must be parseable");
+        let port = parsed.port.expect("port present");
+        assert!((4000..4016).contains(&port), "unexpected port {port}");
+        let leftover_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains(".tmp"));
+        assert!(
+            !leftover_tmp,
+            "no temp file should remain after concurrent saves"
+        );
     }
 }

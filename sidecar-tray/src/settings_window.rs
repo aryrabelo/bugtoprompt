@@ -107,11 +107,31 @@ pub fn spawn_uvx_probe(tx: Sender<Worker>) {
     });
 }
 
-/// Directory `uv` installs `uvx` into (`~/.local/bin`). Used to re-probe right
-/// after an install, before the updated PATH is visible to this already-running
-/// process (finding #8).
+/// Directory `uv` installs `uvx` into. Mirrors the uv (cargo-dist) installer's
+/// install-dir precedence — `UV_INSTALL_DIR` > `XDG_BIN_HOME` >
+/// `$XDG_DATA_HOME/../bin` > `$HOME/.local/bin` — so a probe right after an
+/// install looks where the installer actually placed the binary, not just
+/// `~/.local/bin`.
 fn uv_install_bin_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("bin"))
+    resolve_uv_install_bin_dir(|k| std::env::var_os(k))
+}
+
+fn resolve_uv_install_bin_dir(
+    get: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    // `-n` semantics: an empty env var is treated as unset, like the installer.
+    let non_empty = |key: &str| get(key).filter(|v| !v.is_empty());
+    if let Some(dir) = non_empty("UV_INSTALL_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = non_empty("XDG_BIN_HOME") {
+        return Some(PathBuf::from(dir));
+    }
+    if let Some(dir) = non_empty("XDG_DATA_HOME") {
+        return Some(PathBuf::from(dir).join("..").join("bin"));
+    }
+    non_empty("HOME").map(|h| PathBuf::from(h).join(".local").join("bin"))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -125,8 +145,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Re-probe `uvx` with `~/.local/bin` prepended to PATH so a just-installed
-/// binary is found even though this process's inherited PATH predates it.
+/// Re-probe `uvx` with the installer's target bin dir prepended to PATH so a
+/// just-installed binary is found even though this process's inherited PATH
+/// predates it.
 fn probe_uvx_after_install() -> bool {
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -153,12 +174,14 @@ fn probe_uvx_after_install() -> bool {
     })
 }
 
-/// Install `uv` (PRD §6) as separate, individually-checked steps: download the
-/// pinned installer, verify its SHA-256, then execute it. A failed or tampered
-/// download can no longer be reported as success (finding #7), and the
-/// post-install probe is PATH-aware (finding #8).
+/// Install `uv` (PRD §6): download the pinned installer into memory, verify
+/// its SHA-256, then execute the *exact* verified bytes by piping them to
+/// `sh -s` stdin. There is no on-disk installer file to swap between hashing
+/// and execution, so the checksum can't be bypassed by a temp-file race. A
+/// completion status is emitted on every exit path so the install button can
+/// never stick on "Installing…", and the post-install probe is PATH-aware.
 pub fn spawn_uvx_install(tx: Sender<Worker>) {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
 
     thread::spawn(move || {
@@ -166,83 +189,144 @@ pub fn spawn_uvx_install(tx: Sender<Worker>) {
             let _ = tx.send(Worker::InstallLine(line));
         };
 
-        // 1. Download the pinned installer to a temp file (checked).
-        send(format!("Downloading uv {UV_VERSION} installer…"));
-        let tmp =
-            std::env::temp_dir().join(format!("bugtoprompt-uv-install-{}.sh", std::process::id()));
-        match Command::new("curl")
-            .args(["-fLsS", UV_INSTALL_URL, "-o"])
-            .arg(&tmp)
-            .status()
-        {
-            Ok(s) if s.success() => {}
-            Ok(s) => {
-                send(format!("download failed: curl exited with {s}"));
-                let _ = std::fs::remove_file(&tmp);
-                return;
-            }
-            Err(err) => {
-                send(format!("download failed: {err}"));
-                return;
-            }
-        }
+        // Runs download → verify → execute, returning whether the installer
+        // completed successfully. Every failure sends a diagnostic line and
+        // returns false; the status event below still fires regardless.
+        let run = || -> bool {
+            send(format!("Downloading uv {UV_VERSION} installer…"));
+            let script = match Command::new("curl")
+                .args(["-fLsS", UV_INSTALL_URL])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+            {
+                Ok(out) if out.status.success() => out.stdout,
+                Ok(out) => {
+                    send(format!(
+                        "download failed: curl exited with {} ({})",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                    return false;
+                }
+                Err(err) => {
+                    send(format!("download failed: {err}"));
+                    return false;
+                }
+            };
 
-        // 2. Verify the checksum BEFORE executing (finding #4).
-        let bytes = match std::fs::read(&tmp) {
-            Ok(b) => b,
-            Err(err) => {
-                send(format!("could not read installer: {err}"));
-                let _ = std::fs::remove_file(&tmp);
-                return;
+            // Verify the checksum of the exact bytes we are about to execute.
+            let digest = sha256_hex(&script);
+            if digest != UV_INSTALL_SHA256 {
+                send(format!(
+                    "checksum mismatch — refusing to run installer (expected {UV_INSTALL_SHA256}, got {digest})"
+                ));
+                return false;
             }
-        };
-        let digest = sha256_hex(&bytes);
-        if digest != UV_INSTALL_SHA256 {
-            send(format!(
-                "checksum mismatch — refusing to run installer (expected {UV_INSTALL_SHA256}, got {digest})"
-            ));
-            let _ = std::fs::remove_file(&tmp);
-            return;
-        }
-        send("Checksum verified. Running installer…".to_string());
+            send("Checksum verified. Running installer…".to_string());
 
-        // 3. Execute the verified script (checked). stdout + stderr are drained
-        //    concurrently so neither pipe can fill and deadlock the child.
-        let mut child = match Command::new("sh")
-            .arg(&tmp)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(err) => {
-                send(format!("failed to start installer: {err}"));
-                let _ = std::fs::remove_file(&tmp);
-                return;
-            }
-        };
-        if let Some(err_out) = child.stderr.take() {
-            let tx_err = tx.clone();
-            thread::spawn(move || {
-                for line in BufReader::new(err_out).lines().map_while(Result::ok) {
-                    let _ = tx_err.send(Worker::InstallLine(line));
+            // Feed the verified bytes straight to `sh -s`: the shell runs
+            // exactly what we hashed — never a file an attacker could swap
+            // after verification (no reopened temp path).
+            let mut child = match Command::new("sh")
+                .arg("-s")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(err) => {
+                    send(format!("failed to start installer: {err}"));
+                    return false;
+                }
+            };
+
+            // Write the script on a dedicated thread so a large installer can't
+            // deadlock against the stdout/stderr draining below.
+            let stdin = child.stdin.take();
+            let stdin_writer = thread::spawn(move || {
+                if let Some(mut s) = stdin {
+                    let _ = s.write_all(&script);
+                    // dropping `s` closes stdin → EOF for `sh -s`.
                 }
             });
-        }
-        if let Some(out) = child.stdout.take() {
-            for line in BufReader::new(out).lines().map_while(Result::ok) {
-                send(line);
+            if let Some(err_out) = child.stderr.take() {
+                let tx_err = tx.clone();
+                thread::spawn(move || {
+                    for line in BufReader::new(err_out).lines().map_while(Result::ok) {
+                        let _ = tx_err.send(Worker::InstallLine(line));
+                    }
+                });
             }
-        }
-        let ok = matches!(child.wait(), Ok(status) if status.success());
-        let _ = std::fs::remove_file(&tmp);
-        if ok {
-            send("✓ uv installed".to_string());
-        } else {
-            send("installer failed".to_string());
-        }
+            if let Some(out) = child.stdout.take() {
+                for line in BufReader::new(out).lines().map_while(Result::ok) {
+                    send(line);
+                }
+            }
+            let ok = matches!(child.wait(), Ok(status) if status.success());
+            let _ = stdin_writer.join();
+            ok
+        };
 
-        // 4. Re-probe with a PATH that includes the new install dir (finding #8).
-        let _ = tx.send(Worker::Uvx(probe_uvx_after_install()));
+        let ok = run();
+        send(if ok {
+            "✓ uv installed".to_string()
+        } else {
+            "installer failed".to_string()
+        });
+
+        // Always resolve the UI status so the install button never sticks on
+        // "Installing…": a PATH-aware re-probe on success, "missing" on failure
+        // so the user can retry.
+        let ready = ok && probe_uvx_after_install();
+        let _ = tx.send(Worker::Uvx(ready));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn env_lookup(map: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<OsString> {
+        move |k: &str| map.get(k).map(OsString::from)
+    }
+
+    #[test]
+    fn install_dir_precedence_matches_uv_installer() {
+        // UV_INSTALL_DIR wins outright.
+        let m = HashMap::from([
+            ("UV_INSTALL_DIR", "/opt/uv"),
+            ("XDG_BIN_HOME", "/xdg/bin"),
+            ("HOME", "/home/u"),
+        ]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/opt/uv"))
+        );
+
+        // then XDG_BIN_HOME.
+        let m = HashMap::from([("XDG_BIN_HOME", "/xdg/bin"), ("XDG_DATA_HOME", "/xdg/data")]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/xdg/bin"))
+        );
+
+        // then $XDG_DATA_HOME/../bin.
+        let m = HashMap::from([("XDG_DATA_HOME", "/xdg/data"), ("HOME", "/home/u")]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/xdg/data/../bin"))
+        );
+
+        // default to $HOME/.local/bin; an empty var is ignored (`-n`).
+        let m = HashMap::from([("UV_INSTALL_DIR", ""), ("HOME", "/home/u")]);
+        assert_eq!(
+            resolve_uv_install_bin_dir(env_lookup(m)),
+            Some(PathBuf::from("/home/u/.local/bin"))
+        );
+    }
 }
