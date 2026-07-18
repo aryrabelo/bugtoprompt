@@ -380,6 +380,15 @@ fn build_auto_launch() -> Option<auto_launch::AutoLaunch> {
     // Register the .app bundle, not the inner Contents/MacOS/ executable, so a
     // packaged build launches correctly from Login Items.
     let target = app_bundle_path(&exe);
+    // Don't manage auto-launch while running from a mounted DMG/volume: the
+    // /Volumes path is transient, so registering it would break auto-launch once
+    // the user installs to /Applications. Returning None also makes the "Start
+    // at Login" toggle a no-op until installed, and leaves the one-time marker
+    // unburned so registration happens on the first run from /Applications.
+    if is_on_mounted_volume(&target) {
+        tracing::info!("auto-launch: running from a mounted volume; deferred until installed");
+        return None;
+    }
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name("BugToPrompt")
         .set_app_path(&target.to_string_lossy())
@@ -403,8 +412,20 @@ fn autostart_marker_path() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join(".autostart-initialized"))
 }
 
+/// Whether `bundle` lives on a mounted volume (a DMG mounts under `/Volumes/`),
+/// i.e. the app is being run before installation. Registering that transient
+/// path for auto-launch would break once the user drags the app to
+/// /Applications, and burning the one-time marker on it would then block
+/// re-registration from the installed location.
+fn is_on_mounted_volume(bundle: &std::path::Path) -> bool {
+    bundle.starts_with("/Volumes/")
+}
+
 /// Register auto-launch on the very first run so the app "just works" after a
 /// drag-install, then never force it again (the user owns the toggle after).
+/// While running from a mounted volume, [`build_auto_launch`] returns `None`, so
+/// `al` is `None` here and this is a no-op — the marker is never burned on the
+/// pre-install DMG copy.
 fn ensure_first_run_autostart(al: Option<&auto_launch::AutoLaunch>) {
     let Some(al) = al else {
         return;
@@ -485,7 +506,7 @@ fn apply_update_result(item: &MenuItem, url: &mut Option<String>, available: Opt
 
 #[cfg(test)]
 mod tests {
-    use super::app_bundle_path;
+    use super::{app_bundle_path, is_on_mounted_volume};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -501,5 +522,19 @@ mod tests {
     fn app_bundle_path_falls_back_to_the_exe_outside_a_bundle() {
         let exe = Path::new("/Users/dev/project/target/debug/sidecar-tray");
         assert_eq!(app_bundle_path(exe), PathBuf::from(exe));
+    }
+
+    #[test]
+    fn is_on_mounted_volume_detects_a_dmg_mount() {
+        // A DMG mounts under /Volumes; the pre-install copy must be skipped.
+        assert!(is_on_mounted_volume(Path::new(
+            "/Volumes/BugToPrompt/BugToPrompt.app"
+        )));
+        assert!(!is_on_mounted_volume(Path::new(
+            "/Applications/BugToPrompt.app"
+        )));
+        assert!(!is_on_mounted_volume(Path::new(
+            "/Users/dev/project/target/debug/sidecar-tray"
+        )));
     }
 }
