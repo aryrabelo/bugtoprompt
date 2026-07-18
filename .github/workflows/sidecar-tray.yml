@@ -33,6 +33,6 @@ jobs:
           workspaces: sidecar-tray
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      # The supervisor test binds an ephemeral port; serialize like the
-      # sidecar-rust job to avoid the pre-bind/release/rebind race.
+      # The supervisor test pre-binds an ephemeral port then rebinds it; run
+      # serially so a concurrent test can't grab the port in between.
       - run: cargo test -- --test-threads=1
