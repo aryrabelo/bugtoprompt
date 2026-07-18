@@ -3,6 +3,7 @@ import {
 	activateTab,
 	deactivateTab,
 	ensureOverlay,
+	executeProOp,
 	handleDocumentReady,
 	init,
 	isTabActive,
@@ -45,6 +46,7 @@ function makeHarness(): Harness {
 	};
 
 	const sessionStore = new Map<string, unknown>();
+	const localStore = new Map<string, unknown>();
 	const granted = new Set<string>();
 	const updatedListeners: UpdatedListener[] = [];
 
@@ -53,6 +55,20 @@ function makeHarness(): Harness {
 			sync: {
 				get: vi.fn(async () => ({})),
 				set: vi.fn(async () => {}),
+			},
+			local: {
+				get: vi.fn(async (keys: unknown) => {
+					const wanted = Array.isArray(keys) ? keys : [keys];
+					const result: Record<string, unknown> = {};
+					for (const k of wanted) {
+						const key = String(k);
+						if (localStore.has(key)) result[key] = localStore.get(key);
+					}
+					return result;
+				}),
+				set: vi.fn(async (items: Record<string, unknown>) => {
+					for (const [k, v] of Object.entries(items)) localStore.set(k, v);
+				}),
 			},
 			session: {
 				get: vi.fn(async (key: unknown) => {
@@ -72,8 +88,16 @@ function makeHarness(): Harness {
 			executeScript: vi.fn(async (inj: Record<string, unknown>) => {
 				const target = inj.target as { tabId: number };
 				const p = page(target.tabId);
+				const world = inj.world as string | undefined;
 				const files = inj.files as string[] | undefined;
 				const args = inj.args as unknown[] | undefined;
+				// The ISOLATED-world relay injection (injectProRelay) carries no
+				// args and isn't the MAIN-world config/js/mount flow — track it
+				// distinctly so tests can assert it fires only when PRO is on.
+				if (world === "ISOLATED") {
+					p.ops.push("inject-relay");
+					return [{}];
+				}
 				if (files?.some((f) => f.includes("bugtoprompt.global.js"))) {
 					p.ops.push("inject-js");
 					p.hasOverlay = true;
@@ -157,7 +181,7 @@ describe("ensureOverlay injection order & idempotency", () => {
 		expect(h.page(1).injectedGlobal?.pro).toBeUndefined();
 	});
 
-	it("seeds pro:{baseUrl,token} when a PRO session token is stored", async () => {
+	it("seeds pro:{baseUrl,bridged:true} when a PRO session token is stored — the raw token never reaches the MAIN world (P0, issue #82)", async () => {
 		const h = makeHarness();
 		await ensureOverlay(h.chromeApi, 1, {
 			...DEFAULT_CONFIG,
@@ -165,8 +189,31 @@ describe("ensureOverlay injection order & idempotency", () => {
 		});
 		expect(h.page(1).injectedGlobal?.pro).toEqual({
 			baseUrl: "https://api.bugtoprompt.com",
-			token: "sess-tok",
+			bridged: true,
 		});
+		expect(JSON.stringify(h.page(1).injectedGlobal)).not.toContain("sess-tok");
+	});
+
+	it("injects an ISOLATED-world relay script when a PRO session token is stored", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, {
+			...DEFAULT_CONFIG,
+			proToken: "sess-tok",
+		});
+		expect(h.page(1).ops).toContain("inject-relay");
+		const exec = vi.mocked(h.chromeApi.scripting?.executeScript);
+		if (!exec) throw new Error("scripting missing");
+		const relayCall = exec.mock.calls.find(([inj]) => {
+			const injection = inj as Record<string, unknown>;
+			return injection.world === "ISOLATED";
+		});
+		expect(relayCall).toBeDefined();
+	});
+
+	it("does not inject a relay script when no PRO session token is stored", async () => {
+		const h = makeHarness();
+		await ensureOverlay(h.chromeApi, 1, DEFAULT_CONFIG);
+		expect(h.page(1).ops).not.toContain("inject-relay");
 	});
 
 	it("re-seeds config (without reinjecting the bundle) when reusing an existing overlay", async () => {
@@ -456,5 +503,72 @@ describe("resilience regressions", () => {
 		await handleDocumentReady(h.chromeApi, 72, "chrome://extensions");
 		expect(await isTabActive(h.chromeApi, 72)).toBe(false);
 		expect(h.page(72).ops).toEqual([]);
+	});
+});
+
+describe("executeProOp (P0 token isolation, issue #82)", () => {
+	it("mintStreamingToken: valid payload hits the fixed PRO endpoint with a Bearer token and returns ok:true", async () => {
+		const h = makeHarness();
+		await h.chromeApi.storage.local.set({ proToken: "test-token" });
+		const calls: Array<{ url: string; init: RequestInit }> = [];
+		const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			calls.push({ url: String(input), init: init ?? {} });
+			return new Response(JSON.stringify({ streamingToken: "abc" }), {
+				status: 200,
+			});
+		}) as typeof fetch;
+		const result = await executeProOp(
+			h.chromeApi,
+			"mintStreamingToken",
+			{},
+			fetchStub,
+		);
+		expect(result).toEqual({ ok: true, result: { streamingToken: "abc" } });
+		const call = calls[0];
+		if (!call) throw new Error("fetch was not called");
+		expect(call.url).toBe("https://api.bugtoprompt.com/streaming-token");
+		const headers = new Headers(call.init.headers);
+		expect(headers.get("Authorization")).toBe("Bearer test-token");
+	});
+
+	it("rejects an unknown op without calling fetch", async () => {
+		const h = makeHarness();
+		await h.chromeApi.storage.local.set({ proToken: "test-token" });
+		const fetchStub = vi.fn();
+		const result = await executeProOp(
+			h.chromeApi,
+			"deleteEverything",
+			{},
+			fetchStub as unknown as typeof fetch,
+		);
+		expect(result.ok).toBe(false);
+		expect(fetchStub).not.toHaveBeenCalled();
+	});
+
+	it("rejects any op when no PRO token is stored, without calling fetch", async () => {
+		const h = makeHarness();
+		const fetchStub = vi.fn();
+		const result = await executeProOp(
+			h.chromeApi,
+			"mintStreamingToken",
+			{},
+			fetchStub as unknown as typeof fetch,
+		);
+		expect(result).toEqual({ ok: false, error: "PRO is not active" });
+		expect(fetchStub).not.toHaveBeenCalled();
+	});
+
+	it("createIssue: rejects a non-string sessionId as invalid payload, without calling fetch", async () => {
+		const h = makeHarness();
+		await h.chromeApi.storage.local.set({ proToken: "test-token" });
+		const fetchStub = vi.fn();
+		const result = await executeProOp(
+			h.chromeApi,
+			"createIssue",
+			{ sessionId: 123, prompt: "fix the bug" },
+			fetchStub as unknown as typeof fetch,
+		);
+		expect(result).toEqual({ ok: false, error: "invalid payload" });
+		expect(fetchStub).not.toHaveBeenCalled();
 	});
 });

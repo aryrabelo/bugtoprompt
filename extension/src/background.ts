@@ -78,6 +78,13 @@ export async function overlayPresent(
  * Seed the MAIN-world window.__BUGTOPROMPT__ config (manual:true so the bundle
  * does not auto-mount). Run on every activation so option and repo-binding
  * changes take effect even when the singleton from a prior activation persists.
+ *
+ * P0 (issue #82): the raw PRO Bearer token never crosses into the MAIN world —
+ * any page script can read window.__BUGTOPROMPT__ and replay it. Only
+ * `proEnabled` (a boolean) travels through the args object; `proToken` is
+ * scrubbed to "" before serialization. The overlay gets `pro: { baseUrl,
+ * bridged: true }` and relays authenticated calls through the ISOLATED-world
+ * relay (see injectProRelay) to the service worker, which holds the token.
  */
 async function seedConfig(
 	chromeApi: ChromeLike,
@@ -90,7 +97,13 @@ async function seedConfig(
 	await scripting.executeScript({
 		target: { tabId },
 		world: "MAIN",
-		func: (cfg: SyncConfig & { projectId?: string; proBaseUrl: string }) => {
+		func: (
+			cfg: SyncConfig & {
+				projectId?: string;
+				proBaseUrl: string;
+				proEnabled: boolean;
+			},
+		) => {
 			window.__BUGTOPROMPT__ = {
 				baseUrl: cfg.baseUrl,
 				modes: cfg.modes,
@@ -104,17 +117,26 @@ async function seedConfig(
 				// not just the floating launcher.
 				defaultOpen: true,
 				manual: true,
-				// PRO: when a session token is stored, the overlay routes all
-				// backend traffic (streaming token, artifact/blob upload, issue
-				// filing) to the remote service instead of the local sidecar.
-				pro: cfg.proToken
-					? { baseUrl: cfg.proBaseUrl, token: cfg.proToken }
+				// PRO: bridged mode only. The token itself never appears here — the
+				// overlay relays authenticated calls through the extension instead
+				// (see injectProRelay / executeProOp).
+				pro: cfg.proEnabled
+					? { baseUrl: cfg.proBaseUrl, bridged: true }
 					: undefined,
 			};
 		},
 		// func is serialized into the page and can't close over module
-		// constants, so PRO_BASE_URL travels through the args object.
-		args: [{ ...config, projectId, proBaseUrl: PRO_BASE_URL }],
+		// constants, so PRO_BASE_URL travels through the args object. proToken
+		// is scrubbed to "" here — see the doc comment above.
+		args: [
+			{
+				...config,
+				proToken: "",
+				proEnabled: Boolean(config.proToken),
+				projectId,
+				proBaseUrl: PRO_BASE_URL,
+			},
+		],
 	});
 }
 
@@ -156,9 +178,98 @@ async function callOverlay(
 }
 
 /**
+ * Inject the ISOLATED-world relay content script (P0, issue #82). Runs once
+ * per document (guarded by a `__btpProRelay` flag on globalThis so a re-seed
+ * on the same document is a no-op): listens for `window.postMessage({type:
+ * "btp:pro-request", id, op, payload})` from the MAIN-world overlay, forwards
+ * it to the service worker via `chrome.runtime.sendMessage` (ISOLATED-world
+ * content scripts get a `chrome` global with extension messaging access —
+ * page scripts never do), and posts the `{type:"btp:pro-response", id, ...}`
+ * reply back. The real Bearer token lives only in the service worker; this
+ * relay never sees or stores it.
+ */
+export async function injectProRelay(
+	chromeApi: ChromeLike,
+	tabId: number,
+): Promise<void> {
+	const scripting = chromeApi.scripting;
+	if (!scripting) return;
+	await scripting.executeScript({
+		target: { tabId },
+		world: "ISOLATED",
+		func: () => {
+			// A well-known one-off global flag for content-script idempotency —
+			// not in Window's ambient type, so this is a genuine unchecked cast.
+			const flagged = globalThis as unknown as { __btpProRelay?: boolean };
+			if (flagged.__btpProRelay) return;
+			flagged.__btpProRelay = true;
+			window.addEventListener("message", (ev: MessageEvent) => {
+				if (ev.source !== window) return;
+				const data: unknown = ev.data;
+				if (
+					typeof data !== "object" ||
+					data === null ||
+					!("type" in data) ||
+					data.type !== "btp:pro-request" ||
+					!("id" in data) ||
+					typeof data.id !== "string" ||
+					!("op" in data) ||
+					typeof data.op !== "string"
+				) {
+					return;
+				}
+				// The `in`/typeof checks above proved the shape at runtime; name the
+				// cast once instead of re-asserting per property access below.
+				const request = data as {
+					id: string;
+					op: string;
+					payload?: unknown;
+				};
+				// func is serialized into the page and can't close over module
+				// scope, so `chrome` (a content-script global, not in the ambient
+				// DOM lib here) is reached off globalThis instead of an import.
+				const globalWithChrome = globalThis as unknown as {
+					chrome: {
+						runtime: { sendMessage(msg: unknown): Promise<unknown> };
+					};
+				};
+				globalWithChrome.chrome.runtime
+					.sendMessage({
+						type: "btp:pro-request",
+						op: request.op,
+						payload: request.payload,
+					})
+					.then((resp: unknown) => {
+						if (!resp || typeof resp !== "object") {
+							throw new Error("empty response");
+						}
+						window.postMessage(
+							{ type: "btp:pro-response", id: request.id, ...resp },
+							"/",
+						);
+					})
+					.catch((err: unknown) => {
+						window.postMessage(
+							{
+								type: "btp:pro-response",
+								id: request.id,
+								ok: false,
+								error: String(err),
+							},
+							"/",
+						);
+					});
+			});
+		},
+	});
+}
+
+/**
  * Guarantee an overlay is mounted in the tab. Injects the bundle only when the
  * MAIN-world singleton is absent (fresh document); when reusing an existing
  * singleton it re-seeds the config so the remount picks up current options.
+ * When PRO is active, also (re-)injects the ISOLATED-world relay so the
+ * overlay's bridged client can reach the service worker.
  */
 export async function ensureOverlay(
 	chromeApi: ChromeLike,
@@ -171,7 +282,115 @@ export async function ensureOverlay(
 	} else {
 		await injectBundle(chromeApi, tabId, config, projectId);
 	}
+	if (config.proToken) await injectProRelay(chromeApi, tabId);
 	await callOverlay(chromeApi, tabId, "mount");
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isStringArray(v: unknown): v is string[] {
+	return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+interface ProOpSpec {
+	method: "GET" | "POST";
+	path(payload: Record<string, unknown>): string;
+	validate(payload: unknown): payload is Record<string, unknown>;
+}
+
+/** Named PRO ops (frozen contract, shared with src/client/pro-bridge.ts). Each
+ *  maps 1:1 to a BugToPromptClient method; the URL is built ONLY from
+ *  PRO_BASE_URL + a fixed path here — never from the untrusted payload. */
+const PRO_OPS: Record<string, ProOpSpec> = {
+	mintStreamingToken: {
+		method: "POST",
+		path: () => "/streaming-token",
+		validate: (p): p is Record<string, unknown> =>
+			isPlainObject(p) &&
+			(p.targetId === undefined || typeof p.targetId === "string"),
+	},
+	saveArtifact: {
+		method: "POST",
+		path: () => "/artifact",
+		validate: (p): p is Record<string, unknown> =>
+			isPlainObject(p) &&
+			isPlainObject(p.artifact) &&
+			typeof p.audioBase64 === "string" &&
+			isStringArray(p.screenshotsBase64),
+	},
+	transcribeBatch: {
+		method: "POST",
+		path: () => "/transcribe",
+		validate: (p): p is Record<string, unknown> =>
+			isPlainObject(p) &&
+			typeof p.sessionId === "string" &&
+			(p.targetId === undefined || typeof p.targetId === "string"),
+	},
+	createIssue: {
+		method: "POST",
+		path: () => "/issue",
+		validate: (p): p is Record<string, unknown> =>
+			isPlainObject(p) &&
+			typeof p.sessionId === "string" &&
+			typeof p.prompt === "string" &&
+			(p.artifactRef === undefined || typeof p.artifactRef === "string") &&
+			(p.transcriptText === undefined ||
+				typeof p.transcriptText === "string") &&
+			(p.targetId === undefined || typeof p.targetId === "string"),
+	},
+	listTargets: {
+		method: "GET",
+		path: (p) =>
+			`/targets?projectId=${encodeURIComponent(String(p.projectId))}`,
+		validate: (p): p is Record<string, unknown> =>
+			isPlainObject(p) && typeof p.projectId === "string",
+	},
+};
+
+/**
+ * Execute one PRO op on behalf of the ISOLATED-world relay (P0, issue #82).
+ * This is the ONLY place the real Bearer token is read and attached — it
+ * never leaves the service worker. Confused-deputy posture: any page script
+ * on an actively-capturing tab can trigger these named ops (through the
+ * relay), so the defense is a closed op table + payload shape validation + a
+ * URL built only from the fixed PRO_BASE_URL constant (never the payload).
+ * The residual risk is that a hostile page can drive mintStreamingToken /
+ * saveArtifact / transcribeBatch / createIssue / listTargets while capture is
+ * on — it can never observe or exfiltrate the token itself.
+ */
+export async function executeProOp(
+	chromeApi: ChromeLike,
+	op: string,
+	payload: unknown,
+	fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+	const config = await loadConfig(chromeApi);
+	if (!config.proToken) return { ok: false, error: "PRO is not active" };
+	const spec = PRO_OPS[op];
+	if (!spec) return { ok: false, error: "unknown op" };
+	if (!spec.validate(payload)) return { ok: false, error: "invalid payload" };
+	const url = `${PRO_BASE_URL}${spec.path(payload)}`;
+	try {
+		const res = await fetchImpl(url, {
+			method: spec.method,
+			headers: {
+				Authorization: `Bearer ${config.proToken}`,
+				...(spec.method === "POST"
+					? { "Content-Type": "application/json" }
+					: {}),
+			},
+			...(spec.method === "POST" ? { body: JSON.stringify(payload) } : {}),
+		});
+		if (!res.ok) {
+			const text = await res.text();
+			return { ok: false, error: `${res.status} ${res.statusText}: ${text}` };
+		}
+		return { ok: true, result: await res.json() };
+	} catch (err) {
+		return { ok: false, error: String(err) };
+	}
 }
 
 export interface ToggleResult {
@@ -336,6 +555,18 @@ export function init(chromeApi: ChromeLike): void {
 				void handleDocumentReady(chromeApi, tabId, sender.tab?.url);
 			}
 			return undefined;
+		}
+		if (type === "btp:pro-request") {
+			// Only accept requests carrying a real sender tab (a page context);
+			// drop anything else without invoking executeProOp.
+			if (!sender.tab) {
+				sendResponse({ ok: false, error: "unauthorized" });
+				return undefined;
+			}
+			const req = msg as { op?: unknown; payload?: unknown };
+			const op = typeof req.op === "string" ? req.op : "";
+			void executeProOp(chromeApi, op, req.payload).then(sendResponse);
+			return true; // async sendResponse
 		}
 		if (type === "btp:toggle" || type === "btp:state") {
 			void (async () => {

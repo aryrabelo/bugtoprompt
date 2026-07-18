@@ -383,4 +383,31 @@ describe("createFetchClient PRO override (issue #8)", () => {
 		expect(url).toBe("http://x/streaming-token");
 		expect(authHeader(init)).toBeUndefined();
 	});
+
+	it("strips trailing slashes from pro.baseUrl before building the request URL (P2)", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ token: "t", expiresAt: 0 }));
+
+		await createFetchClient(LOCAL_BASE, {
+			baseUrl: "https://api.example.com/",
+			token: "t",
+		}).mintStreamingToken();
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		// Single slash, not "//streaming-token" — the pre-fix bug.
+		expect(url).toBe("https://api.example.com/streaming-token");
+		expect(authHeader(init)).toBe("Bearer t");
+	});
+
+	it("omits the Authorization header when pro.token is unset (bridged config, issue #82)", async () => {
+		fetchSpy.mockResolvedValue(okResponse({ token: "t", expiresAt: 0 }));
+
+		await createFetchClient(LOCAL_BASE, {
+			baseUrl: "https://pro",
+			bridged: true,
+		}).mintStreamingToken();
+
+		const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://pro/streaming-token");
+		expect(authHeader(init)).toBeUndefined();
+	});
 });

@@ -68,8 +68,13 @@ function readGlobalConfig(): Partial<BugToPromptProps> {
 	if (g.screenshotMode) cfg.screenshotMode = g.screenshotMode;
 	if (typeof g.autoVoice === "boolean") cfg.autoVoice = g.autoVoice;
 	if (typeof g.defaultOpen === "boolean") cfg.defaultOpen = g.defaultOpen;
-	if (g.pro?.baseUrl && g.pro.token) {
-		cfg.pro = { baseUrl: g.pro.baseUrl, token: g.pro.token };
+	// A bridged config (extension, issue #82) carries no token — it's proof
+	// enough that a page-owner token (`g.pro.token`) is present instead.
+	if (g.pro?.baseUrl && (g.pro.token || g.pro.bridged === true)) {
+		const proBase = g.pro.baseUrl.replace(/\/+$/, "");
+		cfg.pro = g.pro.bridged
+			? { baseUrl: proBase, bridged: true }
+			: { baseUrl: proBase, token: g.pro.token };
 	}
 	return cfg;
 }

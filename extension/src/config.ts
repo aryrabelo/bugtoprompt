@@ -31,7 +31,8 @@ export const PRO_BASE_URL = "https://api.bugtoprompt.com";
  *  picks the resulting session up from cookies (see fetchProSession). */
 export const PRO_LOGIN_URL = "https://app.bugtoprompt.com";
 
-/** Non-secret defaults persisted in chrome.storage.sync. */
+/** Non-secret defaults persisted in chrome.storage.sync. `proToken` is the one
+ *  exception — see its own doc below. */
 export interface SyncConfig {
 	baseUrl: string;
 	modes: OutputMode[];
@@ -41,7 +42,9 @@ export interface SyncConfig {
 	/** Per-host repo mappings for non-localhost sites. Empty on localhost-only setups. */
 	siteBindings: SiteBinding[];
 	/** Better Auth session token for the PRO remote service. Empty string means
-	 *  PRO is inactive and all traffic stays on the local sidecar. */
+	 *  PRO is inactive and all traffic stays on the local sidecar. It's a
+	 *  credential, so it's persisted in chrome.storage.local (never .sync) —
+	 *  see loadConfig/saveConfig. */
 	proToken: string;
 }
 
@@ -282,6 +285,13 @@ export interface ChromeLike {
 		sync: {
 			get(keys: unknown): Promise<Record<string, unknown>>;
 			set(items: Record<string, unknown>): Promise<void>;
+			remove?(keys: string | string[]): Promise<void>;
+		};
+		/** Credential storage — never synced to other signed-in devices. */
+		local: {
+			get(keys: unknown): Promise<Record<string, unknown>>;
+			set(items: Record<string, unknown>): Promise<void>;
+			remove?(keys: string | string[]): Promise<void>;
 		};
 		session?: {
 			get(keys: unknown): Promise<Record<string, unknown>>;
@@ -335,7 +345,6 @@ const SYNC_KEYS = [
 	"screenshotMode",
 	"autoVoice",
 	"siteBindings",
-	"proToken",
 ];
 
 function coerceConfig(raw: Record<string, unknown>): SyncConfig {
@@ -370,14 +379,35 @@ function coerceConfig(raw: Record<string, unknown>): SyncConfig {
 	}
 	if (typeof raw.autoVoice === "boolean") cfg.autoVoice = raw.autoVoice;
 	cfg.siteBindings = normalizeBindings(raw.siteBindings);
-	if (typeof raw.proToken === "string") cfg.proToken = raw.proToken.trim();
 	return cfg;
 }
 
-/** Load the stored config, falling back to defaults for any unset/invalid field. */
+/** Load the stored config, falling back to defaults for any unset/invalid field.
+ *  proToken lives in chrome.storage.local (a credential, never synced); this
+ *  also runs a one-shot migration off an older chrome.storage.sync copy so
+ *  the token stops propagating to every signed-in device. */
 export async function loadConfig(chromeApi: ChromeLike): Promise<SyncConfig> {
-	const raw = await chromeApi.storage.sync.get(SYNC_KEYS);
-	return coerceConfig(raw ?? {});
+	const raw = await chromeApi.storage.sync.get([...SYNC_KEYS, "proToken"]);
+	const cfg = coerceConfig(raw ?? {});
+	const local = await chromeApi.storage.local.get(["proToken"]);
+	const localToken =
+		typeof local?.proToken === "string" ? local.proToken.trim() : "";
+	if (localToken) {
+		cfg.proToken = localToken;
+		return cfg;
+	}
+	const legacyToken =
+		typeof raw?.proToken === "string" ? raw.proToken.trim() : "";
+	if (legacyToken) {
+		cfg.proToken = legacyToken;
+		await chromeApi.storage.local.set({ proToken: legacyToken });
+		if (chromeApi.storage.sync.remove) {
+			await chromeApi.storage.sync.remove("proToken");
+		} else {
+			await chromeApi.storage.sync.set({ proToken: "" });
+		}
+	}
+	return cfg;
 }
 
 /** Persist a partial config patch; returns the merged, validated result. */
@@ -419,8 +449,8 @@ export async function saveConfig(
 		screenshotMode: merged.screenshotMode,
 		autoVoice: merged.autoVoice,
 		siteBindings: merged.siteBindings,
-		proToken: merged.proToken,
 	};
 	await chromeApi.storage.sync.set(payload);
+	await chromeApi.storage.local.set({ proToken: merged.proToken });
 	return merged;
 }
