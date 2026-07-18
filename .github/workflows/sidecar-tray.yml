@@ -37,3 +37,37 @@ jobs:
       # The supervisor test pre-binds an ephemeral port then rebinds it; run
       # serially so a concurrent test can't grab the port in between.
       - run: cargo test -- --test-threads=1
+
+  # Builds an UNSIGNED BugToPrompt.dmg by default (no APPLE_* secrets
+  # required, exits 0). When APPLE_SIGNING_IDENTITY / APPLE_ID /
+  # APPLE_PASSWORD / APPLE_TEAM_ID secrets are populated, the same script
+  # signs and notarizes the .app/.dmg via env passthrough below.
+  dmg:
+    name: package .dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable channel
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: sidecar-tray
+      - name: Build .dmg (unsigned unless APPLE_* secrets present)
+        # package-dmg.sh imports APPLE_CERTIFICATE into a throwaway keychain and
+        # signs + notarizes when the secrets below are populated; with none set
+        # (today) it builds an unsigned .dmg and exits 0, keeping this job green.
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash sidecar-tray/scripts/package-dmg.sh
+      - uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4
+        with:
+          name: BugToPrompt-dmg
+          path: sidecar-tray/dist/BugToPrompt.dmg
+          if-no-files-found: error
