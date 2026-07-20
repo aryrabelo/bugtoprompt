@@ -16,7 +16,7 @@ BugToPrompt
 Capture a bug as a click timeline + voice narration + screenshots, rendered as an AI-ready prompt or GitHub issue.
 ```
 
-_(116 characters)_
+_(114 characters)_
 
 ## Category
 
@@ -42,17 +42,21 @@ HOW IT WORKS
 2. Hit Start capture and walk through the bug like you're narrating it
    to a coworker.
 3. BugToPrompt records:
-   - A numbered click timeline (every click gets a marker + screenshot)
+   - A numbered click timeline (a marker on every click; a screenshot too
+     when screen capture is enabled and permission is granted)
    - Live voice narration, transcribed as you talk
-   - Full-page and element screenshots at each step
+   - A click-centered screenshot (or a downscaled full frame) plus
+     interactive element metadata — role, name, selector, position — at
+     each step
 4. Stop capture. BugToPrompt renders everything into a single,
    structured prompt — paste it straight into Claude, Cursor, or Codex,
    or file it as a GitHub issue with one click.
 
 WHY IT'S DIFFERENT
 
-- Built for local dev. Runs only on http://localhost and 127.0.0.1 —
-  it does not activate on the public web.
+- Built for local dev. Activates automatically only on http://localhost
+  and 127.0.0.1 — capturing on any other site requires you to first
+  grant it access to that specific origin ("Enable on this site").
 - No copy-pasting screenshots into a doc, no rewriting your verbal
   explanation into a bug report — the transcript and timeline are
   captured directly out of your own words.
@@ -65,11 +69,14 @@ WHY IT'S DIFFERENT
 
 PRIVACY
 
-BugToPrompt only runs on localhost/127.0.0.1 pages you explicitly start
-a capture on. Screen and audio capture require your explicit browser
+BugToPrompt activates automatically only on localhost/127.0.0.1 pages;
+capturing on any other site requires you to first grant it access to
+that origin. Screen and audio capture require your explicit browser
 permission grant every time. See the privacy policy at
 https://bugtoprompt.com/privacy for full details on what is collected
-and where it is sent (Lite: stays local; Pro: sent to your
+and where it is sent (Lite: stays on-device, except voice transcription
+falls back to AssemblyAI's cloud API when the local parakeet-mlx engine
+is unavailable and an AssemblyAI key is configured; Pro: sent to your
 account on api.bugtoprompt.com).
 
 OPEN SOURCE

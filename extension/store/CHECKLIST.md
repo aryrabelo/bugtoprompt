@@ -2,7 +2,7 @@
 
 Source-of-truth checklist for publishing the BugToPrompt extension on the
 Chrome Web Store Developer Dashboard. Work top to bottom; each unchecked
-item blocks submission.
+item blocks submission unless explicitly marked optional.
 
 ## 1. Package the build
 
@@ -51,7 +51,10 @@ item blocks submission.
         optional `http://*/*` / `https://*/*` host permissions (see
         `extension/manifest.json`).
       - Data usage disclosure: screen capture (via `getDisplayMedia`),
-        microphone audio (via `getUserMedia`), and — for Pro users only —
+        microphone audio (via `getUserMedia`), interactive DOM snapshots
+        (element role/name/selector/bounding-box — see
+        `src/schema/index.ts` `interactiveElementSchema`), page URLs
+        (`pageUrl` plus route-change events), and — for Pro users only —
         account/session data sent to `api.bugtoprompt.com`.
 - [ ] Confirm the extension does not collect data beyond what's disclosed
       (Lite path stays fully local; verify no telemetry call was added
@@ -69,8 +72,10 @@ item blocks submission.
 - [ ] Re-read `manifest.json` permissions against actual usage — Chrome
       review flags unused or overbroad permissions. In particular, justify
       `optional_host_permissions: ["http://*/*", "https://*/*"]` (used when
-      a user opts a non-localhost target into capture) in the dashboard
-      permission-justification field, not just in code comments.
+      a user opts a non-localhost target into capture — `listing.md`'s
+      "Built for local dev" and "PRIVACY" sections already describe this
+      opt-in behavior; keep them in sync if the wording changes) in the
+      dashboard permission-justification field, not just in code comments.
 - [ ] Confirm `host_permissions` including `https://api.bugtoprompt.com/*`
       is justified as "Pro backend communication" in the same tab.
 - [ ] Double-check `SECURITY.md`'s privacy notes are consistent with what
