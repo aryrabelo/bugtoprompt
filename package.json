@@ -26,17 +26,8 @@
 	"main": "./dist/index.js",
 	"module": "./dist/index.js",
 	"types": "./dist/index.d.ts",
-	"bin": {
-		"bugtoprompt": "./bin/bugtoprompt.mjs"
-	},
 	"files": [
-		"dist",
-		"bin/bugtoprompt.mjs",
-		"server/github-issue-service.mjs",
-		"server/local-transcribe.mjs",
-		"server/service-preflight.mjs",
-		"server/service-security.mjs",
-		"server/transcript-segments.mjs"
+		"dist"
 	],
 	"exports": {
 		".": {
