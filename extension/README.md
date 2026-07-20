@@ -57,7 +57,9 @@ BugToPrompt requests site access at capture time, not install time (issue #97):
 
 - The sidecar must be running for issues/voice: it starts automatically with
   `bun run dev` in GerarPosts, or standalone via `npx bugtoprompt`
-  (see `../server/`).
+  (see `../server/`). On macOS, install the local Lite tray app instead —
+  [download the latest `BugToPrompt.dmg`](https://github.com/aryrabelo/bugtoprompt/releases/latest/download/BugToPrompt.dmg)
+  (always the newest stable release; see `sidecar-tray/`).
 - Options page: sidecar URL (loopback only) and screenshot mode.
 - Issue filing is opt-in on the sidecar: set `BUGTOPROMPT_ENABLE_ISSUES=1`
   (needs an authenticated `gh` CLI). Voice transcription runs locally when
