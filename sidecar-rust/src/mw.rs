@@ -62,10 +62,14 @@ pub async fn cors_csrf_auth(State(state): State<AppState>, req: Request, next: N
                     gh_state,
                     transcription_state,
                     origin_allowed,
+                    env!("CARGO_PKG_VERSION"),
                 ),
             )
         } else {
-            (StatusCode::OK, json!({ "ok": true }))
+            (
+                StatusCode::OK,
+                json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }),
+            )
         };
 
         return with_cors((status, Json(body)).into_response(), &cors);

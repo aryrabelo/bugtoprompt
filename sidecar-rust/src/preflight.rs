@@ -111,13 +111,14 @@ pub fn detect_transcription_state(local_ready: bool) -> TranscriptionState {
 }
 
 /// Assemble the exact `/health` contract:
-/// `{ ok: true, issues, repos, gh, transcription, originAllowed }`.
+/// `{ ok: true, issues, repos, gh, transcription, originAllowed, version }`.
 pub fn build_health_payload(
     issues: bool,
     repos: usize,
     gh: &str,
     transcription: &str,
     origin_allowed: bool,
+    version: &str,
 ) -> Value {
     json!({
         "ok": true,
@@ -126,6 +127,7 @@ pub fn build_health_payload(
         "gh": gh,
         "transcription": transcription,
         "originAllowed": origin_allowed,
+        "version": version,
     })
 }
 
@@ -158,7 +160,7 @@ mod tests {
 
     #[test]
     fn health_payload_has_the_exact_shape() {
-        let body = build_health_payload(true, 2, "ready", "local", true);
+        let body = build_health_payload(true, 2, "ready", "local", true, "0.1.0");
         assert_eq!(
             body,
             json!({
@@ -168,6 +170,7 @@ mod tests {
                 "gh": "ready",
                 "transcription": "local",
                 "originAllowed": true,
+                "version": "0.1.0",
             })
         );
     }

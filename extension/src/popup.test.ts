@@ -2,13 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { type ChromeLike, DEFAULT_CONFIG } from "./config";
 import {
 	buildRows,
+	classifyTray,
 	fetchHealth,
 	fetchProSession,
 	type HealthPayload,
 	healthPill,
 	initPopup,
+	isVersionAtLeast,
+	MIN_TRAY_VERSION,
 	offlineHint,
+	parseVersion,
 	popupMode,
+	probeTray,
+	RELEASES_URL,
+	renderTrayAction,
+	trayAction,
+	trayPill,
 } from "./popup";
 
 function jsonResponse(body: unknown, ok = true): Response {
@@ -16,6 +25,59 @@ function jsonResponse(body: unknown, ok = true): Response {
 		ok,
 		json: async () => body,
 	} as unknown as Response;
+}
+
+/** Popup DOM fixture. `trayAction` mirrors popup.html's `#tray-action`
+ *  section — omitted by default so existing tests keep exercising the
+ *  "no such element" guard in initPopup. */
+function mountPopupDom(opts?: { trayAction?: boolean }): void {
+	document.body.innerHTML = `
+		<span id="status-pill"></span>
+		<p id="target"></p>
+		<section id="rows"></section>
+		${opts?.trayAction ? '<section id="tray-action"></section>' : ""}
+		<button id="start" type="button"></button>
+		<div class="pro">
+			<button id="pro-login" type="button">Login to Pro</button>
+			<span id="pro-hint"></span>
+		</div>
+		<p id="error"></p>
+	`;
+}
+
+/** Drain pending microtasks (promise chains) without touching real timers
+ *  or guessing a wall-clock duration — the click handler's async work is
+ *  a chain of native-Promise awaits with no macrotask boundary of its own. */
+async function flushMicrotasks(): Promise<void> {
+	for (let i = 0; i < 30; i++) {
+		await Promise.resolve();
+	}
+}
+
+function fakeChrome(): ChromeLike {
+	const syncStore: Record<string, unknown> = {};
+	const localStore: Record<string, unknown> = {};
+	return {
+		storage: {
+			sync: {
+				get: vi.fn(async () => ({ ...syncStore })),
+				set: vi.fn(async (items: Record<string, unknown>) => {
+					Object.assign(syncStore, items);
+				}),
+			},
+			local: {
+				get: vi.fn(async () => ({ ...localStore })),
+				set: vi.fn(async (items: Record<string, unknown>) => {
+					Object.assign(localStore, items);
+				}),
+			},
+		},
+		// A loopback tab so popupMode resolves to "toggle" (never "blocked",
+		// which would return before the pro button/tray probe are wired at all).
+		tabs: {
+			query: vi.fn(async () => [{ id: 1, url: "http://localhost:3000/" }]),
+		},
+	};
 }
 
 describe("fetchHealth", () => {
@@ -381,62 +443,318 @@ describe("offlineHint", () => {
 	});
 });
 
-describe("initPopup — pro button (DOM wiring)", () => {
-	function mountPopupDom(): void {
-		document.body.innerHTML = `
-			<span id="status-pill"></span>
-			<p id="target"></p>
-			<section id="rows"></section>
-			<button id="start" type="button"></button>
-			<div class="pro">
-				<button id="pro-login" type="button">Login to Pro</button>
-				<span id="pro-hint"></span>
-			</div>
-			<p id="error"></p>
-		`;
-	}
+describe("parseVersion / isVersionAtLeast", () => {
+	it("parses vMAJOR.MINOR.PATCH with or without a leading v, filling missing parts with 0", () => {
+		expect(parseVersion("0.1.0")).toEqual([0, 1, 0]);
+		expect(parseVersion("v0.1.0")).toEqual([0, 1, 0]);
+		expect(parseVersion("v2")).toEqual([2, 0, 0]);
+		expect(parseVersion("1.4")).toEqual([1, 4, 0]);
+	});
 
-	/** Drain pending microtasks (promise chains) without touching real timers
-	 *  or guessing a wall-clock duration — the click handler's async work is
-	 *  a chain of native-Promise awaits with no macrotask boundary of its own. */
-	async function flushMicrotasks(): Promise<void> {
-		for (let i = 0; i < 30; i++) {
-			await Promise.resolve();
-		}
-	}
+	it("drops pre-release/build suffixes", () => {
+		expect(parseVersion("v1.2.3-rc.1")).toEqual([1, 2, 3]);
+		expect(parseVersion("1.2.3+build.7")).toEqual([1, 2, 3]);
+	});
 
-	function fakeChrome(): ChromeLike {
-		const syncStore: Record<string, unknown> = {};
-		const localStore: Record<string, unknown> = {};
-		return {
-			storage: {
-				sync: {
-					get: vi.fn(async () => ({ ...syncStore })),
-					set: vi.fn(async (items: Record<string, unknown>) => {
-						Object.assign(syncStore, items);
-					}),
-				},
-				local: {
-					get: vi.fn(async () => ({ ...localStore })),
-					set: vi.fn(async (items: Record<string, unknown>) => {
-						Object.assign(localStore, items);
-					}),
-				},
-			},
-			// A loopback tab so popupMode resolves to "toggle" (never "blocked",
-			// which would return before the pro button is wired at all).
-			tabs: {
-				query: vi.fn(async () => [{ id: 1, url: "http://localhost:3000/" }]),
-			},
+	it("rejects unparseable or over-long version strings", () => {
+		expect(parseVersion("latest")).toBeNull();
+		expect(parseVersion("")).toBeNull();
+		expect(parseVersion("v.x.y")).toBeNull();
+		expect(parseVersion("1.2.3.4")).toBeNull();
+	});
+
+	it("compares candidate >= min tuple-wise", () => {
+		expect(isVersionAtLeast("0.1.0", "0.1.0")).toBe(true);
+		expect(isVersionAtLeast("0.2.0", "0.1.0")).toBe(true);
+		expect(isVersionAtLeast("0.0.9", "0.1.0")).toBe(false);
+		expect(isVersionAtLeast("garbage", "0.1.0")).toBe(false);
+		expect(isVersionAtLeast("v0.1.0", "0.1.0")).toBe(true);
+	});
+});
+
+describe("classifyTray", () => {
+	const fullPayload = {
+		ok: true,
+		issues: true,
+		repos: 2,
+		gh: "ready",
+		transcription: "ready",
+		originAllowed: true,
+	};
+
+	it("treats a connection error as not-installed (no tray listening at all)", () => {
+		expect(classifyTray({ transport: "neterror" })).toEqual({
+			kind: "not-installed",
+			health: null,
+			version: null,
+		});
+	});
+
+	it("treats a timeout as unreachable (a tray IS listening, just not answering)", () => {
+		expect(classifyTray({ transport: "timeout" })).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
+	});
+
+	it("treats an HTTP error status as unreachable", () => {
+		expect(classifyTray({ transport: "http-error", status: 500 })).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
+	});
+
+	it("treats a 2xx body with ok:false as unreachable", () => {
+		expect(classifyTray({ transport: "ok", body: { ok: false } })).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
+	});
+
+	it("treats a non-object body as unreachable", () => {
+		expect(classifyTray({ transport: "ok", body: "nope" })).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
+		expect(classifyTray({ transport: "ok", body: null })).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
+	});
+
+	it("treats a full payload at MIN_TRAY_VERSION as ready", () => {
+		const status = classifyTray({
+			transport: "ok",
+			body: { ...fullPayload, version: MIN_TRAY_VERSION },
+		});
+		expect(status.kind).toBe("ready");
+		expect(status.version).toBe(MIN_TRAY_VERSION);
+		expect(status.health).not.toBeNull();
+	});
+
+	it("treats a full payload with no version as outdated (predates the version contract)", () => {
+		const status = classifyTray({ transport: "ok", body: fullPayload });
+		expect(status.kind).toBe("outdated");
+		expect(status.version).toBeNull();
+		expect(status.health).not.toBeNull();
+	});
+
+	it("treats a full payload below MIN_TRAY_VERSION as outdated", () => {
+		const status = classifyTray({
+			transport: "ok",
+			body: { ...fullPayload, version: "0.0.1" },
+		});
+		expect(status.kind).toBe("outdated");
+		expect(status.version).toBe("0.0.1");
+		expect(status.health).not.toBeNull();
+	});
+
+	it("treats a degraded (token-gated) body at MIN_TRAY_VERSION as ready with no health", () => {
+		const status = classifyTray({
+			transport: "ok",
+			body: { ok: true, version: MIN_TRAY_VERSION },
+		});
+		expect(status).toEqual({
+			kind: "ready",
+			health: null,
+			version: MIN_TRAY_VERSION,
+		});
+	});
+
+	it("treats a degraded body with no version as outdated", () => {
+		const status = classifyTray({ transport: "ok", body: { ok: true } });
+		expect(status).toEqual({ kind: "outdated", health: null, version: null });
+	});
+});
+
+describe("probeTray", () => {
+	it("maps an AbortSignal.timeout rejection (TimeoutError) to timeout, not neterror", async () => {
+		// AbortSignal.timeout() aborts with a TimeoutError DOMException — the real
+		// Chrome 124+ path. A slow/hung tray must classify as unreachable, so the
+		// probe must report "timeout" here, not "neterror" (which is not-installed).
+		const fetchImpl = vi.fn(async () => {
+			throw new DOMException("The operation timed out.", "TimeoutError");
+		});
+		const probe = await probeTray(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+			10,
+		);
+		expect(probe).toEqual({ transport: "timeout" });
+		expect(classifyTray(probe).kind).toBe("unreachable");
+	});
+
+	it("maps a manual AbortError to timeout too (older-Chrome fallback)", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new DOMException("Aborted.", "AbortError");
+		});
+		const probe = await probeTray(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(probe).toEqual({ transport: "timeout" });
+	});
+
+	it("maps a plain connection failure to neterror (nothing listening)", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new TypeError("Failed to fetch");
+		});
+		const probe = await probeTray(
+			"http://127.0.0.1:4127",
+			fetchImpl as unknown as typeof fetch,
+		);
+		expect(probe).toEqual({ transport: "neterror" });
+		expect(classifyTray(probe).kind).toBe("not-installed");
+	});
+
+	it("maps a non-2xx response to http-error and a bad body to ok/undefined", async () => {
+		const err = vi.fn(async () => ({ ok: false, status: 503 }) as Response);
+		expect(
+			await probeTray("http://127.0.0.1:4127", err as unknown as typeof fetch),
+		).toEqual({ transport: "http-error", status: 503 });
+		const badBody = vi.fn(
+			async () =>
+				({
+					ok: true,
+					status: 200,
+					json: async () => {
+						throw new SyntaxError("bad json");
+					},
+				}) as unknown as Response,
+		);
+		expect(
+			await probeTray(
+				"http://127.0.0.1:4127",
+				badBody as unknown as typeof fetch,
+			),
+		).toEqual({ transport: "ok", body: undefined });
+	});
+});
+
+describe("trayPill", () => {
+	it("delegates to healthPill when ready", () => {
+		const ghNotReady: HealthPayload = {
+			ok: true,
+			issues: true,
+			repos: 0,
+			gh: "unauthenticated",
+			transcription: "unconfigured",
+			originAllowed: true,
 		};
-	}
+		expect(
+			trayPill({ kind: "ready", health: ghNotReady, version: "0.1.0" }),
+		).toEqual({ label: "Sidecar up · gh not ready", tone: "warn" });
+		expect(trayPill({ kind: "ready", health: null, version: "0.1.0" })).toEqual(
+			{ label: "Sidecar offline", tone: "down" },
+		);
+	});
 
+	it("labels each non-ready kind with a distinct pill", () => {
+		expect(
+			trayPill({ kind: "outdated", health: null, version: "0.0.1" }),
+		).toEqual({ label: "Tray outdated", tone: "warn" });
+		expect(
+			trayPill({ kind: "unreachable", health: null, version: null }),
+		).toEqual({ label: "Tray unreachable", tone: "down" });
+		expect(
+			trayPill({ kind: "not-installed", health: null, version: null }),
+		).toEqual({ label: "Tray not installed", tone: "down" });
+	});
+});
+
+describe("trayAction", () => {
+	it("offers the release download for not-installed and outdated", () => {
+		expect(
+			trayAction({ kind: "not-installed", health: null, version: null })?.url,
+		).toBe(RELEASES_URL);
+		expect(
+			trayAction({ kind: "outdated", health: null, version: "0.0.1" })?.url,
+		).toBe(RELEASES_URL);
+	});
+
+	it("names the version in the outdated hint when known, omits it otherwise", () => {
+		const withVersion = trayAction({
+			kind: "outdated",
+			health: null,
+			version: "0.0.1",
+		});
+		expect(withVersion?.hint).toContain("v0.0.1");
+
+		const withoutVersion = trayAction({
+			kind: "outdated",
+			health: null,
+			version: null,
+		});
+		expect(withoutVersion?.hint).toContain("out of date");
+		expect(withoutVersion?.hint).not.toContain("(v");
+	});
+
+	it("offers no download for unreachable — a tray IS installed, restarting is the fix", () => {
+		expect(
+			trayAction({ kind: "unreachable", health: null, version: null })?.url,
+		).toBeUndefined();
+	});
+
+	it("returns null when ready (no action needed)", () => {
+		expect(
+			trayAction({ kind: "ready", health: null, version: "0.1.0" }),
+		).toBeNull();
+	});
+});
+
+describe("renderTrayAction", () => {
+	it("renders a title, hint, and CTA anchor when the action has a url", () => {
+		const el = document.createElement("section");
+		renderTrayAction(el, {
+			title: "Install BugToPrompt",
+			hint: "Install the BugToPrompt tray, then reopen this popup.",
+			url: RELEASES_URL,
+		});
+		expect(el.hidden).toBe(false);
+		expect(el.querySelector(".tray-action-title")?.textContent).toBe(
+			"Install BugToPrompt",
+		);
+		expect(el.querySelector(".tray-action-hint")?.textContent).toBe(
+			"Install the BugToPrompt tray, then reopen this popup.",
+		);
+		const anchor = el.querySelector("a.tray-action-cta");
+		expect(anchor?.getAttribute("href")).toBe(RELEASES_URL);
+		expect(anchor?.getAttribute("target")).toBe("_blank");
+		expect(anchor?.getAttribute("rel")).toBe("noopener noreferrer");
+	});
+
+	it("renders no anchor when the action has no url", () => {
+		const el = document.createElement("section");
+		renderTrayAction(el, {
+			title: "Restart the tray",
+			hint: "Restart it and reopen this popup.",
+		});
+		expect(el.hidden).toBe(false);
+		expect(el.querySelector("a")).toBeNull();
+	});
+
+	it("clears children and hides the element on a null action", () => {
+		const el = document.createElement("section");
+		el.append(document.createElement("span"));
+		el.hidden = false;
+		renderTrayAction(el, null);
+		expect(el.hidden).toBe(true);
+		expect(el.childNodes.length).toBe(0);
+	});
+});
+
+describe("initPopup — pro button (DOM wiring)", () => {
 	it("shows a retry hint and leaves no unhandled rejection when saveConfig rejects mid pro-login (P2)", async () => {
 		mountPopupDom();
 		const chromeApi = fakeChrome();
 		// fetchProSession succeeds (so the click handler reaches saveConfig);
 		// every other request (sidecar discovery/health) fails harmlessly —
-		// both fetchHealth and discoverBaseUrl already tolerate that.
+		// both probeTray and discoverBaseUrl already tolerate that.
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: RequestInfo | URL) => {
@@ -477,5 +795,29 @@ describe("initPopup — pro button (DOM wiring)", () => {
 			vi.unstubAllGlobals();
 		}
 		expect(onUnhandledRejection).not.toHaveBeenCalled();
+	});
+});
+
+describe("initPopup — tray states (DOM wiring)", () => {
+	it('renders "Tray not installed" with an install CTA when /health throws a plain network error', async () => {
+		mountPopupDom({ trayAction: true });
+		const chromeApi = fakeChrome();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("ECONNREFUSED");
+			}),
+		);
+		try {
+			await initPopup(chromeApi);
+			await flushMicrotasks();
+			const pillEl = document.getElementById("status-pill");
+			expect(pillEl?.textContent).toBe("Tray not installed");
+			const trayActionEl = document.getElementById("tray-action");
+			const anchor = trayActionEl?.querySelector("a");
+			expect(anchor?.getAttribute("href")).toBe(RELEASES_URL);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
