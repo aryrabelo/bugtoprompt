@@ -232,10 +232,13 @@ function installEncryptedRelay(
 }
 
 /** Fresh module instance of pro-bridge.ts, so `bridgeSecret` (module-scope,
- *  by design) starts unset regardless of what earlier tests did. Re-runs the
- *  module's top-level `window.__btpProBridgeSecret = { set(...) }`
- *  registration, so `setSecret` below always targets the returned client's
- *  own module instance — never a sibling test's. */
+ *  by design) starts unset regardless of what earlier tests did. Since the
+ *  issue #86 hardening, `window.__btpProBridgeSecret` is a one-shot,
+ *  non-configurable property owned by this file's STATIC import (the first
+ *  evaluation in this jsdom window) — a re-evaluated module cannot
+ *  re-register it — so this helper targets the fresh instance's exported
+ *  `bridgeSecretHook` directly. The real window-delivery path is exercised
+ *  by the issue #86 hardening suite at the bottom of this file. */
 async function freshBridgeModule(): Promise<{
 	createProBridgeClient: typeof createProBridgeClient;
 	setSecret: (secret: string) => void;
@@ -246,15 +249,9 @@ async function freshBridgeModule(): Promise<{
 	// fresh so its module-scope `bridgeSecret` starts unset (mirrors
 	// standalone.test.ts's own resetModules()+dynamic-import pattern).
 	const mod = await import("./pro-bridge");
-	const setter = window.__btpProBridgeSecret;
-	if (!setter) {
-		throw new Error(
-			"pro-bridge.ts did not register window.__btpProBridgeSecret",
-		);
-	}
 	return {
 		createProBridgeClient: mod.createProBridgeClient,
-		setSecret: (secret: string) => setter.set(secret),
+		setSecret: (secret: string) => mod.bridgeSecretHook.set(secret),
 	};
 }
 
@@ -588,29 +585,24 @@ describe("createProBridgeClient — contract v2 encrypted relay", () => {
 		expect(postSpy).not.toHaveBeenCalled();
 	});
 
-	it("secret setter hygiene: setting a new secret replaces the old one for subsequent requests", async () => {
+	it("secret setter hygiene: set() is one-shot — a second secret is ignored and requests stay keyed under the first (issue #86)", async () => {
 		const { createProBridgeClient, setSecret } = await freshBridgeModule();
 
-		setSecret("secret-old");
-		installEncryptedRelay("secret-old", () => ({
+		setSecret("secret-first");
+		// The relay delivers exactly one secret per page lifetime (ISOLATED
+		// __btpProRelay idempotency flag), so a second call can only be page
+		// script trying to re-key the channel — it must be ignored.
+		setSecret("secret-attacker");
+
+		// A relay keyed to the FIRST secret still decrypts and resolves; if
+		// the second set() had won, this request would be sealed under
+		// "secret-attacker" and dropped by this relay.
+		installEncryptedRelay("secret-first", () => ({
 			ok: true,
 			result: { round: 1 },
 		}));
 		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual({
 			round: 1,
-		});
-		vi.restoreAllMocks();
-
-		// A relay keyed to the NEW secret only succeeds if the client actually
-		// re-derived its key — a stale cached key from "secret-old" would fail
-		// to decrypt against this relay and the request would never resolve.
-		setSecret("secret-new");
-		installEncryptedRelay("secret-new", () => ({
-			ok: true,
-			result: { round: 2 },
-		}));
-		await expect(createProBridgeClient().listTargets("p1")).resolves.toEqual({
-			round: 2,
 		});
 	});
 });
@@ -707,5 +699,63 @@ describe("createProBridgeClient — contract v2.1: AAD id+direction binding, fai
 		);
 
 		expect(postSpy).not.toHaveBeenCalled();
+	});
+});
+
+describe("window registration hardening — issue #86 (TOCTOU between module load and secret delivery)", () => {
+	// These tests target the property registered by this file's STATIC import
+	// of ./pro-bridge — the first evaluation in this jsdom window, mirroring
+	// the real bundle (which evaluates before any page script can run).
+	// Placed last so the secret set here cannot affect the degraded/no-secret
+	// suites above, which rely on the static instance staying secretless.
+
+	it("registers a non-writable, non-configurable, non-enumerable, frozen hook", () => {
+		const desc = Object.getOwnPropertyDescriptor(
+			window,
+			"__btpProBridgeSecret",
+		);
+		expect(desc).toBeDefined();
+		expect(desc?.writable).toBe(false);
+		expect(desc?.configurable).toBe(false);
+		expect(desc?.enumerable).toBe(false);
+		expect(Object.isFrozen(desc?.value)).toBe(true);
+	});
+
+	it("page script cannot replace the hook, swap its set(), or delete the property", () => {
+		const original = window.__btpProBridgeSecret;
+		if (!original) throw new Error("hook not registered");
+
+		// Strict-mode code (all modules): every attempt throws TypeError and
+		// the original binding survives untouched.
+		expect(() => {
+			window.__btpProBridgeSecret = { set: () => {} };
+		}).toThrow(TypeError);
+		expect(() => {
+			original.set = () => {};
+		}).toThrow(TypeError);
+		expect(() => {
+			delete window.__btpProBridgeSecret;
+		}).toThrow(TypeError);
+
+		expect(window.__btpProBridgeSecret).toBe(original);
+		expect(window.__btpProBridgeSecret?.set).toBe(original.set);
+	});
+
+	it("delivers through the real window hook, and a post-delivery set() from page script cannot re-key the channel", async () => {
+		const hook = window.__btpProBridgeSecret;
+		if (!hook) throw new Error("hook not registered");
+
+		// The genuine executeScript delivery path, for real.
+		hook.set("secret-real");
+		// Post-delivery attacker re-key attempt — one-shot, ignored.
+		hook.set("secret-evil");
+
+		installEncryptedRelay("secret-real", () => ({
+			ok: true,
+			result: { token: "tok-window", expiresAt: 9 },
+		}));
+		await expect(
+			createProBridgeClient().mintStreamingToken("t1"),
+		).resolves.toEqual({ token: "tok-window", expiresAt: 9 });
 	});
 });

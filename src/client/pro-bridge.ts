@@ -50,13 +50,15 @@
  * refuses outright rather than ever send them over a page-visible channel
  * (`useSession` already treats a `saveArtifact` failure as non-fatal).
  *
- * Residual (documented, not fixable from MAIN world): the secret setter and
- * every crypto primitive here run in the same MAIN world as the host page.
- * A page that pre-wraps `window.__btpProBridgeSecret.set` — or monkey-patches
- * `crypto.subtle` itself — before the secret arrives can still intercept it.
- * MAIN-world code cannot defend against an active MAIN-world attacker; the
- * encrypted channel's job is closing the *passive* observation gap, not
- * sandboxing against active page script.
+ * Residual (documented, not fixable from MAIN world): every crypto primitive
+ * here runs in the same MAIN world as the host page. Since issue #86 the
+ * secret hook is registered one-shot at module load — non-writable,
+ * non-configurable, frozen — so hijacking `set` requires running *before
+ * this bundle evaluates*; the remaining active-attack surfaces are that
+ * pre-load window and monkey-patching `crypto.subtle` itself. MAIN-world
+ * code cannot defend against an active MAIN-world attacker; the encrypted
+ * channel's job is closing the *passive* observation gap, not sandboxing
+ * against active page script.
  *
  * Message contract (frozen, shared with the extension lane — full spec in
  * bridge-contract-v2 + bridge-contract-v2.1):
@@ -85,29 +87,69 @@ let nextId = 0;
 // other page-reachable object. Only the setter closure below can write it,
 // and nothing reads it back out through `window.__btpProBridgeSecret`.
 let bridgeSecret: string | undefined;
-// Derived AES-GCM key for the current `bridgeSecret`, memoized so repeat
-// requests don't re-hash + re-import on every call. Invalidated on `set()`.
+// Derived AES-GCM key for `bridgeSecret`, memoized so repeat requests don't
+// re-hash + re-import on every call. The secret is one-shot (see
+// `bridgeSecretHook`), so the memo never needs invalidating.
 let cachedKeyPromise: Promise<CryptoKey> | undefined;
 
 declare global {
 	interface Window {
 		/** Contract v2 secret-delivery hook. Registered by this module at
-		 *  load time; the service worker calls it exactly once per relay
+		 *  load time as a frozen, non-writable, non-configurable property
+		 *  (issue #86); the service worker calls it exactly once per relay
 		 *  initialization via `executeScript`, passing a freshly minted
-		 *  secret as a closure argument (never over `postMessage`). Write-only
-		 *  from the page's perspective — there is no getter. */
+		 *  secret as a closure argument (never over `postMessage`).
+		 *  Write-only from the page's perspective — there is no getter —
+		 *  and only the first non-empty secret ever wins. */
 		__btpProBridgeSecret?: { set(secret: string): void };
 	}
 }
 
+/** Contract v2 secret sink, frozen so `.set` can never be swapped out.
+ *
+ * One-shot by design (issue #86): the relay delivers exactly one secret per
+ * page lifetime — background.ts's ISOLATED-world `__btpProRelay` idempotency
+ * flag guarantees a single fresh init — so any *second* call can only come
+ * from page script. Accepting it would let an active attacker re-key the
+ * channel to an attacker-known secret after delivery and read every
+ * subsequent envelope; ignoring it leaves the attacker only the
+ * module-load → delivery race, which the frozen registration below shrinks
+ * to "before this bundle evaluates".
+ *
+ * Exported (in addition to the window registration) so tests can target a
+ * fresh module instance's own sink: the window property is one-shot
+ * non-configurable, so a re-evaluated module in the same window cannot
+ * re-register it. Bundle exports are not page-reachable, so this widens no
+ * attack surface.
+ */
+export const bridgeSecretHook = Object.freeze({
+	set(secret: string): void {
+		if (typeof secret !== "string" || secret === "") return;
+		if (bridgeSecret !== undefined) return; // one-shot — see above.
+		bridgeSecret = secret;
+	},
+});
+
 if (typeof window !== "undefined") {
-	window.__btpProBridgeSecret = {
-		set(secret: string): void {
-			if (typeof secret !== "string" || secret === "") return;
-			bridgeSecret = secret;
-			cachedKeyPromise = undefined;
-		},
-	};
+	// Issue #86 TOCTOU hardening: register the hook as a non-writable,
+	// non-configurable, non-enumerable property at module load, before any
+	// page script can run against it. A page script can no longer replace
+	// `window.__btpProBridgeSecret` (or its frozen `.set`) between module
+	// load and the service worker's executeScript secret delivery. If the
+	// property already exists non-configurably (a pre-load attacker, or a
+	// duplicate bundle evaluation), defineProperty throws — swallow it and
+	// stay secretless, which fails closed whenever `crypto.subtle` exists
+	// (contract v2.1 3b).
+	try {
+		Object.defineProperty(window, "__btpProBridgeSecret", {
+			value: bridgeSecretHook,
+			writable: false,
+			configurable: false,
+			enumerable: false,
+		});
+	} catch {
+		// Fail closed — see above.
+	}
 }
 
 function deriveKey(secret: string): Promise<CryptoKey> {
