@@ -28,7 +28,6 @@ import { assembleArtifact } from "./artifact/assemble";
 import { AudioCapture, type StoppedAudio } from "./audio/AudioCapture";
 import { StreamingTranscriber } from "./audio/StreamingTranscriber";
 import { debug } from "./debug";
-import { hasStoredKey, saveAssemblyKey } from "./key-store";
 import {
 	loadSession,
 	loadShots,
@@ -67,13 +66,6 @@ export interface UseSessionResult {
 	markCount: number;
 	elapsedMs: number;
 	streaming: boolean;
-	/** True when live transcription could not start because no usable streaming
-	 *  token / API key resolved — prompt the user to paste an AssemblyAI key. */
-	needsKey: boolean;
-	/** Reactive mirror of hasStoredKey(): true once a usable streaming
-	 *  credential is configured for this tab. Flips on after provideKey saves a
-	 *  key so the idle key-prompt hides immediately. */
-	hasKey: boolean;
 	/** Incremented after each grab resolves — drives the Shutter flash. */
 	flashTick: number;
 	/** Ordered thumbnails for click screenshots, one per grabbed click, in click
@@ -103,10 +95,6 @@ export interface UseSessionResult {
 	editSegment(index: number, text: string): void;
 	submitIssue(override?: SessionBinding): Promise<void>;
 	reset(): void;
-	/** Persist an AssemblyAI key; if recording, attempt to go live immediately.
-	 *  Resolves true iff live transcription engaged (or the key was stored OK
-	 *  while idle). */
-	provideKey(key: string): Promise<boolean>;
 	voiceEnabled: boolean;
 	enableVoice(): Promise<void>;
 }
@@ -238,6 +226,7 @@ interface RehydrateBag {
 	// ReturnType<typeof setInterval> is an allowed exception per ts-no-return-type
 	timerRef: { current: ReturnType<typeof setInterval> | undefined };
 	artifactRef: { current: CaptureArtifact | undefined };
+	pendingRef: { current: Pending | undefined };
 	// setters (called with direct values only, never with updater functions)
 	setArtifact: (v: CaptureArtifact | undefined) => void;
 	setTranscript: (v: TranscriptSegment[]) => void;
@@ -262,28 +251,44 @@ function restoreReviewing(
 	bag: Pick<
 		RehydrateBag,
 		| "artifactRef"
+		| "pendingRef"
 		| "setArtifact"
 		| "setTranscript"
 		| "setMarkCount"
 		| "setPhase"
 	>,
 ): void {
-	// Reconstruct a minimal artifact for clipboard / download export.
-	// Audio was already saved server-side; use a placeholder so the schema
-	// validates while renderPrompt (which uses transcript + events) works.
+	// Reconstruct the artifact for clipboard / download / re-save export. Prefer
+	// the real audio metadata + transcript mode frozen at finalize (persisted
+	// since #112) so a re-save after reload no longer clobbers artifact.json with
+	// a `bytes: 0` / "streaming" placeholder. Pre-#112 sessions lack these fields
+	// and fall back to the historical placeholder.
 	const assembled = assembleArtifact({
 		sessionId: session.sessionId,
 		...session.binding,
 		pageUrl: typeof window !== "undefined" ? window.location.href : "",
 		startedAt: session.startedAt,
 		durationMs: session.durationMs,
-		audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 0 },
+		audio: session.audio ?? {
+			ref: "audio.webm",
+			mimeType: "audio/webm",
+			bytes: 0,
+		},
 		transcript: session.transcript,
 		events: session.events,
 		snapshots: session.snapshots,
-		transcriptionMode: "streaming",
+		transcriptionMode: session.transcriptionMode ?? "streaming",
 	});
 	bag.artifactRef.current = assembled;
+	// Rehydrate an empty pending payload so submitIssue (which guards on
+	// pendingRef) can still file after a mid-review reload: without this it stays
+	// undefined and filing silently no-ops (issue #105). The media was already
+	// staged server-side at finalize; an empty re-upload rewrites artifact.json
+	// (with any review-time caption/target edits) but — since `assembled` now
+	// carries the real audio metadata + transcript mode persisted at finalize
+	// (issue #112) — it no longer clobbers them with a bytes:0/"streaming"
+	// placeholder, and leaves the staged audio/screenshots untouched.
+	bag.pendingRef.current = { audioBase64: "", screenshotsBase64: [] };
 	bag.setArtifact(assembled);
 	bag.setTranscript([...session.transcript]);
 	bag.setMarkCount(session.snapshots.length);
@@ -427,8 +432,6 @@ export function useSession(
 	const [markCount, setMarkCount] = useState(0);
 	const [elapsedMs, setElapsedMs] = useState(0);
 	const [streaming, setStreaming] = useState(false);
-	const [needsKey, setNeedsKey] = useState(false);
-	const [hasKey, setHasKey] = useState<boolean>(() => hasStoredKey());
 	const [flashTick, setFlashTick] = useState(0);
 	const [clickPreviews, setClickPreviews] = useState<
 		Array<{ clickNumber: number; screenshotRef: string; url: string }>
@@ -556,6 +559,11 @@ export function useSession(
 	const schedulePersist = useCallback((): void => {
 		clearTimeout(persistTimerRef.current);
 		persistTimerRef.current = setTimeout(() => {
+			// A persist scheduled during recording must not fire after stop() has
+			// written the reviewing session: that would clobber it back to
+			// "recording" and a reload would restore the recorder instead of the
+			// review screen (thumbnail strip never returns) — issue #91.
+			if (!recordingRef.current) return;
 			const snap = buildRecordingSnapshot();
 			if (snap) saveSession(snap);
 		}, 400);
@@ -563,7 +571,7 @@ export function useSession(
 
 	/**
 	 * Build and open a StreamingTranscriber wired to the standard partial/final
-	 * handlers. Shared by start(), provideKey(), and the rehydrate effect so the
+	 * handlers. Shared by start() and the rehydrate effect so the
 	 * caption-handling logic lives in exactly one place. Resolves the connected
 	 * transcriber (or rejects if the ws fails to open).
 	 */
@@ -736,7 +744,6 @@ export function useSession(
 			setArtifact(undefined);
 			setMarkCount(0);
 			setElapsedMs(0);
-			setNeedsKey(false);
 			setSaveWarning(undefined);
 			setScreenshotsUnavailable(false);
 			// Reset click tracking + revoke any preview URLs from a prior session.
@@ -835,18 +842,15 @@ export function useSession(
 				transcriberRef.current = await makeTranscriber(token);
 				live = true;
 				debug("enableVoice: live transcription", { live });
-				setNeedsKey(false);
 			} catch (err) {
 				debug("enableVoice: streaming ws failed; batch fallback", err);
 				transcriberRef.current = undefined;
 				live = false;
-				setNeedsKey(true);
 			}
 		} catch (err) {
 			debug("enableVoice: streaming token unavailable; batch fallback", err);
 			transcriberRef.current = undefined;
 			live = false;
-			setNeedsKey(true);
 		}
 
 		try {
@@ -872,36 +876,6 @@ export function useSession(
 		setStreaming(live && audio.streaming);
 		debug("enableVoice: enabled", { streaming: audio.streaming });
 	}, [client, makeTranscriber]);
-
-	const provideKey = useCallback(
-		async (key: string): Promise<boolean> => {
-			saveAssemblyKey(key);
-			setHasKey(true);
-			const audio = audioRef.current;
-			if (recordingRef.current && !transcriberRef.current && audio) {
-				try {
-					const token = await resolveStreamingToken(
-						client,
-						bindingRef.current.workspaceId,
-					);
-					transcriberRef.current = await makeTranscriber(token);
-					const ok = await audio.attachLiveTranscription((f) =>
-						transcriberRef.current?.sendFrame(f),
-					);
-					setStreaming(ok);
-					setNeedsKey(!ok);
-					return ok;
-				} catch {
-					setNeedsKey(true);
-					return false;
-				}
-			}
-			// Not recording — the key is stored for the next capture.
-			setNeedsKey(false);
-			return true;
-		},
-		[client, makeTranscriber],
-	);
 
 	const stop = useCallback(async (): Promise<void> => {
 		setPhase("saving");
@@ -1007,6 +981,13 @@ export function useSession(
 			snapshots: snapshotsRef.current,
 			transcript: finalsRef.current,
 			durationMs: elapsed(),
+			// Freeze the real audio metadata + transcript mode so restoreReviewing
+			// reconstructs the artifact faithfully after a reload (issue #112).
+			// artifactRef.current is the finalized artifact (a batch fallback may
+			// have superseded `assembled`); fall back to `assembled` defensively.
+			audio: artifactRef.current?.audio ?? assembled.audio,
+			transcriptionMode:
+				artifactRef.current?.transcriptionMode ?? assembled.transcriptionMode,
 		});
 
 		setPhase("reviewing");
@@ -1103,7 +1084,6 @@ export function useSession(
 		setElapsedMs(0);
 		setError(undefined);
 		setIssueUrl(undefined);
-		setNeedsKey(false);
 		setSaveWarning(undefined);
 		setScreenshotsUnavailable(false);
 		// Revoke click-preview object URLs and clear the strip.
@@ -1144,6 +1124,7 @@ export function useSession(
 				clickPreviewsRef,
 				timerRef,
 				artifactRef,
+				pendingRef,
 				setArtifact,
 				setTranscript,
 				setMarkCount,
@@ -1204,8 +1185,6 @@ export function useSession(
 		markCount,
 		elapsedMs,
 		streaming,
-		needsKey,
-		hasKey,
 		flashTick,
 		clickPreviews,
 		clickCount,
@@ -1219,7 +1198,6 @@ export function useSession(
 		editSegment,
 		submitIssue,
 		reset,
-		provideKey,
 		voiceEnabled,
 		enableVoice,
 	};

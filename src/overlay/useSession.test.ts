@@ -1,7 +1,8 @@
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BugToPromptClient, Target } from "../client";
+import type { CaptureArtifact } from "../schema";
 import { loadSession, putShot, saveSession } from "./session-store";
 import { startScreenGrabber } from "./snapshot/screenshot";
 import { useSession } from "./useSession";
@@ -98,7 +99,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Prevent a persisted session from a previous test from triggering rehydration.
 	localStorage.clear();
-	// Clear any window config hint leaked by a prior test (e.g. provideKey).
+	// Clear any window config hint leaked by a prior test.
 	delete window.__BUGTOPROMPT__;
 
 	// Default audio mock: streaming=true only when onPcmFrame is provided (live path)
@@ -363,7 +364,7 @@ describe("useSession", () => {
 		expect(result.current.artifact).toBeDefined();
 	});
 
-	it("(f) failing token resolution sets needsKey after enableVoice, phase stays recording", async () => {
+	it("(f) failing token resolution degrades to batch after enableVoice, phase stays recording", async () => {
 		const client = makeFakeClient({
 			mintStreamingToken: vi.fn().mockRejectedValue(new Error("no token")),
 		});
@@ -373,55 +374,13 @@ describe("useSession", () => {
 			await result.current.start({});
 		});
 		expect(result.current.phase).toBe("recording");
-		expect(result.current.needsKey).toBe(false);
 
 		await act(async () => {
 			await result.current.enableVoice();
 		});
 
 		expect(result.current.phase).toBe("recording");
-		expect(result.current.needsKey).toBe(true);
 		expect(result.current.streaming).toBe(false);
-	});
-
-	it("(g) provideKey goes live mid-recording after enableVoice: streaming true, needsKey false", async () => {
-		const client = makeFakeClient({
-			// First call (enableVoice) rejects → needsKey; second call (provideKey's
-			// resolveStreamingToken fall-through) resolves → live transcription.
-			mintStreamingToken: vi
-				.fn()
-				.mockRejectedValueOnce(new Error("no token"))
-				.mockResolvedValue({ token: "tok", expiresAt: 0 }),
-		});
-		// provideKey persists the key onto window; force the v3 mint to fail so
-		// resolveStreamingToken falls through to client.mintStreamingToken.
-		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no fetch")));
-		const { result } = renderHook(() => useSession(client));
-
-		await act(async () => {
-			await result.current.start({});
-		});
-		// needsKey is false after start (no mic requested yet)
-		expect(result.current.needsKey).toBe(false);
-
-		// Enable voice → fails token → needsKey
-		await act(async () => {
-			await result.current.enableVoice();
-		});
-		expect(result.current.needsKey).toBe(true);
-
-		let ok = false;
-		await act(async () => {
-			ok = await result.current.provideKey("k");
-		});
-
-		expect(ok).toBe(true);
-		expect(result.current.streaming).toBe(true);
-		expect(result.current.needsKey).toBe(false);
-		expect(mockTranscriberInstance.start).toHaveBeenCalled();
-		expect(mockAudioInstance.attachLiveTranscription).toHaveBeenCalledOnce();
-
-		vi.unstubAllGlobals();
 	});
 
 	it("(h) commits a trailing partial transcript on stop (no end-of-turn)", async () => {
@@ -681,6 +640,7 @@ describe("useSession — onClick capture", () => {
 describe("useSession — rehydration", () => {
 	afterEach(() => {
 		localStorage.clear();
+		vi.restoreAllMocks();
 	});
 
 	it("(k) clean store → starts idle (no rehydration)", async () => {
@@ -760,6 +720,132 @@ describe("useSession — rehydration", () => {
 		]);
 	});
 
+	it("(m6) reviewing rehydrate reconstructs the persisted audio metadata + mode (issue #112)", async () => {
+		// Repro for #112: a reviewing session persisted with REAL audio metadata
+		// must rehydrate faithfully — never the bytes:0 / "streaming" placeholder
+		// that a subsequent re-save would then clobber artifact.json with.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-audio",
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-audio" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+			audio: { ref: "audio.webm", mimeType: "audio/ogg", bytes: 4096 },
+			transcriptionMode: "batch-fallback",
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		expect(result.current.artifact?.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/ogg",
+			bytes: 4096,
+		});
+		expect(result.current.artifact?.transcriptionMode).toBe("batch-fallback");
+	});
+
+	it("(m6b) reviewing rehydrate falls back to the placeholder for pre-#112 sessions", async () => {
+		// A session persisted before #112 carries no audio/transcriptionMode; the
+		// reconstruction must still validate via the historical placeholder.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-legacy",
+			startedAt: Date.now() - 10_000,
+			binding: { projectId: "proj-legacy" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [],
+			durationMs: 10_000,
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		expect(result.current.artifact?.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/webm",
+			bytes: 0,
+		});
+		expect(result.current.artifact?.transcriptionMode).toBe("streaming");
+	});
+
+	it("(m6c) finalize persists the assembled audio metadata + mode into the store (issue #112)", async () => {
+		// Producer half: stop() must freeze audio + transcriptionMode in the
+		// session store so the reviewing rehydrate above has real data to restore.
+		// Deterministic without the mic path — default audio yields the empty
+		// placeholder, but the fields MUST be present (pre-#112 omitted them).
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await result.current.start({ projectId: "proj-finalize" });
+		});
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.phase).toBe("reviewing");
+
+		const persisted = loadSession();
+		expect(persisted?.status).toBe("reviewing");
+		// Persistence must mirror the actual finalized artifact — not a hardcoded
+		// placeholder — so restoreReviewing reconstructs exactly what was captured.
+		// (These fields were undefined before the fix.)
+		expect(persisted?.audio).toEqual(result.current.artifact?.audio);
+		expect(persisted?.transcriptionMode).toBe(
+			result.current.artifact?.transcriptionMode,
+		);
+		expect(persisted?.transcriptionMode).toBeDefined();
+	});
+
+	it("(m6d) submitIssue after reload re-saves with the faithful audio metadata, not a placeholder (issue #112)", async () => {
+		// End-to-end clobber guard: with #111's empty-pending rehydrate the re-save
+		// now fires after a reload; #112 ensures the artifact it re-uploads carries
+		// the REAL audio metadata + mode, so artifact.json is not clobbered with a
+		// bytes:0 / "streaming" placeholder. Closes cubic PR #123 P1.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-resave",
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-resave" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+			audio: { ref: "audio.webm", mimeType: "audio/ogg", bytes: 4096 },
+			transcriptionMode: "batch-fallback",
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		await act(async () => {
+			await result.current.submitIssue();
+		});
+		expect(client.createIssue).toHaveBeenCalledOnce();
+
+		// The re-save (last saveArtifact) must carry the faithful metadata the
+		// session persisted — never the reconstructed placeholder.
+		const saveCalls = (client.saveArtifact as Mock).mock.calls;
+		const reSaved = saveCalls[saveCalls.length - 1][0] as {
+			artifact: CaptureArtifact;
+		};
+		expect(reSaved.artifact.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/ogg",
+			bytes: 4096,
+		});
+		expect(reSaved.artifact.transcriptionMode).toBe("batch-fallback");
+	});
+
 	it("(m2) rehydrates click screenshot previews from persisted clicks + blobs", async () => {
 		const sessionId = "cap_preview-rehydrate";
 		saveSession({
@@ -816,6 +902,151 @@ describe("useSession — rehydration", () => {
 		]);
 		expect(result.current.clickPreviews[0].screenshotRef).toBe("snap-0000.jpg");
 		expect(result.current.clickPreviews[0].url).toMatch(/^blob:/);
+	});
+
+	it("(m3) live onClick capture → stop → reload rehydrates the review strip", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
+		const client = makeFakeClient();
+
+		// Record a real onClick session with two clicks, then stop into review.
+		const first = renderHook(() => useSession(client, "onClick"));
+		await act(async () => {
+			await first.result.current.start({});
+		});
+		await act(async () => {
+			pointerClick(btn);
+			pointerClick(btn);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => {
+			await first.result.current.stop();
+		});
+		expect(first.result.current.phase).toBe("reviewing");
+		expect(first.result.current.clickPreviews).toHaveLength(2);
+
+		// Simulate a mid-review page reload: unmount, then mount a fresh hook that
+		// rehydrates from the persisted session + IndexedDB blobs.
+		first.unmount();
+		const second = renderHook(() => useSession(client, "onClick"));
+		// Rehydration runs in a mount effect that awaits an IndexedDB read, so let
+		// the microtask + IDB tick settle (same pattern as the (m)/(m2) tests).
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+
+		expect(second.result.current.phase).toBe("reviewing");
+		expect(
+			second.result.current.clickPreviews.map((p) => p.clickNumber),
+		).toEqual([1, 2]);
+		expect(second.result.current.clickPreviews[0].url).toMatch(/^blob:/);
+		second.unmount();
+	});
+
+	it("(m4) a stale debounced persist at stop() must not clobber the reviewing session", async () => {
+		// Repro for #91: stop() persists status:"reviewing", but a click's ~400ms
+		// debounced recording-persist can still be pending. If it fires after stop()
+		// it rewrites the session as status:"recording", so a reload lands on the
+		// recorder instead of the review screen (the thumbnail strip never returns).
+		// This deliberately exercises the real debounce timer: fake timers deadlock
+		// the hook's async IndexedDB/grab promises, so a genuine delay is required.
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
+		const client = makeFakeClient();
+		const { result, unmount } = renderHook(() => useSession(client, "onClick"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+		await act(async () => {
+			pointerClick(btn); // schedules a ~400ms debounced recording persist
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		// Stop BEFORE the debounce fires: stop() writes the reviewing session.
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.phase).toBe("reviewing");
+		expect(loadSession()?.status).toBe("reviewing");
+
+		// Wait past the 400ms debounce so any stale recording-persist fires. It
+		// must NOT overwrite the reviewing state written by stop().
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 450));
+		});
+		expect(loadSession()?.status).toBe("reviewing");
+		unmount();
+	});
+
+	it("(m5) submitIssue after a reviewing rehydrate files the issue (empty pending rehydrated, not a silent no-op)", async () => {
+		const sessionId = "cap_review-submit";
+		saveSession({
+			v: 1,
+			sessionId,
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-9" },
+			status: "reviewing",
+			events: [],
+			snapshots: [
+				{
+					tMs: 100,
+					screenshotRef: "snap-0000.jpg",
+					viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+					interactiveElements: [],
+				},
+			],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		// Before the fix, restoreReviewing never repopulated pendingRef, so this
+		// submit hit `if (!base || !pending) return` and silently no-opped:
+		// phase stayed "reviewing" and createIssue was never called.
+		await act(async () => {
+			await result.current.submitIssue();
+		});
+
+		expect(client.createIssue).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("done");
+		expect(result.current.issueUrl).toBe("https://gh/1");
+
+		// The rehydrated pending is empty: audio + screenshots were already staged
+		// server-side at finalize, so the re-upload only rewrites artifact.json and
+		// must not resend media bytes.
+		const saveCalls = (client.saveArtifact as Mock).mock.calls;
+		const lastSave = saveCalls[saveCalls.length - 1][0] as {
+			audioBase64: string;
+			screenshotsBase64: string[];
+		};
+		expect(lastSave.audioBase64).toBe("");
+		expect(lastSave.screenshotsBase64).toEqual([]);
+
+		// The artifact-link (saved.dir → artifactRef) still reaches createIssue,
+		// so a reload-filed issue stays linked to its stored capture.
+		const issueArg = (client.createIssue as Mock).mock.calls[0][0] as {
+			artifactRef?: string;
+		};
+		expect(issueArg.artifactRef).toBe("/tmp/cap");
 	});
 });
 

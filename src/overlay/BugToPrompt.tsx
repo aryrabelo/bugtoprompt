@@ -38,7 +38,6 @@ import {
 	resolveBaseUrl,
 } from "./autoConfig";
 import { CaptionEditor } from "./caption/CaptionEditor";
-import { hasConfiguredKey } from "./key-store";
 import { TargetPicker } from "./picker/TargetPicker";
 import type { CaptureRecord, OutputMode } from "./session-store";
 import {
@@ -110,66 +109,6 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
 	a.download = filename;
 	a.click();
 	URL.revokeObjectURL(url);
-}
-
-/**
- * Inline "paste your AssemblyAI API key" prompt. Shown when live transcription
- * cannot start because no usable streaming credential is configured. The key is
- * handed to `onSave` (session.provideKey), which persists it client-side and
- * attempts to engage live transcription. It is never sent to a first-party
- * server.
- */
-function KeyPrompt({
-	onSave,
-}: {
-	onSave: (key: string) => Promise<boolean>;
-}): ReactElement {
-	const [value, setValue] = useState("");
-	const [error, setError] = useState(false);
-	const save = async (): Promise<void> => {
-		const ok = await onSave(value.trim());
-		if (ok) {
-			setValue("");
-			setError(false);
-		} else {
-			setError(true);
-		}
-	};
-	return (
-		<div className="flex flex-col gap-1.5 rounded-sm border border-border p-2">
-			<div className="font-medium">Enable live transcription</div>
-			<p className="text-muted-foreground">
-				Paste an AssemblyAI API key (Universal-3 Pro). Stored only in this
-				browser and sent directly to AssemblyAI — never to a server.
-			</p>
-			<input
-				type="password"
-				value={value}
-				onChange={(e) => setValue(e.currentTarget.value)}
-				placeholder="AssemblyAI API key"
-				aria-label="AssemblyAI API key"
-				className="rounded-sm border border-border bg-background px-2 py-1 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-			/>
-			{error ? (
-				<p role="alert" className="text-destructive">
-					That key didn't work — check it and try again.
-				</p>
-			) : null}
-			<div className="flex items-center justify-between gap-2">
-				<a
-					href="https://www.assemblyai.com/dashboard/api-keys"
-					target="_blank"
-					rel="noreferrer"
-					className="text-primary hover:underline"
-				>
-					Get a key
-				</a>
-				<Button size="sm" onClick={() => void save()} disabled={!value.trim()}>
-					Save
-				</Button>
-			</div>
-		</div>
-	);
 }
 
 // ---------------------------------------------------------------------------
@@ -554,8 +493,6 @@ export interface RecordingCardProps {
 	screenshotsUnavailable: boolean;
 	transcript: TranscriptSegment[];
 	partial: string;
-	needsKey: boolean;
-	onProvideKey: (key: string) => Promise<boolean>;
 	voiceEnabled: boolean;
 	onEnableVoice: () => void;
 	flashTick: number;
@@ -571,8 +508,6 @@ export function RecordingCard({
 	screenshotsUnavailable,
 	transcript,
 	partial,
-	needsKey,
-	onProvideKey,
 	voiceEnabled,
 	onEnableVoice,
 	flashTick,
@@ -633,8 +568,6 @@ export function RecordingCard({
 					Screenshots unavailable — recording clicks, DOM &amp; voice only.
 				</p>
 			) : null}
-
-			{needsKey ? <KeyPrompt onSave={onProvideKey} /> : null}
 
 			<div className="max-h-32 overflow-y-auto">
 				<CaptionEditor transcript={transcript} partial={partial} />
@@ -895,21 +828,15 @@ export function BugToPrompt({
 	onDownload,
 	pro,
 }: BugToPromptProps): ReactElement | null {
-	const {
-		client,
-		modes,
-		projectId,
-		screenshotMode,
-		transcriptionProvider,
-		hasBackend,
-	} = useAutoConfig({
-		clientProp,
-		baseUrl,
-		modesProp,
-		projectIdProp,
-		screenshotModeProp,
-		pro,
-	});
+	const { client, modes, projectId, screenshotMode, transcriptionProvider } =
+		useAutoConfig({
+			clientProp,
+			baseUrl,
+			modesProp,
+			projectIdProp,
+			screenshotModeProp,
+			pro,
+		});
 
 	const [open, setOpen] = useState(defaultOpen);
 	const [pickedWs, setPickedWs] = useState<string | undefined>();
@@ -948,10 +875,6 @@ export function BugToPrompt({
 	const effWorkspaceId = workspaceId ?? pickedWs;
 	const effBranch = branch ?? pickedBranch;
 	const needsPicker = idle && !workspaceId;
-	// Only nag for an AssemblyAI key on standalone, no-backend, no-key installs.
-	// A host that injects an explicit `client` (e.g. the host application) is never asked.
-	const showIdleKeyPrompt =
-		idle && clientProp === undefined && !hasBackend && !hasConfiguredKey();
 	// Surface which transcription path is actually active (deferred from #13):
 	// "unconfigured"/undefined (fallback client, or config not yet resolved)
 	// keeps the base label unchanged rather than implying a path that isn't set.
@@ -1191,9 +1114,6 @@ export function BugToPrompt({
 						status={wantVoice ? "on" : "off"}
 						statusTone={wantVoice ? "on" : "off"}
 					>
-						{showIdleKeyPrompt ? (
-							<KeyPrompt onSave={(key) => session.provideKey(key)} />
-						) : null}
 						{/* The voice opt-out stays visible even on a no-key install so an
 						    autoVoice default can be turned off before Start (which calls
 						    enableVoice() and requests the microphone). */}
@@ -1268,8 +1188,6 @@ export function BugToPrompt({
 					screenshotsUnavailable={session.screenshotsUnavailable}
 					transcript={session.transcript}
 					partial={session.partial}
-					needsKey={session.needsKey}
-					onProvideKey={(key) => session.provideKey(key)}
 					voiceEnabled={session.voiceEnabled}
 					onEnableVoice={() => void session.enableVoice()}
 					flashTick={session.flashTick}

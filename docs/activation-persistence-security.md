@@ -28,7 +28,7 @@ Tailwind. The React import path uses the host's Tailwind (`@source`).
 On boot the widget resolves, in order:
 
 1. **Explicit** — props (`client`, `baseUrl`, `modes`, …) or `data-*` on the script tag.
-2. **Global** — `window.__BUGTOPROMPT__ = { baseUrl?, modes?, projectId?, assemblyAiKey?, streamingToken? }` (this is what a console snippet sets — §3).
+2. **Global** — `window.__BUGTOPROMPT__ = { baseUrl?, modes?, projectId?, streamingToken? }` (this is what a console snippet sets — §3).
 3. **Meta** — `<meta name="bugtoprompt-base" content="/api">`.
 4. **Server config** — `GET {base}/bugtoprompt/config` → `{ modes, defaultMode, projectId }`. The server decides what's enabled.
 5. **Safe fallback** — if no backend answers: `modes = ["clipboard","download"]`, a local no-backend client (no secrets, always works).
@@ -47,18 +47,17 @@ AI prompt). A configured backend upgrades it (issue mode, live transcription).
   config endpoint returns `env:"prod"` and does **not** mint tokens. The widget
   defaults to **client-side only** (clipboard/download, no live transcription).
   - **Unlock on demand, via the console:** a developer pastes a snippet that
-    supplies a key for *their own session only*:
+    supplies a pre-minted **`streamingToken`** for *their own session only*:
     ```js
-    // prompts for the key, stores it for this browser session, then boots
-    window.__BUGTOPROMPT__ = { assemblyAiKey: prompt("AssemblyAI key?") };
+    // fetches a short-lived token from our backend, then boots
+    window.__BUGTOPROMPT__ = { streamingToken: await fetchToken() };
     import("https://…/bugtoprompt.global.js");
     ```
-    The widget then opens the AssemblyAI realtime connection **directly from the
-    browser** with that key. It is the dev's explicit, manual choice — the key is
-    never in page source, never in a public endpoint, never committed; it lives
-    only in that tab's memory (optionally `sessionStorage`, never synced).
-  - Safer console variant: paste a **pre-minted temporary token**
-    (`{ streamingToken }`) instead of the raw key, if the team has a token issuer.
+    The widget then opens the AssemblyAI realtime connection using that
+    **minted token**. It is the dev's explicit, manual choice — no raw vendor
+    key is ever in page source, in a public endpoint, or committed; the
+    token is short-lived and lives only in that tab's memory (optionally
+    `sessionStorage`, never synced).
 
 Net: prod ships with zero secret exposure; live transcription in prod is an
 opt-in, per-developer, console-gated action.

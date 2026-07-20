@@ -496,39 +496,6 @@ describe("<BugToPrompt baseUrl /> adopts backend without a config probe", () => 
 });
 
 // ---------------------------------------------------------------------------
-// P1 (issue #82): bridged PRO credentials alone are backend proof, even with
-// no baseUrl and a failing /bugtoprompt/config probe. Before this fix, a
-// bridged-only extension install (pro.bridged, no explicit baseUrl) stayed
-// on the local fallback client forever and kept nagging for an AssemblyAI
-// key even though a real PRO backend was configured.
-// ---------------------------------------------------------------------------
-
-describe("<BugToPrompt pro bridged /> adopts backend without baseUrl or a config probe (P1)", () => {
-	it("suppresses the AssemblyAI key prompt once bridged PRO credentials resolve", async () => {
-		// No baseUrl/meta/window hint anywhere: every fetch (including the
-		// /bugtoprompt/config probe) rejects.
-		vi.stubGlobal(
-			"fetch",
-			vi.fn().mockRejectedValue(new Error("no backend for this endpoint")),
-		);
-
-		render(
-			<BugToPrompt
-				pro={{ baseUrl: "https://api.bugtoprompt.com", bridged: true }}
-			/>,
-		);
-		fireEvent.click(screen.getByRole("button", { name: /bugtoprompt/i }));
-
-		// hasBackend flips true from proConfig alone -> the idle key-prompt
-		// nag (gated on `!hasBackend`) never renders.
-		await waitFor(() => {
-			expect(screen.queryByText(/enable live transcription/i)).toBeNull();
-			expect(screen.queryByLabelText(/assemblyai api key/i)).toBeNull();
-		});
-	});
-});
-
-// ---------------------------------------------------------------------------
 // P0-2: reviewing dead-end. The binding freezes at record-start; if config
 // (hence projectId) resolves AFTER that, the frozen binding has no projectId
 // so "File issue" used to stay stuck disabled until a target was picked —

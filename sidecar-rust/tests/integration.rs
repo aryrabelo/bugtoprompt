@@ -164,7 +164,7 @@ fn health_returns_exact_shape_and_ok_true() {
     ));
     assert!(matches!(
         body["transcription"].as_str(),
-        Some("ready" | "local" | "unconfigured")
+        Some("local" | "unconfigured")
     ));
     assert!(body["originAllowed"].is_boolean());
 }
@@ -312,15 +312,15 @@ fn artifact_roundtrip_persists_files() {
 }
 
 #[test]
-fn stubs_return_501() {
+fn streaming_token_returns_clear_cloud_mode_error() {
     let server = ServerGuard::spawn(HashMap::from([
         ("BUGTOPROMPT_ENABLE_ISSUES", "1"),
         ("BUGTOPROMPT_REPOS", "acme/web"),
     ]));
     let client = reqwest::blocking::Client::new();
 
-    // /transcribe (#55) and /issue (#56) are real now; only the Pro cloud
-    // relay stays a 501 stub until #60.
+    // /transcribe and /issue are real (local); cloud transcription is a Pro
+    // feature served by api.bugtoprompt.com, so /streaming-token stays a 501.
     let payload = json!({ "sessionId": "cap_abc-123" });
     let resp = client
         .post(format!("{}/streaming-token", server.base))
@@ -330,7 +330,18 @@ fn stubs_return_501() {
     assert_eq!(
         resp.status(),
         501,
-        "/streaming-token should return 501 (Pro cloud relay stub, #60)"
+        "/streaming-token should return 501 (cloud transcription is Pro-only)"
+    );
+    // The error must point at cloud mode, never reference the server-side vendor.
+    let body: Value = resp.json().unwrap();
+    let err = body["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("cloud mode") || err.contains("api.bugtoprompt.com"),
+        "error should point at cloud mode, got: {err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("assemblyai"),
+        "error must not reference AssemblyAI, got: {err}"
     );
 }
 

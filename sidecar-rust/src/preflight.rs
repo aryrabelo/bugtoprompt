@@ -78,7 +78,6 @@ async fn run_ok(cmd: &str, args: &[&str], bound: Duration) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TranscriptionState {
-    Ready,
     Local,
     Unconfigured,
 }
@@ -86,58 +85,29 @@ pub enum TranscriptionState {
 impl TranscriptionState {
     pub fn wire(self) -> &'static str {
         match self {
-            TranscriptionState::Ready => "ready",
             TranscriptionState::Local => "local",
             TranscriptionState::Unconfigured => "unconfigured",
         }
     }
 }
 
-/// Which backend serves `POST /transcribe`. An explicit `engine_pref`
-/// ("local" | "cloud") is honored when it is actually available; otherwise the
-/// default precedence applies (local over a configured AssemblyAI key). Real
-/// routing lands in #55/#60; #54 only needs this for `GET /bugtoprompt/config`.
-pub fn resolve_transcription_provider(
-    local_ready: bool,
-    assemblyai_key: Option<&str>,
-    engine_pref: Option<&str>,
-) -> &'static str {
-    let has_key = assemblyai_key.is_some_and(|k| !k.is_empty());
-    match engine_pref {
-        Some("cloud") if has_key => return "assemblyai",
-        Some("local") if local_ready => return "local",
-        _ => {}
-    }
-    if local_ready {
-        return "local";
-    }
-    if has_key {
-        return "assemblyai";
-    }
-    "unconfigured"
+/// Which backend serves `POST /transcribe` — the wire form of the health
+/// transcription state. Only local Parakeet exists in the Lite sidecar; cloud
+/// transcription is a Pro feature served server-side by api.bugtoprompt.com,
+/// never here. Derived from [`detect_transcription_state`] so the two can't
+/// drift apart.
+pub fn resolve_transcription_provider(local_ready: bool) -> &'static str {
+    detect_transcription_state(local_ready).wire()
 }
 
-/// Resolve `GET /health`'s `transcription` field, honoring the same explicit
-/// `engine_pref` as [`resolve_transcription_provider`]: cloud pref + key →
-/// "ready", local pref + engine ready → "local", else default precedence.
-pub fn detect_transcription_state(
-    local_ready: bool,
-    assemblyai_key: Option<&str>,
-    engine_pref: Option<&str>,
-) -> TranscriptionState {
-    let has_key = assemblyai_key.is_some_and(|k| !k.is_empty());
-    match engine_pref {
-        Some("cloud") if has_key => return TranscriptionState::Ready,
-        Some("local") if local_ready => return TranscriptionState::Local,
-        _ => {}
-    }
+/// Resolve `GET /health`'s `transcription` field: `Local` when the local
+/// engine is ready, else `Unconfigured`.
+pub fn detect_transcription_state(local_ready: bool) -> TranscriptionState {
     if local_ready {
-        return TranscriptionState::Local;
+        TranscriptionState::Local
+    } else {
+        TranscriptionState::Unconfigured
     }
-    if has_key {
-        return TranscriptionState::Ready;
-    }
-    TranscriptionState::Unconfigured
 }
 
 /// Assemble the exact `/health` contract:
@@ -172,50 +142,17 @@ mod tests {
     }
 
     #[test]
-    fn transcription_provider_prefers_local_by_default() {
-        assert_eq!(
-            resolve_transcription_provider(true, Some("key"), None),
-            "local"
-        );
-        assert_eq!(
-            resolve_transcription_provider(false, Some("key"), None),
-            "assemblyai"
-        );
-        assert_eq!(
-            resolve_transcription_provider(false, None, None),
-            "unconfigured"
-        );
-        assert_eq!(
-            resolve_transcription_provider(false, Some(""), None),
-            "unconfigured"
-        );
+    fn transcription_provider_reflects_local_readiness() {
+        assert_eq!(resolve_transcription_provider(true), "local");
+        assert_eq!(resolve_transcription_provider(false), "unconfigured");
     }
 
     #[test]
-    fn transcription_provider_honors_explicit_engine_pref() {
-        // Cloud preferred over a ready local engine when a key exists.
+    fn transcription_state_reflects_local_readiness() {
+        assert_eq!(detect_transcription_state(true), TranscriptionState::Local);
         assert_eq!(
-            resolve_transcription_provider(true, Some("key"), Some("cloud")),
-            "assemblyai"
-        );
-        // Cloud pref with no key falls back to local.
-        assert_eq!(
-            resolve_transcription_provider(true, None, Some("cloud")),
-            "local"
-        );
-        // Local pref is honored.
-        assert_eq!(
-            resolve_transcription_provider(true, Some("key"), Some("local")),
-            "local"
-        );
-        // Health state mirrors the same preference.
-        assert_eq!(
-            detect_transcription_state(true, Some("key"), Some("cloud")),
-            TranscriptionState::Ready
-        );
-        assert_eq!(
-            detect_transcription_state(true, Some("key"), Some("local")),
-            TranscriptionState::Local
+            detect_transcription_state(false),
+            TranscriptionState::Unconfigured
         );
     }
 

@@ -4,7 +4,7 @@
   bundler. Loaded into a wry (Tauri) webview by `settings_window.rs` via
   include_str!. Talks to Rust over wry IPC:
     JS → Rust: window.ipc.postMessage(JSON.stringify({type, ...}))
-    Rust → JS: window.__btp.onState / onUvxStatus / onInstallProgress / onSaved
+  Rust → JS: window.__btp.onState / onUvxStatus / onGhStatus / onInstallProgress / onSaved
 -->
 <html lang="en">
 <head>
@@ -42,10 +42,15 @@
   }
   button.primary { background: #0a66c2; color: #fff; border-color: #0a66c2; }
   button.icon { padding: 4px 9px; }
-  .uvx { margin: 6px 0; }
-  .uvx .ready { color: #2e7d32; }
-  .uvx .missing { color: #c62828; }
+  .uvx, .gh { margin: 6px 0; }
+  .uvx .ready, .gh .ready { color: #2e7d32; }
+  .uvx .missing, .gh .missing { color: #c62828; }
+  .gh .unauthenticated { color: #c68a00; }
   .hint { opacity: .6; font-size: 12px; }
+  .checkrow { display: flex; align-items: center; gap: 6px; margin: 8px 0 3px; }
+  .checkrow input { width: auto; }
+  .checkrow label { margin: 0; font-weight: 500; }
+  .saveError { color: #c62828; font-size: 12px; margin-top: 6px; display: none; }
   .actions { display: flex; justify-content: space-between; margin-top: 4px; }
   #installLog { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 11px; opacity: .8; }
 </style>
@@ -72,13 +77,10 @@
     <label for="engine">Engine</label>
     <select id="engine">
       <option value="local">Local (Parakeet via uvx)</option>
-      <option value="cloud" disabled>Cloud (AssemblyAI — #60)</option>
     </select>
     <div class="uvx">uvx status: <span id="uvxStatus" class="hint">checking…</span></div>
     <button id="installUvx" type="button" class="icon" style="display:none">Install uv (uvx)</button>
     <div id="installLog"></div>
-    <label for="assemblyaiKey">Cloud key (AssemblyAI)</label>
-    <input id="assemblyaiKey" type="password" placeholder="Pro only" />
   </fieldset>
 
   <fieldset>
@@ -88,6 +90,12 @@
       <option value="local">Local (gh CLI)</option>
       <option value="hosted" disabled>Hosted (Pro — #61)</option>
     </select>
+    <div class="gh" aria-live="polite">gh CLI: <span id="ghStatus" class="hint">checking…</span></div>
+    <div id="ghHint" class="hint" style="display:none" aria-live="polite"></div>
+    <div class="checkrow">
+      <input id="enableIssues" type="checkbox" />
+      <label for="enableIssues">Enable issue filing</label>
+    </div>
     <div class="grouplabel">Repos</div>
     <div id="repos"></div>
     <button id="addRepo" type="button" class="icon">+ Add repo</button>
@@ -105,6 +113,7 @@
     <button id="save" type="button" class="primary">Save</button>
     <button id="quit" type="button">Quit App</button>
   </div>
+  <div id="saveError" class="saveError" role="alert"></div>
 
 <script>
 (() => {
@@ -165,19 +174,14 @@
   }
 
   // finding #14: assign a persisted select value only when it maps to a known
-  // option; otherwise fall back rather than silently erasing it. A *disabled*
-  // option still counts as known — a migrated "cloud" preference (#12) is kept
-  // (shown, un-clobbered on save) even though the user can't newly pick it.
+  // option; otherwise fall back rather than silently erasing it. A migrated
+  // legacy "cloud" preference is no longer a known option (Lite is local-only),
+  // so it falls back to "local".
   function setSelect(el, value, fallback) {
     var known = Array.prototype.some.call(el.options, (o) => o.value === value);
     el.value = known ? value : fallback;
   }
 
-  function applyTierState() {
-    var pro = $("tier").value === "pro";
-    $("assemblyaiKey").disabled = !pro;
-    // Cloud engine stays disabled until the hosted relay lands (#60).
-  }
 
   // ---- Rust → JS bridge --------------------------------------------------
   window.__btp = {
@@ -188,8 +192,8 @@
       setSelect($("tier"), s.tier || "lite", "lite");
       $("email").value = s.email || "";
       setSelect($("engine"), s.transcription_engine || "local", "local");
-      $("assemblyaiKey").value = s.assemblyai_key || "";
       setSelect($("githubMode"), s.github_mode || "local", "local");
+      $("enableIssues").checked = !!s.issue_mode;
       $("origins").innerHTML = "";
       (s.allowed_origins || []).forEach((o) => {
         makeRow($("origins"), o, "https://example.com");
@@ -199,7 +203,7 @@
         makeRow($("repos"), r, "owner/repo#branch");
       });
       window.__btp.onUvxStatus(s.uvx_status || "checking");
-      applyTierState();
+      window.__btp.onGhStatus(s.gh_status || "checking");
     },
     onUvxStatus: (status) => {
       var el = $("uvxStatus");
@@ -213,18 +217,47 @@
       btn.disabled = false;
       btn.textContent = "Install uv (uvx)";
     },
+    // #95: no guided auto-install here (unlike uvx there is no pinned/hashed
+    // installer for gh, and `gh auth login` is interactive) — just a clear
+    // status plus the exact command to run.
+    onGhStatus: (status) => {
+      var el = $("ghStatus");
+      var hint = $("ghHint");
+      if (status === "ready") {
+        el.textContent = "✓ authenticated"; el.className = "ready";
+        hint.style.display = "none";
+      } else if (status === "missing") {
+        el.textContent = "✗ not installed"; el.className = "missing";
+        hint.textContent = "Install: brew install gh, then Save to re-check.";
+        hint.style.display = "block";
+      } else if (status === "unauthenticated") {
+        el.textContent = "✗ not signed in"; el.className = "unauthenticated";
+        hint.textContent = "Run: gh auth login, then Save to re-check.";
+        hint.style.display = "block";
+      } else {
+        el.textContent = "checking…"; el.className = "hint";
+        hint.style.display = "none";
+      }
+    },
     onInstallProgress: (line) => {
       $("installLog").textContent += `${line}\n`;
     },
-    onSaved: (ok) => {
+    onSaved: (ok, error) => {
       var btn = $("save");
+      var errEl = $("saveError");
       btn.textContent = ok ? "Saved ✓" : "Save failed";
+      if (ok) {
+        errEl.style.display = "none";
+        errEl.textContent = "";
+      } else {
+        errEl.textContent = error || "Save failed";
+        errEl.style.display = "block";
+      }
       setTimeout(() => { btn.textContent = "Save"; }, 1500);
     }
   };
 
   // ---- Wiring ------------------------------------------------------------
-  $("tier").addEventListener("change", applyTierState);
   $("addOrigin").addEventListener("click", () => {
     makeRow($("origins"), "", "https://example.com").focus();
   });
@@ -247,8 +280,8 @@
         tier: $("tier").value,
         email: $("email").value.trim(),
         transcriptionEngine: $("engine").value,
-        assemblyaiKey: $("assemblyaiKey").value.trim(),
         githubMode: $("githubMode").value,
+        enableIssues: $("enableIssues").checked,
         repos: collectRows($("repos")),
         allowedOrigins: collectOrigins($("origins"))
       }

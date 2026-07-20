@@ -7,14 +7,10 @@
  *  1. window.__BUGTOPROMPT__.streamingToken          — pre-minted temp token (most reliable)
  *  2. window.__BUGTOPROMPT__.mintStreamingToken()    — host-provided minter (e.g. an
  *                                                       extension worker that bypasses page CORS)
- *  3. window.__BUGTOPROMPT__.assemblyAiKey / stored  — direct browser v3 mint (CORS-restricted)
- *  4. client.mintStreamingToken()                    — server/dev path (default)
+ *  3. client.mintStreamingToken()                    — server/dev path (default)
  */
 
 import type { BugToPromptClient } from "../client";
-import { loadAssemblyKey } from "./key-store";
-
-const ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token";
 
 type Hint = Window["__BUGTOPROMPT__"];
 
@@ -36,33 +32,6 @@ async function tryHostMinter(hint: Hint): Promise<string | null> {
 	}
 }
 
-/** Direct browser v3 mint. NOTE: AssemblyAI's token endpoint does NOT permit
- *  browser CORS (preflight returns 405), so this only succeeds behind a
- *  CORS-permitting proxy. The key never leaves this browser. */
-async function tryDirectKey(hint: Hint): Promise<string | null> {
-	// loadAssemblyKey is only meaningful in a browser context; guard it to
-	// preserve the original behaviour (SSR skips it, stays SSR-safe).
-	const key =
-		hint?.assemblyAiKey ??
-		(typeof window !== "undefined" ? await loadAssemblyKey() : null);
-	if (!key) return null;
-	try {
-		if (typeof fetch === "undefined") throw new Error("fetch not available");
-		const res = await fetch(`${ASSEMBLYAI_TOKEN_URL}?expires_in_seconds=300`, {
-			headers: { Authorization: key },
-		});
-		if (!res.ok) {
-			throw new Error(`AssemblyAI token mint failed: ${res.status}`);
-		}
-		const data = (await res.json()) as { token?: string };
-		if (data.token) return data.token;
-		throw new Error("AssemblyAI token response missing .token field");
-	} catch {
-		// Fall through to server mint.
-		return null;
-	}
-}
-
 async function tryServerMint(
 	client: BugToPromptClient,
 	targetId?: string,
@@ -79,7 +48,7 @@ async function tryServerMint(
  * Resolve a short-lived AssemblyAI streaming token using the best available
  * source for this tab.
  *
- * SSR / jsdom-safe: `window` and `fetch` are guarded before use.
+ * SSR / jsdom-safe: `window` is guarded before use.
  */
 export async function resolveStreamingToken(
 	client: BugToPromptClient,
@@ -90,7 +59,6 @@ export async function resolveStreamingToken(
 	return (
 		(await tryPreMinted(hint)) ??
 		(await tryHostMinter(hint)) ??
-		(await tryDirectKey(hint)) ??
 		(await tryServerMint(client, targetId))
 	);
 }
