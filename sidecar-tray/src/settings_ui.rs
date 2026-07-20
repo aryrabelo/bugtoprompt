@@ -20,7 +20,6 @@ pub struct UiState {
     pub tier: String,
     pub email: String,
     pub transcription_engine: String,
-    pub assemblyai_key: String,
     pub github_mode: String,
     pub issue_mode: bool,
     pub repos: Vec<String>,
@@ -37,7 +36,6 @@ pub struct SavePayload {
     pub tier: String,
     pub email: String,
     pub transcription_engine: String,
-    pub assemblyai_key: String,
     pub github_mode: String,
     pub repos: Vec<String>,
     pub allowed_origins: Vec<String>,
@@ -93,7 +91,6 @@ pub fn build_ui_state(
             .transcription_engine
             .clone()
             .unwrap_or_else(|| "local".to_string()),
-        assemblyai_key: cfg.assemblyai_key.clone().unwrap_or_default(),
         github_mode: cfg
             .github_mode
             .clone()
@@ -183,7 +180,6 @@ pub fn apply_save(mut cfg: PersistedConfig, payload: SavePayload) -> PersistedCo
     cfg.tier = opt(payload.tier);
     cfg.email = opt(payload.email);
     cfg.transcription_engine = opt(payload.transcription_engine);
-    cfg.assemblyai_key = opt(payload.assemblyai_key);
     cfg.github_mode = opt(payload.github_mode);
 
     let current = cfg.repos.take().unwrap_or_default();
@@ -246,8 +242,8 @@ mod tests {
     fn parses_save_with_camel_case_config() {
         let msg = parse_ipc(
             r#"{"type":"save","config":{
-                "tier":"pro","email":"a@b.com","transcriptionEngine":"cloud",
-                "assemblyaiKey":"sk-1","githubMode":"local",
+                "tier":"pro","email":"a@b.com","transcriptionEngine":"local",
+                "githubMode":"local",
                 "repos":["acme/web","acme/api#dev"],
                 "allowedOrigins":["https://x.example"]
             }}"#,
@@ -256,8 +252,7 @@ mod tests {
         match msg {
             Ipc::Save { config } => {
                 assert_eq!(config.tier, "pro");
-                assert_eq!(config.transcription_engine, "cloud");
-                assert_eq!(config.assemblyai_key, "sk-1");
+                assert_eq!(config.transcription_engine, "local");
                 assert_eq!(config.repos, vec!["acme/web", "acme/api#dev"]);
                 assert_eq!(config.allowed_origins, vec!["https://x.example"]);
             }
@@ -271,14 +266,12 @@ mod tests {
             issue_mode: Some(true),
             token: Some("keep-me".to_string()),
             port: Some(4127),
-            assemblyai_key: Some("old-key".to_string()),
             ..Default::default()
         };
         let payload = SavePayload {
             tier: "pro".to_string(),
             email: "  ".to_string(), // whitespace → cleared
             transcription_engine: "local".to_string(),
-            assemblyai_key: "".to_string(), // cleared
             github_mode: "local".to_string(),
             repos: vec!["acme/web".to_string(), "  ".to_string()],
             allowed_origins: vec!["https://gerarposts.com.br".to_string()],
@@ -292,7 +285,6 @@ mod tests {
         // updated / cleared
         assert_eq!(next.tier.as_deref(), Some("pro"));
         assert_eq!(next.email, None);
-        assert_eq!(next.assemblyai_key, None);
         assert_eq!(
             next.repos,
             Some(vec![RawRepoEntry::Str("acme/web".to_string())])
@@ -332,7 +324,7 @@ mod tests {
         // so omitted settings are never silently cleared.
         assert_eq!(
             parse_ipc(
-                r#"{"type":"save","config":{"tier":"pro","email":"","transcriptionEngine":"local","assemblyaiKey":""}}"#
+                r#"{"type":"save","config":{"tier":"pro","email":"","transcriptionEngine":"local"}}"#
             ),
             None
         );
@@ -353,7 +345,6 @@ mod tests {
             tier: "lite".to_string(),
             email: String::new(),
             transcription_engine: "local".to_string(),
-            assemblyai_key: String::new(),
             github_mode: "local".to_string(),
             repos: vec![
                 "acme/web#dev".to_string(),

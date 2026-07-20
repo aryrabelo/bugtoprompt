@@ -72,13 +72,10 @@
     <label for="engine">Engine</label>
     <select id="engine">
       <option value="local">Local (Parakeet via uvx)</option>
-      <option value="cloud" disabled>Cloud (AssemblyAI — #60)</option>
     </select>
     <div class="uvx">uvx status: <span id="uvxStatus" class="hint">checking…</span></div>
     <button id="installUvx" type="button" class="icon" style="display:none">Install uv (uvx)</button>
     <div id="installLog"></div>
-    <label for="assemblyaiKey">Cloud key (AssemblyAI)</label>
-    <input id="assemblyaiKey" type="password" placeholder="Pro only" />
   </fieldset>
 
   <fieldset>
@@ -165,19 +162,14 @@
   }
 
   // finding #14: assign a persisted select value only when it maps to a known
-  // option; otherwise fall back rather than silently erasing it. A *disabled*
-  // option still counts as known — a migrated "cloud" preference (#12) is kept
-  // (shown, un-clobbered on save) even though the user can't newly pick it.
+  // option; otherwise fall back rather than silently erasing it. A migrated
+  // legacy "cloud" preference is no longer a known option (Lite is local-only),
+  // so it falls back to "local".
   function setSelect(el, value, fallback) {
     var known = Array.prototype.some.call(el.options, (o) => o.value === value);
     el.value = known ? value : fallback;
   }
 
-  function applyTierState() {
-    var pro = $("tier").value === "pro";
-    $("assemblyaiKey").disabled = !pro;
-    // Cloud engine stays disabled until the hosted relay lands (#60).
-  }
 
   // ---- Rust → JS bridge --------------------------------------------------
   window.__btp = {
@@ -188,7 +180,6 @@
       setSelect($("tier"), s.tier || "lite", "lite");
       $("email").value = s.email || "";
       setSelect($("engine"), s.transcription_engine || "local", "local");
-      $("assemblyaiKey").value = s.assemblyai_key || "";
       setSelect($("githubMode"), s.github_mode || "local", "local");
       $("origins").innerHTML = "";
       (s.allowed_origins || []).forEach((o) => {
@@ -199,7 +190,6 @@
         makeRow($("repos"), r, "owner/repo#branch");
       });
       window.__btp.onUvxStatus(s.uvx_status || "checking");
-      applyTierState();
     },
     onUvxStatus: (status) => {
       var el = $("uvxStatus");
@@ -224,7 +214,6 @@
   };
 
   // ---- Wiring ------------------------------------------------------------
-  $("tier").addEventListener("change", applyTierState);
   $("addOrigin").addEventListener("click", () => {
     makeRow($("origins"), "", "https://example.com").focus();
   });
@@ -247,7 +236,6 @@
         tier: $("tier").value,
         email: $("email").value.trim(),
         transcriptionEngine: $("engine").value,
-        assemblyaiKey: $("assemblyaiKey").value.trim(),
         githubMode: $("githubMode").value,
         repos: collectRows($("repos")),
         allowedOrigins: collectOrigins($("origins"))
