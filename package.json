@@ -62,7 +62,8 @@
 		"typecheck": "tsc --noEmit",
 		"typecheck:extension": "tsc --noEmit -p extension/tsconfig.json",
 		"service:github": "node server/github-issue-service.mjs",
-		"release:beta": "node scripts/release-beta.mjs"
+		"release:beta": "node scripts/release-beta.mjs",
+		"release:stable": "node scripts/release-stable.mjs"
 	},
 	"peerDependencies": {
 		"react": "^18 || ^19",
