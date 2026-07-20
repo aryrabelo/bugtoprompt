@@ -681,6 +681,7 @@ describe("useSession — onClick capture", () => {
 describe("useSession — rehydration", () => {
 	afterEach(() => {
 		localStorage.clear();
+		vi.restoreAllMocks();
 	});
 
 	it("(k) clean store → starts idle (no rehydration)", async () => {
