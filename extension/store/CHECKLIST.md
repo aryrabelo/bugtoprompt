@@ -57,8 +57,10 @@ item blocks submission unless explicitly marked optional.
         (`pageUrl` plus route-change events), and — for Pro users only —
         account/session data sent to `api.bugtoprompt.com`.
 - [ ] Confirm the extension does not collect data beyond what's disclosed
-      (Lite path stays fully local; verify no telemetry call was added
-      since `SECURITY.md` was last reviewed).
+      (Lite stays on-device except the AssemblyAI cloud transcription
+      fallback disclosed in `listing.md`'s PRIVACY section; verify no
+      other telemetry call was added since `SECURITY.md` was last
+      reviewed).
 
 ## 4. Developer account & payments
 
