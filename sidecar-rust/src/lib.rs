@@ -48,13 +48,10 @@ pub async fn serve(
     });
 
     let transcription_state = state.clone();
-    let assemblyai_key = config.assemblyai_key.clone();
-    let engine_pref = config.transcription_engine.clone();
     tokio::spawn(async move {
         let local_ready = detect_local_engine().await;
-        let pref = engine_pref.as_deref();
-        let provider = resolve_transcription_provider(local_ready, assemblyai_key.as_deref(), pref);
-        let state_value = detect_transcription_state(local_ready, assemblyai_key.as_deref(), pref);
+        let provider = resolve_transcription_provider(local_ready);
+        let state_value = detect_transcription_state(local_ready);
         transcription_state.update_transcription(provider, state_value);
     });
 

@@ -70,8 +70,6 @@ pub struct PersistedConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transcription_engine: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub assemblyai_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub github_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<Vec<String>>,
@@ -87,7 +85,7 @@ impl PersistedConfig {
     /// Serialize to TOML and write to `path` atomically with owner-only
     /// (0600) permissions, creating parent directories.
     ///
-    /// The file holds the bearer token + AssemblyAI key, so it must not be
+    /// The file holds the bearer token, so it must not be
     /// world-readable. And the write is atomic (temp sibling + rename) so a
     /// crash mid-write leaves the previous config intact rather than a
     /// truncated file that `load_persisted` would silently reset to defaults.
@@ -334,10 +332,6 @@ pub struct Config {
     pub default_mode: String,
     pub allowed_origins: HashSet<String>,
     pub token: Option<String>,
-    pub assemblyai_key: Option<String>,
-    /// User's transcription engine preference ("local" | "cloud"), honored by
-    /// `preflight::resolve_transcription_provider`. `None` = auto.
-    pub transcription_engine: Option<String>,
     pub captures_root: PathBuf,
 }
 
@@ -422,20 +416,6 @@ impl Config {
             .or(raw.port)
             .unwrap_or(DEFAULT_PORT);
 
-        let assemblyai_key = env.get("ASSEMBLYAI_API_KEY").or(raw.assemblyai_key);
-
-        // Transcription engine preference: env `BUGTOPROMPT_TRANSCRIBE`
-        // ("local" | "assemblyai"/"cloud"; "auto" or unknown → no explicit
-        // preference) overrides the persisted value.
-        let transcription_engine = env
-            .get("BUGTOPROMPT_TRANSCRIBE")
-            .and_then(|t| match t.as_str() {
-                "assemblyai" | "cloud" => Some("cloud".to_string()),
-                "local" | "parakeet" => Some("local".to_string()),
-                _ => None,
-            })
-            .or(raw.transcription_engine);
-
         // ponytail: testability-only override, not part of the frozen wire
         // contract. Node has no equivalent — it always writes under
         // `process.cwd()/.bugtoprompt/captures`; production keeps that
@@ -462,8 +442,6 @@ impl Config {
             default_mode,
             allowed_origins,
             token,
-            assemblyai_key,
-            transcription_engine,
             captures_root,
         }
     }
@@ -578,13 +556,11 @@ mod tests {
         let raw = PersistedConfig {
             host: Some("0.0.0.0".to_string()),
             port: Some(5000),
-            assemblyai_key: Some("sk-file".to_string()),
             ..Default::default()
         };
         let cfg = Config::from_env_and_raw(raw, &MapEnv(HashMap::new()));
         assert_eq!(cfg.host, "0.0.0.0");
         assert_eq!(cfg.port, 5000);
-        assert_eq!(cfg.assemblyai_key.as_deref(), Some("sk-file"));
     }
 
     #[test]
@@ -592,17 +568,51 @@ mod tests {
         let raw = PersistedConfig {
             host: Some("0.0.0.0".to_string()),
             port: Some(5000),
-            assemblyai_key: Some("sk-file".to_string()),
             ..Default::default()
         };
         let mut env = HashMap::new();
         env.insert("BUGTOPROMPT_HOST", "127.0.0.1");
         env.insert("BUGTOPROMPT_PORT", "6000");
-        env.insert("ASSEMBLYAI_API_KEY", "sk-env");
         let cfg = Config::from_env_and_raw(raw, &MapEnv(env));
         assert_eq!(cfg.host, "127.0.0.1");
         assert_eq!(cfg.port, 6000);
-        assert_eq!(cfg.assemblyai_key.as_deref(), Some("sk-env"));
+    }
+
+    #[test]
+    fn legacy_cloud_engine_loads_and_resolves_local_only() {
+        // A migrated config.toml (or plist) may still carry the removed cloud
+        // engine; it must load without error/panic, and provider resolution
+        // is local-only — never "assemblyai"/"cloud".
+        for legacy in ["cloud", "assemblyai"] {
+            let raw = PersistedConfig {
+                transcription_engine: Some(legacy.to_string()),
+                ..Default::default()
+            };
+            let _ = Config::from_env_and_raw(raw, &MapEnv(HashMap::new()));
+        }
+        // Same for an env-provided legacy value.
+        let mut env = HashMap::new();
+        env.insert("BUGTOPROMPT_TRANSCRIBE", "assemblyai");
+        let _ = Config::from_env_and_raw(PersistedConfig::default(), &MapEnv(env));
+        // ...and the sidecar only ever resolves local / unconfigured.
+        assert_eq!(
+            crate::preflight::resolve_transcription_provider(true),
+            "local"
+        );
+        assert_eq!(
+            crate::preflight::resolve_transcription_provider(false),
+            "unconfigured"
+        );
+    }
+
+    #[test]
+    fn config_with_removed_assemblyai_key_still_parses() {
+        // Old on-disk config that still has the stripped key must load
+        // gracefully (serde ignores unknown fields), not error.
+        let text = "port = 4127\nassemblyai_key = \"sk-old\"\ntranscription_engine = \"cloud\"\n";
+        let parsed: PersistedConfig = toml::from_str(text).unwrap();
+        assert_eq!(parsed.port, Some(4127));
+        assert_eq!(parsed.transcription_engine.as_deref(), Some("cloud"));
     }
 
     #[test]
@@ -642,7 +652,6 @@ mod tests {
         let path = dir.path().join("config.toml");
         let cfg = PersistedConfig {
             token: Some("secret-bearer".to_string()),
-            assemblyai_key: Some("sk-secret".to_string()),
             ..Default::default()
         };
         cfg.save(&path).unwrap();

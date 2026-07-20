@@ -162,17 +162,13 @@ pub fn config_from_launch_agent_env(env: &BTreeMap<String, String>) -> Persisted
     {
         cfg.port = Some(v);
     }
-    if let Some(v) = get("ASSEMBLYAI_API_KEY") {
-        cfg.assemblyai_key = Some(v);
-    }
 
-    // Preserve the legacy transcription preference (finding #12) instead of
-    // silently falling back to local when uvx is present.
+    // Legacy transcription preference: only "local" survives the strip; a
+    // legacy "assemblyai"/"cloud" value degrades to no explicit preference.
     if let Some(t) = get("BUGTOPROMPT_TRANSCRIBE") {
         cfg.transcription_engine = match t.as_str() {
-            "assemblyai" | "cloud" => Some("cloud".to_string()),
             "local" | "parakeet" => Some("local".to_string()),
-            _ => None, // "auto" / unknown → no explicit preference
+            _ => None, // legacy "assemblyai"/"cloud"/"auto"/unknown → none
         };
     }
 
@@ -248,8 +244,6 @@ mod tests {
         <string>gerarposts, aryrabelo/bugtoprompt#main</string>
         <key>BUGTOPROMPT_ALLOWED_ORIGINS</key>
         <string>https://gerarposts.com.br,http://localhost:3000</string>
-        <key>ASSEMBLYAI_API_KEY</key>
-        <string>sk-assembly-123</string>
         <key>BUGTOPROMPT_PORT</key>
         <string>4127</string>
     </dict>
@@ -274,10 +268,6 @@ mod tests {
         // Assert on the resulting TOML content.
         let text = std::fs::read_to_string(&config).unwrap();
         assert!(text.contains("issue_mode = true"), "toml:\n{text}");
-        assert!(
-            text.contains("assemblyai_key = \"sk-assembly-123\""),
-            "toml:\n{text}"
-        );
         assert!(text.contains("https://gerarposts.com.br"), "toml:\n{text}");
         assert!(text.contains("http://localhost:3000"), "toml:\n{text}");
 
@@ -285,7 +275,6 @@ mod tests {
         let parsed: PersistedConfig = toml::from_str(&text).unwrap();
         assert_eq!(parsed.issue_mode, Some(true));
         assert_eq!(parsed.port, Some(4127));
-        assert_eq!(parsed.assemblyai_key.as_deref(), Some("sk-assembly-123"));
         assert_eq!(
             parsed.allowed_origins,
             Some(vec![
@@ -355,8 +344,8 @@ mod tests {
         // Legacy JSON fields imported (finding #3)...
         assert_eq!(parsed.issue_mode, Some(true));
         assert_eq!(parsed.project_id.as_deref(), Some("legacy-proj"));
-        // ...legacy transcribe preference preserved as cloud (finding #12)...
-        assert_eq!(parsed.transcription_engine.as_deref(), Some("cloud"));
+        // ...legacy "assemblyai" transcribe preference degrades to none...
+        assert_eq!(parsed.transcription_engine, None);
         // ...and env BUGTOPROMPT_REPOS appended after the legacy repos.
         assert_eq!(
             parsed.repos,

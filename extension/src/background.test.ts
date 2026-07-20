@@ -7,6 +7,8 @@ import {
 	handleDocumentReady,
 	init,
 	isTabActive,
+	openOnboarding,
+	shouldOpenOnboarding,
 	toggleTab,
 } from "./background";
 import { type ChromeLike, DEFAULT_CONFIG } from "./config";
@@ -40,6 +42,10 @@ interface Harness {
 	updatedListeners: UpdatedListener[];
 	/** runtime.onMessage listeners registered via init(). */
 	messageListeners: MessageListener[];
+	/** runtime.onInstalled listeners registered via init(). */
+	installedListeners: Array<(d: { reason: string }) => void>;
+	/** tabs.create({ url }) calls made by openOnboarding. */
+	createdTabs: Array<{ url: string }>;
 	/** Controls whether the next ISOLATED-world relay injection reports as
 	 *  freshly initialized (result: true) — flip to false to simulate an
 	 *  already-resident relay on the document (injectProRelay then skips the
@@ -64,6 +70,8 @@ function makeHarness(): Harness {
 	const updatedListeners: UpdatedListener[] = [];
 	const messageListeners: MessageListener[] = [];
 	const relayState = { fresh: true };
+	const installedListeners: Array<(d: { reason: string }) => void> = [];
+	const createdTabs: Array<{ url: string }> = [];
 
 	const chromeApi: ChromeLike = {
 		storage: {
@@ -168,6 +176,10 @@ function makeHarness(): Harness {
 		},
 		tabs: {
 			query: vi.fn(async () => []),
+			create: vi.fn(async (props: { url: string }) => {
+				createdTabs.push(props);
+				return {};
+			}),
 			onUpdated: {
 				addListener: vi.fn((cb: UpdatedListener) => {
 					updatedListeners.push(cb);
@@ -180,6 +192,12 @@ function makeHarness(): Harness {
 					messageListeners.push(cb);
 				}),
 			},
+			getURL: (path: string) => `chrome-extension://test/${path}`,
+			onInstalled: {
+				addListener: vi.fn((cb: (d: { reason: string }) => void) => {
+					installedListeners.push(cb);
+				}),
+			},
 		},
 	};
 
@@ -190,6 +208,8 @@ function makeHarness(): Harness {
 		granted,
 		updatedListeners,
 		messageListeners,
+		installedListeners,
+		createdTabs,
 		relayState,
 	};
 }
@@ -1082,7 +1102,11 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 			listener(genuine);
 			await tick();
 			expect(sendMessage).toHaveBeenCalledTimes(1); // exactly once, ever
-			expect(posted).toHaveLength(1);
+			// The genuine op forwarded exactly once (the P0 invariant). The
+			// flood adds at most one bounded courtesy fast-fail (issue #88),
+			// never a second forward or per-message response spam.
+			expect(posted.filter((m) => m.id === "req-victim")).toHaveLength(1);
+			expect(posted.length).toBeLessThanOrEqual(2);
 
 			// 4. The in-flight flood guard is transient: once the garbage
 			// decrypt failures settle, a fresh genuine op still forwards.
@@ -1108,5 +1132,177 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+	it("issue #88: a genuine request dropped by inflight saturation gets a fast-fail encrypted error, not a silent hang", async () => {
+		const {
+			stubWindow,
+			listener,
+			posted,
+			sendMessage,
+			encryptWithAad,
+			decryptWithAad,
+		} = await setupRelay();
+		try {
+			// Encrypt the genuine envelope BEFORE the burst: no await may sit
+			// between saturating inflight and posting the victim, or the
+			// scheduled garbage decrypts would release their claims and drain
+			// the set below the cap.
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-saturated",
+			);
+			const enc2 = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-saturated-2",
+			);
+			// Fill inflight to its cap (1000) in one synchronous burst — the
+			// async decrypts (which release claims) have not run yet.
+			const garbage = { iv: "AAAAAAAAAAAAAAAA", data: "Z2FyYmFnZQ==" };
+			for (let i = 0; i < 1000; i++) {
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: `sat-${i}`, enc: garbage },
+				} as unknown as MessageEvent);
+			}
+			// Genuine request in the same tick: inflight is full, so it gets no
+			// claim. It must be fast-failed with an error the client can read.
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-saturated", enc },
+			} as unknown as MessageEvent);
+			// A SECOND genuine request in the same saturation episode: the one
+			// courtesy fast-fail is already spent, so it is silently dropped —
+			// the honest limit of the one-shot bound (under an adversarial
+			// flood the attacker's overflow could spend it instead, issue #88).
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-saturated-2", enc: enc2 },
+			} as unknown as MessageEvent);
+
+			await vi.waitFor(() =>
+				expect(posted.some((m) => m.id === "req-saturated")).toBe(true),
+			);
+			// Saturation dropped every request: nothing was ever forwarded.
+			expect(sendMessage).not.toHaveBeenCalled();
+			const errResp = posted.find((m) => m.id === "req-saturated");
+			expect(errResp?.type).toBe("btp:pro-response");
+			// The response is a real AES-GCM envelope under this document's
+			// secret (a garbage flood without the secret could not read it),
+			// carrying an actionable error rather than an opaque 120s timeout.
+			const decrypted = (await decryptWithAad(
+				errResp?.enc as { iv: string; data: string },
+				"btp:res:req-saturated",
+			)) as { ok: boolean; error: string };
+			expect(decrypted.ok).toBe(false);
+			expect(decrypted.error).toMatch(/in-flight|busy/i);
+			// The second same-episode victim got no response: the courtesy
+			// error is one-shot, so a flood cannot induce per-message crypto.
+			expect(posted.some((m) => m.id === "req-saturated-2")).toBe(false);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("cubic PR #108: re-arms the courtesy fast-fail only on a full drain, not on every unverified claim — sustained near-cap traffic cannot retrigger it", async () => {
+		const { stubWindow, listener, posted } = await setupRelay();
+		// Control garbage-decrypt release timing: every decrypt hangs until we
+		// pop its rejecter, so we can drive inflight to a PARTIAL-drain state
+		// (a slot briefly opens without the pipe emptying) — the exact regime
+		// where re-arming on admit would retrigger an error.
+		const pendingRejects: Array<() => void> = [];
+		const decryptSpy = vi
+			.spyOn(crypto.subtle, "decrypt")
+			.mockImplementation(() => {
+				const { promise, reject } = Promise.withResolvers<ArrayBuffer>();
+				pendingRejects.push(() => reject(new Error("garbage")));
+				return promise;
+			});
+		try {
+			const garbage = { iv: "AAAAAAAAAAAAAAAA", data: "Z2FyYmFnZQ==" };
+			// 1. Fill inflight to the cap; each decrypt hangs (claim held).
+			for (let i = 0; i < 1000; i++) {
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: `g-${i}`, enc: garbage },
+				} as unknown as MessageEvent);
+			}
+			// 2. First saturated request → one courtesy fast-fail, then disarm.
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "victim-1", enc: garbage },
+			} as unknown as MessageEvent);
+			await vi.waitFor(() =>
+				expect(posted.some((m) => m.id === "victim-1")).toBe(true),
+			);
+			// 3. A single slot opens (one decrypt fails) — inflight drops to 999,
+			// NOT zero. Then a fresh garbage claim refills it to the cap.
+			pendingRejects.shift()?.();
+			await tick();
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "g-refill", enc: garbage },
+			} as unknown as MessageEvent);
+			// 4. Second saturated request. With re-arm-on-drain it stays disarmed
+			// (the pipe never emptied), so NO second error is emitted. Re-arming
+			// on every admit (the pre-fix bug) would fire one here.
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "victim-2", enc: garbage },
+			} as unknown as MessageEvent);
+			await tick();
+			await tick();
+			expect(posted.some((m) => m.id === "victim-2")).toBe(false);
+			expect(posted.filter((m) => m.type === "btp:pro-response")).toHaveLength(
+				1,
+			);
+		} finally {
+			// Drain the rest so no relay decrypt awaits dangle past the test.
+			for (const rej of pendingRejects) rej();
+			decryptSpy.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+describe("first-run onboarding", () => {
+	it("shouldOpenOnboarding is true only for a fresh install", () => {
+		expect(shouldOpenOnboarding("install")).toBe(true);
+		expect(shouldOpenOnboarding("update")).toBe(false);
+		expect(shouldOpenOnboarding("chrome_update")).toBe(false);
+		expect(shouldOpenOnboarding("browser_update")).toBe(false);
+	});
+
+	it("init() registers onInstalled, and a fresh install opens exactly one onboarding tab", async () => {
+		const h = makeHarness();
+		init(h.chromeApi);
+		expect(h.installedListeners).toHaveLength(1);
+
+		h.installedListeners[0]({ reason: "install" });
+		// openOnboarding is async (fired via `void`) — flush pending microtasks.
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(h.createdTabs).toHaveLength(1);
+		expect(h.createdTabs[0].url.endsWith("onboarding.html")).toBe(true);
+	});
+
+	it("an update never opens the onboarding tab", async () => {
+		const h = makeHarness();
+		init(h.chromeApi);
+
+		h.installedListeners[0]({ reason: "update" });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(h.createdTabs).toHaveLength(0);
+	});
+
+	it("openOnboarding pushes a tab pointing at onboarding.html", async () => {
+		const h = makeHarness();
+		await openOnboarding(h.chromeApi);
+		expect(h.createdTabs).toEqual([
+			{ url: "chrome-extension://test/onboarding.html" },
+		]);
 	});
 });

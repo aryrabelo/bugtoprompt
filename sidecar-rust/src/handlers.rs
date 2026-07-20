@@ -208,11 +208,10 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
     )
 }
 
-/// `POST /transcribe` — routes to whichever transcription engine
-/// `preflight`'s background probe found ready. `"local"` runs the real
-/// ffmpeg + `uvx parakeet-mlx` pipeline (`transcribe::local_transcribe`);
-/// `"assemblyai"` cloud relay is #60; `"unconfigured"` (uvx missing, no
-/// AssemblyAI key) degrades to a clear `501`, never a panic.
+/// `POST /transcribe` — runs the real ffmpeg + `uvx parakeet-mlx` pipeline
+/// (`transcribe::local_transcribe`) when the local engine is ready. When it is
+/// not (uvx/parakeet missing) it degrades to a clear `501`, never a panic.
+/// Cloud transcription is a Pro feature served by api.bugtoprompt.com, not here.
 pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Response {
     let body = match read_json_body(req.into_body()).await {
         Ok(v) => v,
@@ -266,25 +265,23 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
                 ),
             }
         }
-        "assemblyai" => json_response(
-            StatusCode::NOT_IMPLEMENTED,
-            json!({ "error": "cloud transcription not implemented yet (see #60)" }),
-        ),
+
         _ => json_response(
             StatusCode::NOT_IMPLEMENTED,
-            json!({ "error": "transcription not configured" }),
+            json!({ "error": "local transcription not configured (install uvx + parakeet-mlx), or use cloud mode (api.bugtoprompt.com)" }),
         ),
     }
 }
 
-/// `POST /streaming-token` — Pro cloud relay is #60; always `501` here.
+/// `POST /streaming-token` — cloud transcription is a Pro feature; the Lite
+/// sidecar never relays it. Always `501`, pointing at cloud mode.
 pub async fn post_streaming_token(State(_state): State<AppState>, req: Request) -> Response {
     if let Err(resp) = read_json_body(req.into_body()).await {
         return resp;
     }
     json_response(
         StatusCode::NOT_IMPLEMENTED,
-        json!({ "error": "streaming token not implemented yet (see #60)" }),
+        json!({ "error": "cloud transcription is a Pro feature — use cloud mode (api.bugtoprompt.com)" }),
     )
 }
 
