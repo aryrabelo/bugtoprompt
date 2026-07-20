@@ -27,12 +27,14 @@ CONTENTS_DIR="${APP_DIR}/Contents"
 
 # Single cleanup path for every temp artifact (bash 3.2 safe: no arrays).
 STAGING_DIR=""
+ICON_WORK_DIR=""
 KEYCHAIN_DIR=""
 KEYCHAIN_PATH=""
 CERT_P12=""
 KEYCHAIN_CREATED="false"
 cleanup() {
 	[ -n "${STAGING_DIR}" ] && rm -rf "${STAGING_DIR}"
+	[ -n "${ICON_WORK_DIR}" ] && rm -rf "${ICON_WORK_DIR}"
 	[ -n "${CERT_P12}" ] && rm -f "${CERT_P12}"
 	if [ "${KEYCHAIN_CREATED}" = "true" ] && [ -n "${KEYCHAIN_PATH}" ]; then
 		security delete-keychain "${KEYCHAIN_PATH}" 2>/dev/null || true
@@ -71,6 +73,28 @@ cp "${DIST_DIR}/BugToPrompt" "${CONTENTS_DIR}/MacOS/BugToPrompt"
 chmod +x "${CONTENTS_DIR}/MacOS/BugToPrompt"
 sed "s/__VERSION__/${VERSION}/g" "${TRAY_DIR}/packaging/Info.plist" >"${CONTENTS_DIR}/Info.plist"
 plutil -lint "${CONTENTS_DIR}/Info.plist"
+
+# 5b. Generate and embed AppIcon.icns. Drawn procedurally at build time by
+# gen_app_icon (src/bin/gen_app_icon.rs) — mirrors the runtime-generated
+# menu-bar glyph in bug_icon() (src/main.rs) so no binary asset is committed
+# to the repo (issue #87, deferred from #59/PR#85 cubic finding P3).
+cargo build --release --bin gen_app_icon
+ICON_WORK_DIR="$(mktemp -d)"
+"${TRAY_DIR}/target/release/gen_app_icon" "${ICON_WORK_DIR}/AppIcon.bmp"
+sips -s format png "${ICON_WORK_DIR}/AppIcon.bmp" --out "${ICON_WORK_DIR}/AppIcon.png" >/dev/null
+ICONSET_DIR="${ICON_WORK_DIR}/AppIcon.iconset"
+mkdir -p "${ICONSET_DIR}"
+for spec in "16:icon_16x16" "32:icon_16x16@2x" "32:icon_32x32" "64:icon_32x32@2x" \
+	"128:icon_128x128" "256:icon_128x128@2x" "256:icon_256x256" \
+	"512:icon_256x256@2x" "512:icon_512x512" "1024:icon_512x512@2x"; do
+	px="${spec%%:*}"
+	name="${spec#*:}"
+	sips -z "${px}" "${px}" "${ICON_WORK_DIR}/AppIcon.png" --out "${ICONSET_DIR}/${name}.png" >/dev/null
+done
+iconutil -c icns "${ICONSET_DIR}" -o "${CONTENTS_DIR}/Resources/AppIcon.icns"
+rm -rf "${ICON_WORK_DIR}"
+ICON_WORK_DIR=""
+echo "Generated AppIcon.icns"
 
 # 6+7. Signing (env-gated, all-or-nothing). Signing requires the FULL chain:
 # the cert (APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD, imported into a
