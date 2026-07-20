@@ -208,14 +208,10 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
     )
 }
 
-/// `POST /transcribe` — routes to whichever transcription engine
-/// `preflight`'s background probe found ready. `"local"` runs the real
-/// ffmpeg + `uvx parakeet-mlx` pipeline (`transcribe::local_transcribe`);
-/// the sidecar is Lite-only/local-only (owner decision 2026-07-20, closing
-/// #60/#61 — PRO cloud traffic now goes extension → `api.bugtoprompt.com`
-/// directly, never through this sidecar), so a resolved `"assemblyai"`
-/// provider or `"unconfigured"` state both degrade to a clear `501`
-/// pointing at cloud mode, never a panic.
+/// `POST /transcribe` — runs the real ffmpeg + `uvx parakeet-mlx` pipeline
+/// (`transcribe::local_transcribe`) when the local engine is ready. When it is
+/// not (uvx/parakeet missing) it degrades to a clear `501`, never a panic.
+/// Cloud transcription is a Pro feature served by api.bugtoprompt.com, not here.
 pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Response {
     let body = match read_json_body(req.into_body()).await {
         Ok(v) => v,
@@ -269,27 +265,23 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
                 ),
             }
         }
-        "assemblyai" => json_response(
-            StatusCode::NOT_IMPLEMENTED,
-            json!({ "error": "cloud transcription is not available via the local sidecar; use cloud mode in the extension instead" }),
-        ),
+
         _ => json_response(
             StatusCode::NOT_IMPLEMENTED,
-            json!({ "error": "transcription not configured" }),
+            json!({ "error": "local transcription not configured (install uvx + parakeet-mlx), or use cloud mode (api.bugtoprompt.com)" }),
         ),
     }
 }
 
-/// `POST /streaming-token` — the sidecar is Lite-only/local-only (owner
-/// decision 2026-07-20, closing #60): PRO cloud relays never route through
-/// it, so this always returns a clear `501` pointing at cloud mode.
+/// `POST /streaming-token` — cloud transcription is a Pro feature; the Lite
+/// sidecar never relays it. Always `501`, pointing at cloud mode.
 pub async fn post_streaming_token(State(_state): State<AppState>, req: Request) -> Response {
     if let Err(resp) = read_json_body(req.into_body()).await {
         return resp;
     }
     json_response(
         StatusCode::NOT_IMPLEMENTED,
-        json!({ "error": "streaming tokens are not available via the local sidecar; use cloud mode in the extension instead" }),
+        json!({ "error": "cloud transcription is a Pro feature — use cloud mode (api.bugtoprompt.com)" }),
     )
 }
 
