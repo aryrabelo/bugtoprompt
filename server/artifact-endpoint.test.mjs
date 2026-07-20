@@ -137,3 +137,83 @@ describe("POST /artifact duplicate screenshotRef guard", () => {
 		expect(existsSync(join(dir, "snap-0002.jpg"))).toBe(true);
 	}, 15_000);
 });
+
+describe("POST /artifact audio-metadata downgrade guard", () => {
+	it("rejects a re-save that downgrades stored audio.bytes>0 to 0 and keeps the prior artifact.json", async () => {
+		// #124 belt-and-suspenders: a re-save (e.g. after a mid-review reload)
+		// must not clobber a good server-side audio.bytes>0 with a bytes:0
+		// placeholder. The prior artifact.json must survive untouched.
+		await waitForHealth(PORT);
+		const sessionId = "cap_downgrade-guard";
+		const dir = join(WORK, ".bugtoprompt", "captures", sessionId);
+		mkdirSync(dir, { recursive: true });
+		const prior = JSON.stringify({
+			sessionId,
+			audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 4096 },
+		});
+		writeFileSync(join(dir, "artifact.json"), prior);
+
+		const res = await fetch(`http://127.0.0.1:${PORT}/artifact`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				artifact: {
+					sessionId,
+					audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 0 },
+				},
+			}),
+		});
+		expect(res.status).toBe(409);
+		const body = await res.json();
+		expect(body.error).toMatch(/downgrade/i);
+
+		// Prior artifact.json is byte-for-byte intact — nothing was clobbered.
+		expect(readFileSync(join(dir, "artifact.json"), "utf8")).toBe(prior);
+	}, 15_000);
+
+	it("allows a re-save that preserves audio.bytes>0", async () => {
+		await waitForHealth(PORT);
+		const sessionId = "cap_no-downgrade";
+		const dir = join(WORK, ".bugtoprompt", "captures", sessionId);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "artifact.json"),
+			JSON.stringify({
+				sessionId,
+				audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 4096 },
+			}),
+		);
+
+		const res = await fetch(`http://127.0.0.1:${PORT}/artifact`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				artifact: {
+					sessionId,
+					pageUrl: "https://example.com",
+					audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 4096 },
+				},
+			}),
+		});
+		expect(res.status).toBe(200);
+		const saved = JSON.parse(readFileSync(join(dir, "artifact.json"), "utf8"));
+		expect(saved.audio.bytes).toBe(4096);
+		expect(saved.pageUrl).toBe("https://example.com");
+	}, 15_000);
+
+	it("allows a first save (no prior artifact) with audio.bytes 0", async () => {
+		await waitForHealth(PORT);
+		const sessionId = "cap_first-save-zero";
+		const res = await fetch(`http://127.0.0.1:${PORT}/artifact`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				artifact: {
+					sessionId,
+					audio: { ref: "", mimeType: "", bytes: 0 },
+				},
+			}),
+		});
+		expect(res.status).toBe(200);
+	}, 15_000);
+});

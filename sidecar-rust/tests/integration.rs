@@ -312,6 +312,79 @@ fn artifact_roundtrip_persists_files() {
 }
 
 #[test]
+fn artifact_resave_rejects_audio_metadata_downgrade() {
+    // #124 belt-and-suspenders: a re-save must not clobber a good server-side
+    // audio.bytes>0 with a bytes:0 placeholder. Reject with 409 and leave the
+    // prior artifact.json untouched.
+    let server = ServerGuard::spawn(HashMap::new());
+    let client = reqwest::blocking::Client::new();
+
+    let good = json!({
+        "artifact": {
+            "sessionId": "cap_downgrade-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+        }
+    });
+    let resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&good)
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().unwrap();
+    let dir = std::path::PathBuf::from(body["dir"].as_str().unwrap());
+    let artifact_file = dir.join("artifact.json");
+
+    let downgrade = json!({
+        "artifact": {
+            "sessionId": "cap_downgrade-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 0 }
+        }
+    });
+    let resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&downgrade)
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let err_body: Value = resp.json().unwrap();
+    assert!(
+        err_body["error"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("downgrade"),
+        "expected a downgrade error, got {err_body:?}"
+    );
+
+    // Prior audio.bytes is intact — nothing was clobbered.
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact_file).unwrap()).unwrap();
+    assert_eq!(saved["audio"]["bytes"], 4096);
+}
+
+#[test]
+fn artifact_resave_allows_preserved_audio_bytes() {
+    let server = ServerGuard::spawn(HashMap::new());
+    let client = reqwest::blocking::Client::new();
+
+    let good = json!({
+        "artifact": {
+            "sessionId": "cap_preserve-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+        }
+    });
+    for _ in 0..2 {
+        let resp = client
+            .post(format!("{}/artifact", server.base))
+            .json(&good)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+}
+
+#[test]
 fn streaming_token_returns_clear_cloud_mode_error() {
     let server = ServerGuard::spawn(HashMap::from([
         ("BUGTOPROMPT_ENABLE_ISSUES", "1"),
