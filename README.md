@@ -3,191 +3,31 @@
 [![CI](https://github.com/aryrabelo/bugtoprompt/actions/workflows/ci.yml/badge.svg)](https://github.com/aryrabelo/bugtoprompt/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/bugtoprompt)](https://www.npmjs.com/package/bugtoprompt)
 
-**Capture a bug, get a prompt your AI agent can fix.** bugtoprompt is a
-drop-in, host-agnostic overlay: hit record, narrate and click through the bug,
-and it renders a complete, AI-ready prompt — voice transcript + click timeline +
-interactive DOM snapshots + screenshots — in GitHub-issue format. Paste it into
+**Capture a bug, get a prompt your AI agent can fix.** bugtoprompt renders a
+complete, AI-ready prompt — voice transcript + click timeline + interactive
+DOM snapshots + screenshots — in GitHub-issue format. Paste it into
 Claude / Cursor / Codex, or file it as an issue.
 
-**See it in 30 seconds.** Try it with no build step: open `example/index.html`
-(it injects the standalone widget via one script tag), click the bug button,
-record, and copy the prompt.
-
-Where the prompt goes is up to you:
-
-- **`issue`** — file a GitHub issue (needs a backend)
-- **`clipboard`** — copy the rendered prompt
-- **`download`** — save a `.md` prompt + the artifact JSON
-
-It runs fully client-side with no backend (clipboard/download); a configured
-backend adds `issue` mode + live transcription.
-
----
-
-## Use in any project
-
-Three integration paths — pick the one that fits your setup. All three mount
-the same overlay and resolve config the same way.
-
-### 1. React import
-
-Install once, drop in anywhere:
-
-```bash
-pnpm add bugtoprompt   # react >=18 || >=19 peer
-```
-
-```tsx
-import { BugToPrompt } from "bugtoprompt";
-
-export function App() {
-  return (
-    <>
-      {/* your app */}
-      <BugToPrompt />
-    </>
-  );
-}
-```
-
-Zero config required. With nothing set the widget runs fully client-side
-(capture → copy/download the prompt). Point it at a backend to unlock issue
-mode and live transcription:
-
-```tsx
-<BugToPrompt baseUrl="/api" />
-```
-
-Config is resolved automatically in this order: `baseUrl` prop →
-`window.__BUGTOPROMPT__` → `<meta name="bugtoprompt-base">` → server
-`GET {base}/bugtoprompt/config` → local fallback.
-
-The widget self-portals to `<body>` so it never disturbs your layout.
-
-> **Gate the mount on a flag** — the widget has no env checks inside;
-> the recommended pattern is to mount it only when a flag is present:
-> ```tsx
-> {import.meta.env.VITE_BUGTOPROMPT && <BugToPrompt baseUrl="/api" />}
-> ```
-
-### 2. Script tag (any page, no build step)
-
-One `<script>` tag works on any page — server-rendered apps, static sites,
-or any page you can inspect. Bundles React and ships its own compiled CSS.
-
-```html
-<script
-  src="https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js"
-  defer
-  data-modes="clipboard,download"
-></script>
-```
-
-Configure via `data-*` attributes:
-
-| Attribute | Prop | Example |
-|---|---|---|
-| `data-base` | `baseUrl` | `data-base="https://myapp.example.com"` |
-| `data-modes` | `modes` | `data-modes="clipboard,download"` |
-| `data-project-id` | `projectId` | `data-project-id="repo_abc"` |
-| `data-screenshot-mode` | `screenshotMode` | `data-screenshot-mode="onMark"` |
-| `data-default-mode` | `defaultMode` | `data-default-mode="clipboard"` |
-
-**Console one-liner** — inject into any page you can inspect:
-
-```js
-var s = document.createElement('script');
-s.src = 'https://unpkg.com/bugtoprompt/dist/bugtoprompt.global.js';
-document.body.appendChild(s);
-// optional: pass config programmatically after load
-s.addEventListener('load', () => window.BugToPrompt.mount({ modes: ['clipboard'] }));
-```
-
-**Programmatic control** — suppress auto-mount and call manually:
-
-```js
-window.__BUGTOPROMPT__ = { manual: true };
-// load the script, then:
-window.BugToPrompt.mount({ baseUrl: 'https://myapp.example.com' });
-// later:
-window.BugToPrompt.unmount();
-```
-
-For live-transcription unlock snippets and the full CORS note, see [docs/console.md](docs/console.md).
-
-### 3. Custom backend
-
-The overlay is fully usable with no backend. Adding one unlocks issue mode
-and server-side live transcription.
-
-#### Option A — Run the bundled reference server
-
-The package ships a zero-dependency Node broker that implements the full
-`BugToPromptClient` contract:
-
-```bash
-node server/github-issue-service.mjs
-# or, after publishing:
-# ASSEMBLYAI_API_KEY=<key> npx bugtoprompt
-```
-
-Key environment variables:
-
-| Variable | Default | Notes |
-|---|---|---|
-| `ASSEMBLYAI_API_KEY` | — | Required for live transcription |
-| `BUGTOPROMPT_PORT` | `4127` | Listen port |
-| `BUGTOPROMPT_ENABLE_ISSUES` | `0` | Set `1` to enable GitHub issue filing (needs the `gh` CLI) |
-| `BUGTOPROMPT_REPOS` | — | Comma-separated repos exposed as targets |
-| `BUGTOPROMPT_ALLOWED_ORIGINS` | — | Comma-separated extra origins (localhost is auto-trusted) |
-| `BUGTOPROMPT_TOKEN` | — | Optional shared secret required on every request |
-
-Then point the overlay at it. In a Vite app:
-
-```
-VITE_BUGTOPROMPT_BASE_URL=http://localhost:4127
-```
-
-```tsx
-<BugToPrompt baseUrl={import.meta.env.VITE_BUGTOPROMPT_BASE_URL} />
-```
-
-Serve your app over **http** in dev so the page can reach the http broker
-without mixed-content blocking.
-
-#### Option B — Implement `BugToPromptClient` yourself
-
-Bring your own transport by implementing the interface from `bugtoprompt/client`:
-
-```ts
-import type { BugToPromptClient } from "bugtoprompt/client";
-
-// Implement over any transport (fetch, tRPC, WebSocket, …)
-const client: BugToPromptClient = {
-  mintStreamingToken: async (targetId?) => ({ token, expiresAt }),
-  saveArtifact: async ({ artifact, audioBase64, screenshotsBase64 }) => ({ dir, sessionId }),
-  transcribeBatch: async (sessionId, targetId?) => ({ transcript }),
-  createIssue: async ({ projectId, targetId, sessionId, prompt }) => ({ created, number, url }),
-  listTargets: async (projectId) => [{ id, name, branch }],
-};
-
-<BugToPrompt client={client} modes={["issue", "clipboard", "download"]} />
-```
-
-`clipboard` and `download` modes are pure client-side and never call the client.
-See [The `BugToPromptClient` seam](#the-bugtopromptclient-seam) below for the
-full interface and the reference HTTP contract.
+> ### ⚠️ SUNSET — direct integration is no longer the product
+>
+> Installing this package into your own app (React import, `<script>` tag, or
+> running the bundled `npx` server) is **not supported going forward**. The
+> product is the **BugToPrompt Chrome extension**:
+>
+> - **Lite** (free) — the extension paired with a local Rust tray sidecar
+>   (on-device transcription; issues are filed via the `gh` CLI).
+> - **Pro** (paid) — the extension talks to the hosted backend at
+>   [api.bugtoprompt.com](https://api.bugtoprompt.com); captures land in a
+>   cloud inbox and route onward via connectors (GitHub first).
+>
+> This npm package stays **published** but is sunset for direct
+> integration — it is now the internal source the extension and the
+> [bugtoprompt.com](https://bugtoprompt.com) landing-page demo are built
+> from. The technical docs below describe the overlay as an internal/OSS
+> library (still MIT-licensed and buildable from source); they are not an
+> install recommendation.
 
 ---
-
-## Install
-
-```bash
-pnpm add bugtoprompt        # peers: react >=18 || >=19, react-dom >=18 || >=19
-```
-
-ESM-only. `react` / `react-dom` are peer dependencies; `zod` and `lucide-react`
-are bundled dependencies.
 
 ## Exports
 
@@ -253,12 +93,13 @@ const title = promptTitle(artifact);
 backend. Bump `ARTIFACT_VERSION` only on a breaking shape change; pin a
 compatible package version on the consumer's backend.
 
-## Styling (React import path)
+## Styling
 
 The overlay uses **Tailwind** design tokens (`bg-popover`,
 `text-muted-foreground`, `bg-primary`, `border-border`, …) supplied by the host
-app's theme (the shadcn/ui token set is the reference). Add the package to
-Tailwind's content scan so its classes are generated:
+app's theme (the shadcn/ui token set is the reference). A build consuming the
+overlay from source needs the package added to Tailwind's content scan so its
+classes are generated:
 
 ```js
 content: ["./src/**/*.{ts,tsx}", "./node_modules/bugtoprompt/dist/**/*.js"]
@@ -309,16 +150,6 @@ pnpm test         # vitest (jsdom)
 pnpm build        # tsup → dist (ESM + .d.ts) for index/schema/render/client
 pnpm lint         # biome
 ```
-
-## Migrating from `bugtoprompt-server`
-
-The standalone `bugtoprompt-server` npm package was discontinued and removed
-from npm: its local role was absorbed into the `bugtoprompt` package — the
-same sidecar now runs via `npx bugtoprompt`
-(entry: `server/github-issue-service.mjs`). The hosted role moved to
-[bugtoprompt.com](https://bugtoprompt.com). Update any scripts or docs that
-ran `npx`/`bunx bugtoprompt-server` to `npx bugtoprompt`; env vars and
-endpoints are unchanged.
 
 ## License
 

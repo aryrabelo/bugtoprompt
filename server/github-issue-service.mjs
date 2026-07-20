@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// DEPRECATED: this Node sidecar is retired in favor of the Chrome
+// extension + Rust tray sidecar (Lite tier). No longer shipped in the
+// published npm package (see package.json `files`); kept in-tree for
+// reference until the Rust tray reaches feature parity.
 /**
  * BugToPrompt — reference gh-backed issue service.
  *
