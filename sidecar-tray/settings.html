@@ -93,7 +93,7 @@
       <option value="local">Local (gh CLI)</option>
       <option value="hosted" disabled>Hosted (Pro — #61)</option>
     </select>
-    <div class="gh">gh CLI: <span id="ghStatus" class="hint">checking…</span></div>
+    <div class="gh" aria-live="polite">gh CLI: <span id="ghStatus" class="hint">checking…</span></div>
     <div id="ghHint" class="hint" style="display:none"></div>
     <div class="checkrow">
       <input id="enableIssues" type="checkbox" />
@@ -116,7 +116,7 @@
     <button id="save" type="button" class="primary">Save</button>
     <button id="quit" type="button">Quit App</button>
   </div>
-  <div id="saveError" class="saveError"></div>
+  <div id="saveError" class="saveError" role="alert"></div>
 
 <script>
 (() => {
