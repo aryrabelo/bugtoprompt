@@ -1,7 +1,7 @@
 # PRD: BugToPrompt Desktop Sidecar (Rust)
 
-**Status:** Draft
-**Date:** 2026-07-15
+**Status:** Partially shipped — see status note below.
+**Date:** 2026-07-15 (drafted); status note added 2026-07-20
 **Owner:** Ary Rabelo
 
 ## 1. Summary
@@ -14,6 +14,28 @@ adds a settings UI, and eliminates the Node.js dependency for end users.
 **v1:** macOS (menu bar / NSStatusItem)
 **v2:** Windows (system tray / NotifyIcon)
 
+
+## 0. Status note (2026-07-20)
+
+Two pieces of this draft already shipped, exactly as designed:
+
+- **Lite has zero AssemblyAI exposure.** `/streaming-token` and cloud-transcribe
+  paths in the sidecar are permanently stubbed to `501`, pointing callers at
+  cloud mode (`sidecar-rust/src/handlers.rs`) — issue #119 / PR #126.
+- **No customer bring-your-own AssemblyAI key, anywhere.** The overlay's
+  client-side key store and in-app key prompt were removed; live transcription
+  authenticates solely via a token minted by our backend — issue #125 / PR #127.
+
+**One architectural detail below is now stale:** §4's diagram, §6's "Token
+flow" bullet, and §7's Pro ascii block describe the Rust sidecar **proxying**
+Pro requests to the hosted backend. That is not what shipped. The extension's
+service worker (`extension/src/background.ts` — `PRO_OPS`, `executeProOp`)
+relays every Pro operation (`mintStreamingToken`, `saveArtifact`,
+`transcribeBatch`, `createIssue`, `listTargets`) **directly** to
+`PRO_BASE_URL` (`https://api.bugtoprompt.com`) with a `Bearer <proToken>`
+header — confirmed by `extension/src/background.test.ts` asserting the exact
+request URL. The local sidecar is never in the Pro request path; it only
+serves Lite/local operations. Corrected inline below (§4, §6, §7).
 ---
 
 ## 2. Problem
@@ -44,7 +66,8 @@ kills adoption.
 
 ### Pro mixing model
 
-A Pro user can **mix and match**:
+A Pro user can **mix and match** (design intent — see §6's "known gap" for
+shipped-vs-designed status of the local/cloud picker):
 - **Transcription:** local engine (sidecar) OR AssemblyAI cloud — a paid
   feature served via a backend-minted token; there is no customer AssemblyAI
   key entry
@@ -68,29 +91,36 @@ A Lite user runs **everything locally**:
 ┌──────────────────────────────────────────────────────────────┐
 │  Chrome Extension (existing, unchanged)                      │
 │    overlay.tsx → captures bug → artifact JSON                │
+│                                                                │
+│    LITE path — local ops only, gated on sidecar health:      │
 │    background.ts → fetch http://127.0.0.1:4127/*             │
-│         │                                                    │
 │         ├─ /health → 200? → use local sidecar                │
-│         └─ /health → ECONNREFUSED? →                         │
-│              ├─ Pro user? → try api.bugtoprompt.com           │
-│              └─ Lite user? → show "Download BugToPrompt app" │
+│         └─ /health → ECONNREFUSED? → show "Download app"     │
+│                                                                │
+│    PRO path — always direct to the hosted backend, NEVER      │
+│    through the sidecar (background.ts PRO_OPS/executeProOp): │
+│    background.ts → fetch https://api.bugtoprompt.com/*        │
+│         (Bearer <proToken> from chrome.storage.local; gated   │
+│          only on proToken presence, independent of sidecar    │
+│          health — a Pro user with no sidecar running still    │
+│          gets cloud transcription + hosted issue filing)      │
 │                                                              │
 │  Rust Sidecar App (new — replaces Node server)               │
 │  ┌────────────────────────────────────────────────────┐      │
-│  │  HTTP Server (axum) on 127.0.0.1:4127              │      │
+│  │  HTTP Server (axum) on 127.0.0.1:4127 — LITE ONLY  │      │
 │  │    GET  /health          → gh state + transcribe   │      │
 │  │    GET  /bugtoprompt/config → modes + projectId    │      │
 │  │    GET  /targets          → configured repos       │      │
 │  │    POST /artifact         → persist JSON+audio+png │      │
-│  │    POST /transcribe       → uvx parakeet-mlx OR     │      │
-│  │                            → AssemblyAI cloud       │      │
-│  │    POST /streaming-token  → AssemblyAI temp token  │      │
-│  │    POST /issue            → gh CLI (Lite) OR proxy │      │
-│  │                            → hosted API (Pro)      │      │
+│  │    POST /transcribe       → uvx parakeet-mlx only   │      │
+│  │    POST /streaming-token  → always 501 (no cloud   │      │
+│  │                            relay; use PRO path)     │      │
+│  │    POST /issue            → gh CLI (Lite only —    │      │
+│  │                            Pro never reaches this)  │      │
 │  │                                                    │      │
 │  │  Transcription Engine                               │      │
 │  │    Parakeet-MLX via uvx (local, Apple Silicon)    │      │
-│  │    OR AssemblyAI HTTP (Pro only)                   │      │
+│  │    — no AssemblyAI anywhere in this process        │      │
 │  │                                                    │      │
 │  │  Settings Window (Tauri webview)                    │      │
 │  │    - GitHub token                                  │      │
@@ -105,10 +135,11 @@ A Lite user runs **everything locally**:
 │  │      → Quit                                        │      │
 │  └────────────────────────────────────────────────────┘      │
 │                                                              │
-│  Hosted Backend (existing — api.bugtoprompt.com)             │
-│    - Pro auth (subscription check)                           │
-│    - GitHub issue filing proxy (token on server)             │
-│    - AssemblyAI proxy (server-side key)                      │
+│  Hosted Backend (existing — api.bugtoprompt.com) — PRO ONLY, │
+│  reached DIRECTLY by the extension, never via the sidecar     │
+│    - Pro auth (Bearer proToken subscription check)            │
+│    - GitHub issue filing (token on server)                    │
+│    - AssemblyAI streaming token minting (server-side key)     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -125,9 +156,9 @@ No extension changes required.
 | GET | `/bugtoprompt/config` | Advertised modes + projectId + defaultMode |
 | GET | `/targets?projectId=...` | Configured repos as `Target[]` |
 | POST | `/artifact` | Persist artifact.json + audio + screenshots |
-| POST | `/transcribe` | Batch transcript (local Parakeet-MLX or AssemblyAI) |
-| POST | `/streaming-token` | AssemblyAI temp token (Pro only) |
-| POST | `/issue` | `gh issue create` (Lite) or proxy to hosted (Pro) |
+| POST | `/transcribe` | Batch transcript — local Parakeet-MLX only (no cloud path in the sidecar) |
+| POST | `/streaming-token` | Always `501` — cloud transcription never relays through the sidecar; Pro mints directly against the hosted backend (see §0) |
+| POST | `/issue` | `gh issue create`, Lite only — Pro issue filing bypasses the sidecar entirely (see §0) |
 
 All endpoints bind to `127.0.0.1` only. CORS enforced via
 `Access-Control-Allow-Origin` matching configured allowed origins.
@@ -160,11 +191,22 @@ All endpoints bind to `127.0.0.1` only. CORS enforced via
 
 ### Cloud (Pro only)
 
-- **Engine:** AssemblyAI streaming API
-- **Token flow:** sidecar mints temp token via hosted backend → passes to
-  extension for live streaming
-- **Batch fallback:** `POST /transcribe` with AssemblyAI REST API
-- **User choice:** Pro users select local OR cloud per-session or in settings
+- **Engine:** AssemblyAI streaming API — server-side only, never customer-facing.
+- **Token flow:** the extension mints a short-lived streaming token **directly**
+  against the hosted backend (`POST https://api.bugtoprompt.com/streaming-token`,
+  `Bearer <proToken>`) — the sidecar is never in this path (see §0).
+- **Batch fallback:** same direct-to-hosted-backend path, not `POST /transcribe`
+  on the sidecar (that endpoint is local-only, see §5).
+- **Engine selection — known gap:** §3's "Pro mixing model" and §13 decision #5
+  describe a per-session/settings local-vs-cloud picker. The shipped Settings
+  UI does not have one yet — `sidecar-tray/settings.html`'s `#engine` `<select>`
+  currently offers only `<option value="local">Local (Parakeet via uvx)</option>`,
+  no cloud option. In practice: the sidecar always offers local Parakeet
+  (tier-agnostic — it doesn't check `tier` before serving `/transcribe`); cloud
+  transcription is whatever the extension's overlay resolves automatically for
+  a Pro session (§0), not a manual choice in this settings window. Flagged as a
+  Deferred item in `.context/handoff.md` — settings-UI cloud toggle is
+  unimplemented, not merely undocumented.
 
 ---
 
@@ -177,23 +219,27 @@ Extension → POST /issue → sidecar spawns `gh issue create` subprocess
                               → requires gh installed + authenticated
 ```
 
-### Pro path (hosted backend proxy)
+### Pro path (direct to hosted backend, bypasses the sidecar)
 
 ```
-Extension → POST /issue → sidecar proxies to api.bugtoprompt.com
-                              → server holds GitHub token
-                              → no local gh needed
+Extension (background.ts PRO_OPS/executeProOp)
+  → POST https://api.bugtoprompt.com/issue, Bearer <proToken>
+      → server holds GitHub token
+      → no local gh needed, no sidecar involved
 ```
 
-The sidecar decides which path based on tier:
-- Lite: always local `gh`
-- Pro: always hosted (unless explicitly overridden in settings)
+Routing is decided **client-side in the extension**, not by the sidecar:
+- Lite (no `proToken`): always local `gh` via the sidecar.
+- Pro (`proToken` present): always the direct hosted relay — see §0.
 
 ---
 
 ## 8. Settings UI
 
-Tauri webview window (opens from tray icon click):
+Tauri webview window (opens from tray icon click). **Mockup only** — the
+"Transcription" fieldset below shows a `[Local Parakeet ▼] / [Cloud (Pro)]`
+picker that hasn't shipped: `sidecar-tray/settings.html`'s `#engine`
+`<select>` currently offers only `local` (see §6 "known gap").
 
 ```
 ┌─ BugToPrompt Settings ──────────────────────────┐
@@ -204,7 +250,6 @@ Tauri webview window (opens from tray icon click):
 │  │  Tier: [Lite ▼]  [Login to Pro →]        │  │
 │  │  Email: aryrabelo@...                    │  │
 │  └───────────────────────────────────────────┘  │
-│                                                 │
 │  ┌─ Transcription ───────────────────────────┐  │
 │  │  Engine: [Local Parakeet ▼] / [Cloud (Pro)] │  │
 │  │  uvx status: ✓ ready                       │  │
@@ -248,6 +293,12 @@ enhanced flow:
        [Download for macOS] [Connect to Pro →]"
 ```
 
+**Note (2026-07-20):** step 4's framing ("Pro user with no sidecar → hosted
+backend") is the ORIGINAL 2026-07-15 design. What shipped is stricter: Pro
+routing (`PRO_OPS`/`executeProOp`) is gated only on `proToken` presence, not
+on `/health` failing first — a Pro user's cloud transcription and hosted issue
+filing go direct regardless of whether the sidecar is even installed. See §0.
+
 ---
 
 ## 10. Distribution
@@ -280,8 +331,8 @@ enhanced flow:
 | Settings UI | Tauri webview | HTML/CSS/JS in a window, no Electron bloat |
 | Config store | TOML or SQLite | `~/.config/bugtoprompt/config.toml` |
 | GitHub (Lite) | `std::process::Command` | Spawn `gh issue create` subprocess |
-| GitHub (Pro) | `reqwest` | HTTP POST to hosted backend |
-| AssemblyAI | `reqwest` | Streaming + REST API |
+| GitHub (Pro) | — | N/A in the sidecar. The extension relays Pro `createIssue` directly to the hosted backend (see §0); the sidecar's `reqwest` usage is Lite-only (local `/health`/config probes). |
+| AssemblyAI | — | N/A in the sidecar (see §0). Server-side only, reached directly by the extension for Pro. |
 | Logging | `tracing` | Structured async logging |
 
 ---
@@ -304,7 +355,7 @@ enhanced flow:
 | 2 | **No model bundling** | uvx lazily fetches parakeet-mlx on first transcription. Keeps app binary < 20 MB. |
 | 3 | **Lite = no registration** | Client-side capture is free. No server cost for Lite users. Signup wall kills "30-second try". |
 | 4 | **Pro = registration + payment** | Pro uses hosted backend resources (GitHub proxy, AssemblyAI). Paywall justified. |
-| 5 | **Pro can mix transcription modes** | Pro user chooses local (Parakeet) OR cloud (AssemblyAI) per-session or in settings. |
+| 5 | **Pro can mix transcription modes (design intent, not yet shipped)** | Pro user is meant to choose local (Parakeet) OR cloud (AssemblyAI) per-session or in settings; the settings UI ships with local-only today — see §6 "known gap". |
 | 6 | **Anonymous telemetry on Lite** | `anonId` (uuid v4) + event tracking (installed, capture_started, modes used). No PII. |
 | 7 | **Telemetry tied to account on Pro** | Same events but linked to user account for DAU/MAU + conversion tracking. |
 
@@ -316,8 +367,11 @@ enhanced flow:
    `uvx` with a 5s timeout (`LOCAL_ENGINE_PROBE_TIMEOUT_MS`). If missing,
    settings UI shows one-click install link. No bundling needed.
 
-2. **Pro auth:** Login token stored in `~/.config/bugtoprompt/config.toml`.
-   Extension reads tier from sidecar `/health` response.
+2. **Pro auth:** `proToken` lives in the extension's `chrome.storage.local`
+   (never synced), not in the sidecar's `config.toml`. The sidecar's own
+   `tier`/`email` config fields (`sidecar-rust/src/config.rs`) are informational
+   display state for the Settings UI only — they do not gate any sidecar route;
+   Pro routing is decided entirely client-side in the extension (see §0).
 
 3. **Windows transcription (v2):** Parakeet-MLX is Apple Silicon only.
    Windows port will use whisper.cpp or AssemblyAI-only. Decide at v2 kickoff.
