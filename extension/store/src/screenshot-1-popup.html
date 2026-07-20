@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1280px; height: 800px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    background: #0e1013;
+    overflow: hidden;
+  }
+  .stage { width: 1280px; height: 800px; display: flex; align-items: center; justify-content: center; }
+  .browser {
+    width: 1120px; height: 660px;
+    border-radius: 14px;
+    background: #16181d;
+    border: 1px solid #2a2e37;
+    box-shadow: 0 40px 100px rgba(0,0,0,0.5);
+    overflow: hidden;
+    position: relative;
+  }
+  .chrome-bar {
+    height: 46px;
+    background: #1b1e24;
+    border-bottom: 1px solid #2a2e37;
+    display: flex; align-items: center;
+    padding: 0 16px;
+    gap: 10px;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .dot.red { background: #f87171; }
+  .dot.yellow { background: #facc15; }
+  .dot.green { background: #4ade80; }
+  .url-bar {
+    margin-left: 14px;
+    flex: 1;
+    max-width: 460px;
+    height: 26px;
+    border-radius: 8px;
+    background: #22252c;
+    color: #9aa1ad;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+  }
+  .ext-icon {
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    background: #4f46e5;
+    margin-left: 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .ext-icon svg { width: 15px; height: 15px; }
+  .page-body {
+    height: 614px;
+    background:
+      radial-gradient(600px 300px at 20% 0%, rgba(79,70,229,0.10), transparent),
+      #0e1013;
+    position: relative;
+    padding: 40px;
+  }
+  .app-card {
+    width: 620px;
+    padding: 28px;
+    border-radius: 12px;
+    background: #16181d;
+    border: 1px solid #2a2e37;
+  }
+  .app-card h2 { color: #e6e8ec; font-size: 20px; margin-bottom: 10px; }
+  .app-card p { color: #9aa1ad; font-size: 13px; line-height: 1.6; margin-bottom: 8px; }
+  .skeleton { height: 12px; border-radius: 6px; background: #22252c; margin-bottom: 10px; }
+  .skeleton.w60 { width: 60%; }
+  .skeleton.w80 { width: 80%; }
+  .skeleton.w40 { width: 40%; }
+  .popup {
+    position: absolute;
+    top: 58px; right: 40px;
+    width: 320px;
+    padding: 16px;
+    background: #16181d;
+    color: #e6e8ec;
+    border: 1px solid #2a2e37;
+    border-radius: 12px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .popup .head { display: flex; align-items: center; justify-content: space-between; }
+  .popup h1 { font-size: 15px; font-weight: 600; }
+  .pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid #1f5133; background: #0f2a1a; color: #4ade80; }
+  .target { font-size: 12px; color: #9aa1ad; }
+  .row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border: 1px solid #2a2e37; border-radius: 8px; background: #1b1e24; }
+  .row-title { font-size: 13px; font-weight: 500; }
+  .row-status { font-size: 12px; color: #4ade80; }
+  .start { width: 100%; padding: 11px; border: none; border-radius: 8px; background: #4f46e5; color: #fff; font-size: 14px; font-weight: 600; }
+  .caption {
+    position: absolute;
+    left: 40px; bottom: 40px;
+    padding: 10px 14px;
+    background: rgba(22,24,29,0.92);
+    border: 1px solid #2a2e37;
+    border-radius: 10px;
+    color: #9aa1ad;
+    font-size: 12px;
+    max-width: 420px;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="browser">
+      <div class="chrome-bar">
+        <div class="dot red"></div>
+        <div class="dot yellow"></div>
+        <div class="dot green"></div>
+        <div class="url-bar">localhost:5173 — dashboard</div>
+        <div class="ext-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="logo-title-ss1"><title id="logo-title-ss1">BugToPrompt icon</title>
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9 12l2 2 4-4"></path>
+          </svg>
+        </div>
+      </div>
+      <div class="page-body">
+        <div class="app-card">
+          <h2>Team dashboard</h2>
+          <p>Your local dev app, unmodified. BugToPrompt overlays capture UI on top.</p>
+          <div class="skeleton w80"></div>
+          <div class="skeleton w60"></div>
+          <div class="skeleton w40"></div>
+        </div>
+        <div class="popup">
+          <div class="head">
+            <h1>BugToPrompt</h1>
+            <span class="pill">Sidecar ready</span>
+          </div>
+          <p class="target">Target: dashboard · main</p>
+          <div class="row">
+            <span class="row-title">Voice narration</span>
+            <span class="row-status">Ready</span>
+          </div>
+          <div class="row">
+            <span class="row-title">Screen capture</span>
+            <span class="row-status">Ready</span>
+          </div>
+          <button type="button" class="start">Start capture</button>
+        </div>
+        <div class="caption">"…and when I click submit, the form just silently fails…"</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

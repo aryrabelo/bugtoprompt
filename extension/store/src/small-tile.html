@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 440px; height: 280px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    background: linear-gradient(135deg, #4f46e5 0%, #4338ca 55%, #312e81 100%);
+    overflow: hidden;
+  }
+  .stage {
+    position: relative;
+    width: 440px; height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+  }
+  .glow {
+    position: absolute;
+    width: 360px; height: 360px;
+    top: -140px; right: -120px;
+    background: radial-gradient(circle, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0) 70%);
+  }
+  .mark {
+    width: 64px; height: 64px;
+    border-radius: 16px;
+    background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.28);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mark svg { width: 34px; height: 34px; }
+  .wordmark {
+    color: #ffffff;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .tagline {
+    color: rgba(255,255,255,0.82);
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+    max-width: 320px;
+    line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="glow"></div>
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-labelledby="logo-title-tile"><title id="logo-title-tile">BugToPrompt logo</title>
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M9 12l2 2 4-4"></path>
+      </svg>
+    </div>
+    <div class="wordmark">BugToPrompt</div>
+    <div class="tagline">Capture a bug. Get an AI-ready prompt.</div>
+  </div>
+</body>
+</html>

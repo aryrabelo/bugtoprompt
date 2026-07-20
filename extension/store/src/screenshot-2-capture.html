@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1280px; height: 800px;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+    background: #0e1013;
+    overflow: hidden;
+  }
+  .stage { width: 1280px; height: 800px; display: flex; align-items: center; justify-content: center; }
+  .browser {
+    width: 1120px; height: 660px;
+    border-radius: 14px;
+    background: #16181d;
+    border: 1px solid #2a2e37;
+    box-shadow: 0 40px 100px rgba(0,0,0,0.5);
+    overflow: hidden;
+    position: relative;
+  }
+  .chrome-bar {
+    height: 46px;
+    background: #1b1e24;
+    border-bottom: 1px solid #2a2e37;
+    display: flex; align-items: center;
+    padding: 0 16px;
+    gap: 10px;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .dot.red { background: #f87171; }
+  .dot.yellow { background: #facc15; }
+  .dot.green { background: #4ade80; }
+  .url-bar {
+    margin-left: 14px;
+    flex: 1;
+    max-width: 460px;
+    height: 26px;
+    border-radius: 8px;
+    background: #22252c;
+    color: #9aa1ad;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+  }
+  .rec {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #2a1414;
+    border: 1px solid #512020;
+    color: #f87171;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .rec .dot2 { width: 7px; height: 7px; border-radius: 50%; background: #f87171; }
+  .page-body {
+    height: 614px;
+    background: #0e1013;
+    position: relative;
+    padding: 44px;
+  }
+  .app-card {
+    width: 900px;
+    padding: 30px;
+    border-radius: 12px;
+    background: #16181d;
+    border: 1px solid #2a2e37;
+    position: relative;
+  }
+  .app-card h2 { color: #e6e8ec; font-size: 20px; margin-bottom: 16px; }
+  .field { margin-bottom: 18px; }
+  .label { color: #9aa1ad; font-size: 12px; margin-bottom: 6px; }
+  .input { height: 38px; border-radius: 8px; background: #1b1e24; border: 1px solid #2a2e37; }
+  .btn-row { display: flex; gap: 12px; margin-top: 8px; }
+  .btn { padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+  .btn.primary { background: #4f46e5; color: #fff; }
+  .btn.ghost { background: transparent; border: 1px solid #2a2e37; color: #e6e8ec; }
+  .marker {
+    position: absolute;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: #4f46e5;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    border: 2px solid #ffffff;
+    box-shadow: 0 4px 12px rgba(79,70,229,0.5);
+  }
+  .m1 { top: 66px; left: 210px; }
+  .m2 { top: 200px; left: 150px; }
+  .m3 { bottom: 30px; left: 300px; }
+  .caption-bar {
+    position: absolute;
+    left: 44px; bottom: 44px;
+    right: 44px;
+    padding: 12px 16px;
+    background: rgba(22,24,29,0.94);
+    border: 1px solid #2a2e37;
+    border-radius: 10px;
+    color: #e6e8ec;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .caption-bar .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; flex-shrink: 0; }
+  .caption-bar .final { color: #e6e8ec; }
+  .caption-bar .interim { color: #6b7280; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="browser">
+      <div class="chrome-bar">
+        <div class="dot red"></div>
+        <div class="dot yellow"></div>
+        <div class="dot green"></div>
+        <div class="url-bar">localhost:5173 — checkout</div>
+        <div class="rec"><span class="dot2"></span>Capturing</div>
+      </div>
+      <div class="page-body">
+        <div class="app-card">
+          <h2>Checkout form</h2>
+          <div class="field"><div class="label">Card number</div><div class="input"></div></div>
+          <div class="field"><div class="label">Billing address</div><div class="input"></div></div>
+          <div class="btn-row">
+            <button type="button" class="btn primary">Submit</button>
+            <button type="button" class="btn ghost">Cancel</button>
+          </div>
+          <div class="marker m1">1</div>
+          <div class="marker m2">2</div>
+          <div class="marker m3">3</div>
+        </div>
+        <div class="caption-bar">
+          <span class="live-dot"></span>
+          <span class="final">Every time I hit submit here, nothing happens —</span>
+          <span class="interim">no error, no redirect…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
