@@ -1,7 +1,8 @@
 /**
- * One-shot STABLE release: verify → publish npm and move `latest` → pack the
- * extension zip → build the tray DMG, with ONE version across all three
- * (issue #92).
+ * One-shot STABLE release: verify → stamp the tray version → pack the extension
+ * zip → build the tray DMG → publish npm and move `latest`, with ONE version
+ * across all three (issue #92). Both artifacts are built BEFORE the irreversible
+ * publish so a build failure aborts before `@latest` moves (cubic #109 P1).
  *
  * package.json `version` is the single source of truth. The extension manifest
  * is already stamped from it (extension/scripts/build.mjs); this script also
