@@ -200,4 +200,63 @@ describe("initOnboarding — DOM wiring", () => {
 			vi.unstubAllGlobals();
 		}
 	});
+
+	it("disables pro-save while pro-check is in flight so the two save paths can't clobber each other", async () => {
+		mountOnboardingDom();
+		const chromeApi = fakeChrome();
+		// Hold the session probe open so the in-flight guard is observable; a
+		// never-resolving stub would fail on the new proBusy guard AND leaves a
+		// concurrent pro-save click a no-op (no token clobber).
+		let releaseSession: ((r: Response) => void) | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				if (String(input).includes("/api/auth/get-session")) {
+					return new Promise<Response>((res) => {
+						releaseSession = res;
+					});
+				}
+				throw new Error("no network");
+			}),
+		);
+		try {
+			await initOnboarding(chromeApi);
+			const checkBtn = document.getElementById("pro-check");
+			const saveBtn = document.getElementById("pro-save");
+			const keyEl = document.getElementById("pro-key");
+			if (
+				!(checkBtn instanceof HTMLButtonElement) ||
+				!(saveBtn instanceof HTMLButtonElement) ||
+				!(keyEl instanceof HTMLInputElement)
+			) {
+				throw new Error("pro controls missing from fixture");
+			}
+			checkBtn.click();
+			await flushMicrotasks();
+			// pro-check is awaiting the held session → BOTH actions are locked.
+			expect(checkBtn.disabled).toBe(true);
+			expect(saveBtn.disabled).toBe(true);
+			// A concurrent save must be a no-op: no key is written while busy.
+			keyEl.value = "pasted-key";
+			saveBtn.click();
+			await flushMicrotasks();
+			expect((await chromeApi.storage.local.get(["proToken"])).proToken).toBe(
+				undefined,
+			);
+			// Resolve the session → its token wins and both actions re-enable.
+			releaseSession?.(
+				new Response(JSON.stringify({ session: { token: "tok" } }), {
+					status: 200,
+				}),
+			);
+			await flushMicrotasks();
+			expect((await chromeApi.storage.local.get(["proToken"])).proToken).toBe(
+				"tok",
+			);
+			expect(checkBtn.disabled).toBe(false);
+			expect(saveBtn.disabled).toBe(false);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });
