@@ -211,8 +211,11 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
 /// `POST /transcribe` — routes to whichever transcription engine
 /// `preflight`'s background probe found ready. `"local"` runs the real
 /// ffmpeg + `uvx parakeet-mlx` pipeline (`transcribe::local_transcribe`);
-/// `"assemblyai"` cloud relay is #60; `"unconfigured"` (uvx missing, no
-/// AssemblyAI key) degrades to a clear `501`, never a panic.
+/// the sidecar is Lite-only/local-only (owner decision 2026-07-20, closing
+/// #60/#61 — PRO cloud traffic now goes extension → `api.bugtoprompt.com`
+/// directly, never through this sidecar), so a resolved `"assemblyai"`
+/// provider or `"unconfigured"` state both degrade to a clear `501`
+/// pointing at cloud mode, never a panic.
 pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Response {
     let body = match read_json_body(req.into_body()).await {
         Ok(v) => v,
@@ -268,7 +271,7 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
         }
         "assemblyai" => json_response(
             StatusCode::NOT_IMPLEMENTED,
-            json!({ "error": "cloud transcription not implemented yet (see #60)" }),
+            json!({ "error": "cloud transcription is not available via the local sidecar; use cloud mode in the extension instead" }),
         ),
         _ => json_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -277,14 +280,16 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
     }
 }
 
-/// `POST /streaming-token` — Pro cloud relay is #60; always `501` here.
+/// `POST /streaming-token` — the sidecar is Lite-only/local-only (owner
+/// decision 2026-07-20, closing #60): PRO cloud relays never route through
+/// it, so this always returns a clear `501` pointing at cloud mode.
 pub async fn post_streaming_token(State(_state): State<AppState>, req: Request) -> Response {
     if let Err(resp) = read_json_body(req.into_body()).await {
         return resp;
     }
     json_response(
         StatusCode::NOT_IMPLEMENTED,
-        json!({ "error": "streaming token not implemented yet (see #60)" }),
+        json!({ "error": "streaming tokens are not available via the local sidecar; use cloud mode in the extension instead" }),
     )
 }
 

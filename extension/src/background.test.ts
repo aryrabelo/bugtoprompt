@@ -1038,15 +1038,29 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 
 			// A genuine envelope under the SAME wire id proves the failed
 			// attempt released its tentative claim rather than poisoning it.
+			// The garbage envelope's decrypt failure (and its `inflightIds`
+			// release) resolves via WebCrypto's async work queue, not a fixed
+			// number of macrotask ticks, so a single post-`tick()` dispatch of
+			// the genuine envelope can race the release and get silently
+			// dropped by the synchronous claim check — with no further
+			// listener() call to retry, that would hang the sole
+			// `vi.waitFor` below until its own timeout. Instead, re-dispatch
+			// the genuine envelope from inside `vi.waitFor`'s poll loop (a
+			// drop while the claim is still held is harmless/idempotent —
+			// see the same idempotent-retry pattern used by the round-3 P0
+			// regression test below) so it keeps
+			// retrying until the claim has actually been released.
 			const enc = await encryptWithAad(
 				{ op: "mintStreamingToken", payload: {} },
 				"btp:req:req-x",
 			);
-			listener({
-				source: stubWindow,
-				data: { type: "btp:pro-request", id: "req-x", enc },
-			} as unknown as MessageEvent);
-			await vi.waitFor(() => expect(posted).toHaveLength(1));
+			await vi.waitFor(() => {
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: "req-x", enc },
+				} as unknown as MessageEvent);
+				expect(posted).toHaveLength(1);
+			});
 			expect(sendMessage).toHaveBeenCalledTimes(1);
 			expect(posted[0]?.id).toBe("req-x");
 		} finally {
