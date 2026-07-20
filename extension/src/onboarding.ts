@@ -130,7 +130,9 @@ export async function initOnboarding(chromeApi: ChromeLike): Promise<void> {
 	liteRetryBtn.addEventListener("click", () => {
 		void detectLite();
 	});
-	await detectLite();
+	// Kick the Lite probe off in the background so a slow or unreachable tray
+	// never blocks wiring of the Pro and Finish steps below.
+	void detectLite();
 
 	// Step 2: Pro (cloud) sign-in.
 	let proActive = Boolean(config.proToken);
@@ -141,11 +143,19 @@ export async function initOnboarding(chromeApi: ChromeLike): Promise<void> {
 		proHintEl.textContent = 'Sign in on the dashboard, then click "check".';
 	});
 
-	let proChecking = false;
+	// pro-check (dashboard session) and pro-save (pasted key) both write
+	// proToken, so they are mutually exclusive: a shared guard disables BOTH
+	// while either is in flight, otherwise the slower request's token would
+	// clobber the credential the user actually chose.
+	let proBusy = false;
+	const setProBusy = (busy: boolean): void => {
+		proBusy = busy;
+		proCheckBtn.disabled = busy;
+		proSaveBtn.disabled = busy;
+	};
 	proCheckBtn.addEventListener("click", () => {
-		if (proChecking) return;
-		proChecking = true;
-		proCheckBtn.disabled = true;
+		if (proBusy) return;
+		setProBusy(true);
 		void (async () => {
 			try {
 				const token = await fetchProSession(PRO_BASE_URL, fetch);
@@ -160,17 +170,14 @@ export async function initOnboarding(chromeApi: ChromeLike): Promise<void> {
 			} catch {
 				proHintEl.textContent = "Could not check the session — try again.";
 			} finally {
-				proChecking = false;
-				proCheckBtn.disabled = false;
+				setProBusy(false);
 			}
 		})();
 	});
 
-	let proSaving = false;
 	proSaveBtn.addEventListener("click", () => {
-		if (proSaving) return;
-		proSaving = true;
-		proSaveBtn.disabled = true;
+		if (proBusy) return;
+		setProBusy(true);
 		void (async () => {
 			try {
 				const key = sanitizeProToken(proKeyEl.value);
@@ -185,8 +192,7 @@ export async function initOnboarding(chromeApi: ChromeLike): Promise<void> {
 			} catch {
 				proHintEl.textContent = "Could not save the key — try again.";
 			} finally {
-				proSaving = false;
-				proSaveBtn.disabled = false;
+				setProBusy(false);
 			}
 		})();
 	});
