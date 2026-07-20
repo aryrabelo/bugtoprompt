@@ -55,7 +55,7 @@ item blocks submission unless explicitly marked optional.
         (element role/name/selector/bounding-box — see
         `src/schema/index.ts` `interactiveElementSchema`), page URLs
         (`pageUrl` plus route-change events), user-selected page text
-        (`select` events, capped at 500 chars — see
+        (`select` events, each capped at 500 chars — see
         `src/overlay/timeline/eventTrack.ts` `MAX_SELECTED`), and — for
         Pro users only — account/session data sent to
         `api.bugtoprompt.com`.
