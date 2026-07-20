@@ -4,12 +4,9 @@
  *
  * Config priority (first truthy wins per field):
  *   1. data-* attrs on the <script> tag (data-base, data-modes, data-project-id,
- *      data-screenshot-mode, data-default-mode, data-assemblyai-key)
+ *      data-screenshot-mode, data-default-mode)
  *   2. window.__BUGTOPROMPT__
  *   3. BugToPrompt's own zero-config resolution (meta / server / fallback)
- *
- * `data-assemblyai-key` is not a BugToPromptProp — it is persisted to the
- * browser key-store at parse time so live transcription works without a backend.
  *
  * Auto-mounts on DOMContentLoaded unless window.__BUGTOPROMPT__.manual === true.
  * Always exposes window.BugToPrompt = { mount, unmount } for programmatic use.
@@ -19,7 +16,6 @@ import { createRoot } from "react-dom/client";
 import css from "../dist/bugtoprompt.css";
 import type { BugToPromptProps, OutputMode } from "./overlay/BugToPrompt";
 import { BugToPrompt } from "./overlay/BugToPrompt";
-import { saveAssemblyKey } from "./overlay/key-store";
 import type { ScreenshotMode } from "./overlay/useSession";
 
 // ---------------------------------------------------------------------------
@@ -50,9 +46,6 @@ function readScriptConfig(): Partial<BugToPromptProps> {
 	if (ds.defaultMode) cfg.defaultMode = ds.defaultMode as OutputMode;
 	if (ds.autoVoice) cfg.autoVoice = ds.autoVoice === "true";
 	if (ds.defaultOpen) cfg.defaultOpen = ds.defaultOpen === "true";
-	// Not a BugToPromptProp: persist the key client-side so the streaming-token
-	// resolver can mint v3 tokens directly against AssemblyAI without a backend.
-	if (ds.assemblyaiKey) saveAssemblyKey(ds.assemblyaiKey);
 	return cfg;
 }
 

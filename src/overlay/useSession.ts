@@ -28,7 +28,6 @@ import { assembleArtifact } from "./artifact/assemble";
 import { AudioCapture, type StoppedAudio } from "./audio/AudioCapture";
 import { StreamingTranscriber } from "./audio/StreamingTranscriber";
 import { debug } from "./debug";
-import { hasStoredKey, saveAssemblyKey } from "./key-store";
 import {
 	loadSession,
 	loadShots,
@@ -67,13 +66,6 @@ export interface UseSessionResult {
 	markCount: number;
 	elapsedMs: number;
 	streaming: boolean;
-	/** True when live transcription could not start because no usable streaming
-	 *  token / API key resolved — prompt the user to paste an AssemblyAI key. */
-	needsKey: boolean;
-	/** Reactive mirror of hasStoredKey(): true once a usable streaming
-	 *  credential is configured for this tab. Flips on after provideKey saves a
-	 *  key so the idle key-prompt hides immediately. */
-	hasKey: boolean;
 	/** Incremented after each grab resolves — drives the Shutter flash. */
 	flashTick: number;
 	/** Ordered thumbnails for click screenshots, one per grabbed click, in click
@@ -103,10 +95,6 @@ export interface UseSessionResult {
 	editSegment(index: number, text: string): void;
 	submitIssue(override?: SessionBinding): Promise<void>;
 	reset(): void;
-	/** Persist an AssemblyAI key; if recording, attempt to go live immediately.
-	 *  Resolves true iff live transcription engaged (or the key was stored OK
-	 *  while idle). */
-	provideKey(key: string): Promise<boolean>;
 	voiceEnabled: boolean;
 	enableVoice(): Promise<void>;
 }
@@ -436,8 +424,6 @@ export function useSession(
 	const [markCount, setMarkCount] = useState(0);
 	const [elapsedMs, setElapsedMs] = useState(0);
 	const [streaming, setStreaming] = useState(false);
-	const [needsKey, setNeedsKey] = useState(false);
-	const [hasKey, setHasKey] = useState<boolean>(() => hasStoredKey());
 	const [flashTick, setFlashTick] = useState(0);
 	const [clickPreviews, setClickPreviews] = useState<
 		Array<{ clickNumber: number; screenshotRef: string; url: string }>
@@ -577,7 +563,7 @@ export function useSession(
 
 	/**
 	 * Build and open a StreamingTranscriber wired to the standard partial/final
-	 * handlers. Shared by start(), provideKey(), and the rehydrate effect so the
+	 * handlers. Shared by start() and the rehydrate effect so the
 	 * caption-handling logic lives in exactly one place. Resolves the connected
 	 * transcriber (or rejects if the ws fails to open).
 	 */
@@ -750,7 +736,6 @@ export function useSession(
 			setArtifact(undefined);
 			setMarkCount(0);
 			setElapsedMs(0);
-			setNeedsKey(false);
 			setSaveWarning(undefined);
 			setScreenshotsUnavailable(false);
 			// Reset click tracking + revoke any preview URLs from a prior session.
@@ -849,18 +834,15 @@ export function useSession(
 				transcriberRef.current = await makeTranscriber(token);
 				live = true;
 				debug("enableVoice: live transcription", { live });
-				setNeedsKey(false);
 			} catch (err) {
 				debug("enableVoice: streaming ws failed; batch fallback", err);
 				transcriberRef.current = undefined;
 				live = false;
-				setNeedsKey(true);
 			}
 		} catch (err) {
 			debug("enableVoice: streaming token unavailable; batch fallback", err);
 			transcriberRef.current = undefined;
 			live = false;
-			setNeedsKey(true);
 		}
 
 		try {
@@ -886,36 +868,6 @@ export function useSession(
 		setStreaming(live && audio.streaming);
 		debug("enableVoice: enabled", { streaming: audio.streaming });
 	}, [client, makeTranscriber]);
-
-	const provideKey = useCallback(
-		async (key: string): Promise<boolean> => {
-			saveAssemblyKey(key);
-			setHasKey(true);
-			const audio = audioRef.current;
-			if (recordingRef.current && !transcriberRef.current && audio) {
-				try {
-					const token = await resolveStreamingToken(
-						client,
-						bindingRef.current.workspaceId,
-					);
-					transcriberRef.current = await makeTranscriber(token);
-					const ok = await audio.attachLiveTranscription((f) =>
-						transcriberRef.current?.sendFrame(f),
-					);
-					setStreaming(ok);
-					setNeedsKey(!ok);
-					return ok;
-				} catch {
-					setNeedsKey(true);
-					return false;
-				}
-			}
-			// Not recording — the key is stored for the next capture.
-			setNeedsKey(false);
-			return true;
-		},
-		[client, makeTranscriber],
-	);
 
 	const stop = useCallback(async (): Promise<void> => {
 		setPhase("saving");
@@ -1117,7 +1069,6 @@ export function useSession(
 		setElapsedMs(0);
 		setError(undefined);
 		setIssueUrl(undefined);
-		setNeedsKey(false);
 		setSaveWarning(undefined);
 		setScreenshotsUnavailable(false);
 		// Revoke click-preview object URLs and clear the strip.
@@ -1219,8 +1170,6 @@ export function useSession(
 		markCount,
 		elapsedMs,
 		streaming,
-		needsKey,
-		hasKey,
 		flashTick,
 		clickPreviews,
 		clickCount,
@@ -1234,7 +1183,6 @@ export function useSession(
 		editSegment,
 		submitIssue,
 		reset,
-		provideKey,
 		voiceEnabled,
 		enableVoice,
 	};

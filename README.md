@@ -127,17 +127,14 @@ the host's Tailwind.
 
 - **Live transcription** uses AssemblyAI
   [Universal-3 Pro Streaming](https://www.assemblyai.com/docs/streaming/universal-3-pro).
-  Provide the auth one of three ways, in order of reliability: a **host endpoint
-  that mints a temporary token** (`mintStreamingToken`, via `window.__BUGTOPROMPT__`
-  or your `client` — the key stays server-side; the path that always works in a
-  plain browser); a **pre-minted `streamingToken`** injected out-of-band; or a
-  client-side **`assemblyAiKey`** — note AssemblyAI's v3 token endpoint does **not**
-  allow browser CORS (preflight returns 405), so this in-browser mint only succeeds
-  behind a CORS-permitting proxy and otherwise falls through silently. When none is
-  configured the overlay **prompts the user for a key** and persists it locally.
-  Without any of these, capture still works and the transcript is reconstructed by
-  `transcribeBatch` when a backend provides it. The streaming WebSocket itself is
-  not CORS-restricted — only the token mint is.
+  It authenticates via a short-lived token minted by our backend — the
+  customer never holds an AssemblyAI key. Provide the auth one of two ways:
+  a **host endpoint that mints a temporary token** (`mintStreamingToken`, via
+  `window.__BUGTOPROMPT__` or your `client` — the key stays server-side; the
+  path that always works in a plain browser), or a **pre-minted
+  `streamingToken`** injected out-of-band. Without either, capture still
+  works and the transcript is reconstructed by `transcribeBatch` when a
+  backend provides it.
 - **Screenshots** use `getDisplayMedia`; **audio** uses `getUserMedia`. On macOS
   desktop hosts (Tauri/Electron), grant **Microphone** and **Screen Recording**
   permissions/entitlements.
