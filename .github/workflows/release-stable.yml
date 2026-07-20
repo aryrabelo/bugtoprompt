@@ -1,0 +1,123 @@
+name: release-stable
+
+# Cuts ONE stable release across npm + extension zip + tray DMG in a single
+# irreversible-last pass (issues #92, #110). This runs the SAME one-shot cut an
+# operator runs locally — scripts/release-stable.mjs — so the CI path and the
+# manual path can never drift.
+#
+# Runner: macos-latest. The tray DMG links macOS-only crates (tao/tray-icon/
+# wry) and package-dmg.sh builds a universal binary with lipo, so the whole cut
+# must run on macOS; the same job also packs the extension zip (system `zip`)
+# and publishes to npm.
+#
+# Triggers: pushing a `v*` tag, or workflow_dispatch (optionally promoting to a
+# stable version first via the set-version input). This workflow NEVER runs on
+# pull_request, so npm + Apple secrets are only ever exposed on trusted events.
+#
+# HUMAN ACTION required before the first real run: add the `NPM_TOKEN` repo
+# secret (an npm automation token — no OTP prompt). Apple signing secrets are
+# OPTIONAL: with none set, package-dmg.sh produces an unsigned DMG and stays
+# green.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      set-version:
+        description: "Promote to this stable semver before releasing (e.g. 0.14.1). Empty = release the current package.json version."
+        required: false
+        default: ""
+
+permissions:
+  contents: write # create the GitHub Release and upload the built assets
+
+jobs:
+  release:
+    name: verify · npm publish · zip · dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          # Writes a project .npmrc whose authToken reads NODE_AUTH_TOKEN, which
+          # is how `npm publish` / `npm dist-tag add` inside release-stable.mjs
+          # authenticate against the registry below.
+          registry-url: "https://registry.npmjs.org"
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable channel
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: sidecar-tray
+      - run: pnpm install --frozen-lockfile
+
+      - name: Guard tag matches package.json version
+        # On a tag push, release-stable.mjs still reads the version from
+        # package.json — NOT the tag — so a `v1.2.3` tag on a repo whose
+        # package.json is 1.2.2 would silently publish 1.2.2 and move `@latest`
+        # (irreversible). Fail fast before any irreversible step. Skipped on
+        # workflow_dispatch, where the set-version input drives the version.
+        if: github.ref_type == 'tag'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$REF_NAME" != "$PKG" ]; then
+            echo "Tag $REF_NAME does not match package.json version $PKG." >&2
+            echo "Bump package.json to the stable version and re-tag first." >&2
+            exit 1
+          fi
+
+      - name: Stable release (verify → zip → dmg → npm publish + latest)
+        # release-stable.mjs runs verify + both artifact builds BEFORE the
+        # irreversible npm publish / `@latest` move (cubic #109 P1). Apple
+        # secrets are optional — package-dmg.sh falls back to an unsigned DMG
+        # when any is empty.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SET_VERSION: ${{ inputs.set-version }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$SET_VERSION" ]; then
+            node scripts/release-stable.mjs --set-version="$SET_VERSION"
+          else
+            node scripts/release-stable.mjs
+          fi
+
+      - name: Publish GitHub Release with assets
+        # Runs only after the npm cut succeeds; the zip + DMG already exist. On a
+        # tag push the tag is reused; on workflow_dispatch a v<version> tag is
+        # created from the current commit.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG="v${VERSION}"
+          fi
+          EXT_ZIP="extension/bugtoprompt-extension-${VERSION}.zip"
+          DMG="sidecar-tray/dist/BugToPrompt.dmg"
+          test -f "$EXT_ZIP"
+          test -f "$DMG"
+          gh release create "$TAG" \
+            --title "bugtoprompt ${VERSION}" \
+            --generate-notes \
+            "$EXT_ZIP" "$DMG" \
+          || gh release upload "$TAG" "$EXT_ZIP" "$DMG" --clobber
