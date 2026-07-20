@@ -238,6 +238,7 @@ interface RehydrateBag {
 	// ReturnType<typeof setInterval> is an allowed exception per ts-no-return-type
 	timerRef: { current: ReturnType<typeof setInterval> | undefined };
 	artifactRef: { current: CaptureArtifact | undefined };
+	pendingRef: { current: Pending | undefined };
 	// setters (called with direct values only, never with updater functions)
 	setArtifact: (v: CaptureArtifact | undefined) => void;
 	setTranscript: (v: TranscriptSegment[]) => void;
@@ -262,6 +263,7 @@ function restoreReviewing(
 	bag: Pick<
 		RehydrateBag,
 		| "artifactRef"
+		| "pendingRef"
 		| "setArtifact"
 		| "setTranscript"
 		| "setMarkCount"
@@ -284,6 +286,13 @@ function restoreReviewing(
 		transcriptionMode: "streaming",
 	});
 	bag.artifactRef.current = assembled;
+	// Rehydrate an empty pending payload so submitIssue (which guards on
+	// pendingRef) can still file after a mid-review reload: without this it stays
+	// undefined and filing silently no-ops. The media was already staged
+	// server-side at finalize; an empty re-upload only rewrites artifact.json
+	// (with any review-time caption/target edits) and leaves the staged
+	// audio/screenshots untouched (issue #105).
+	bag.pendingRef.current = { audioBase64: "", screenshotsBase64: [] };
 	bag.setArtifact(assembled);
 	bag.setTranscript([...session.transcript]);
 	bag.setMarkCount(session.snapshots.length);
@@ -1149,6 +1158,7 @@ export function useSession(
 				clickPreviewsRef,
 				timerRef,
 				artifactRef,
+				pendingRef,
 				setArtifact,
 				setTranscript,
 				setMarkCount,
