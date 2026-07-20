@@ -22,6 +22,36 @@ Chrome cannot install this automatically — it is a 1-minute manual step:
   **Start capture** — or press **⌘⇧Y** to toggle the overlay directly.
 - The overlay records numbered clicks (400×600 screenshots when you share
   **This tab**), voice narration, and files GitHub issues via the sidecar.
+- On any **non-localhost** site (staging, preview URLs, a bound `owner/repo`
+  domain) the popup shows **Enable on this site** first. Clicking it triggers a
+  one-time Chrome permission prompt scoped to **that origin only**; capture
+  starts once granted. `localhost` / `127.0.0.1` stay zero-config.
+
+## Site permissions (per-site model)
+
+BugToPrompt requests site access at capture time, not install time (issue #97):
+
+- **`host_permissions`** (granted at install, no prompt) is intentionally narrow
+  — `localhost`, `127.0.0.1`, and the hosted API only. This is what the Chrome
+  Web Store scrutinizes; keeping it narrow avoids the broad-host rejection path.
+- **`optional_host_permissions`** declares `http://*/*` + `https://*/*`. These
+  are **not** granted at install and produce **no install warning**. Chrome
+  requires a matching wildcard scheme here to let the extension request an
+  origin it only discovers at runtime
+  ([permissions API docs](https://developer.chrome.com/docs/extensions/reference/api/permissions)):
+  the popup calls `chrome.permissions.request({ origins: ["https://that.site/*"] })`
+  for the exact origin you are on — never a blanket grant.
+
+  The grant is per **host**, not per port: Chrome match patterns have no port
+  component, so enabling `https://that.site` covers every port on that host
+  (the narrowest unit Chrome can grant).
+
+  For the Web Store "broad host permission" purpose disclosure, the
+  justification is: *the extension enables per-site bug capture on arbitrary
+  developer/preview hosts the user chooses, each granted individually via a
+  runtime prompt.* The wildcard is the mechanism for that runtime prompt, not a
+  standing grant. `manifest`/`optional_host_permissions` are pinned by
+  `src/permissions.test.ts` so neither half drifts.
 
 ## Requirements
 

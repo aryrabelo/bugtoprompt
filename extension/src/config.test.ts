@@ -287,13 +287,17 @@ describe("classifyPage", () => {
 });
 
 describe("originPattern", () => {
-	it("builds an origin/* pattern and rejects junk", () => {
+	it("builds a port-less scheme://host/* pattern and rejects junk", () => {
 		expect(originPattern("https://example.com/a/b?q=1")).toBe(
 			"https://example.com/*",
 		);
-		expect(originPattern("http://localhost:3000/x")).toBe(
-			"http://localhost:3000/*",
+		// Chrome match patterns have no port component: a dev host on a custom
+		// port must still yield a valid, port-less pattern or permissions.request
+		// rejects it and capture never starts on that site (issue #97).
+		expect(originPattern("https://staging.example.com:8443/x")).toBe(
+			"https://staging.example.com/*",
 		);
+		expect(originPattern("http://localhost:3000/x")).toBe("http://localhost/*");
 		expect(originPattern("not a url")).toBeNull();
 		expect(originPattern(undefined)).toBeNull();
 	});
