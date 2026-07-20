@@ -262,20 +262,17 @@ export function parseVersion(s: string): [number, number, number] | null {
 	const core = s.trim().replace(/^v+/, "");
 	const withoutSuffix = core.split(/[-+]/)[0] ?? "";
 	const parts = withoutSuffix.split(".");
-	if (parts.length > 3 || parts[0] === "") return null;
-	const [major, minor, patch] = [
-		parts[0],
-		parts[1] ?? "0",
-		parts[2] ?? "0",
-	].map(Number);
-	if (
-		!Number.isFinite(major) ||
-		!Number.isFinite(minor) ||
-		!Number.isFinite(patch)
-	) {
-		return null;
+	if (parts.length > 3) return null;
+	// Each present segment must be plain decimal digits — Number() would
+	// otherwise accept "1e3" (→ 1000), "0x1f", "  1 " etc. and silently trust a
+	// malformed version as current, suppressing the update CTA.
+	const out: [number, number, number] = [0, 0, 0];
+	for (let i = 0; i < 3; i++) {
+		const p = parts[i] ?? "0";
+		if (!/^\d+$/.test(p)) return null;
+		out[i] = Number(p);
 	}
-	return [major, minor, patch];
+	return out;
 }
 
 /** True iff `candidate` parses to a version >= `min`. False if either side
@@ -321,12 +318,18 @@ export async function probeTray(
 			signal = ctrl.signal;
 		}
 	}
-	let res: Response;
 	try {
 		const url = origin
 			? `${baseUrl}/health?origin=${encodeURIComponent(origin)}`
 			: `${baseUrl}/health`;
-		res = await (signal ? fetchImpl(url, { signal }) : fetchImpl(url));
+		const res = await (signal ? fetchImpl(url, { signal }) : fetchImpl(url));
+		if (!res.ok) return { transport: "http-error", status: res.status };
+		try {
+			const body = await res.json();
+			return { transport: "ok", body };
+		} catch {
+			return { transport: "ok", body: undefined };
+		}
 	} catch (err) {
 		// AbortSignal.timeout() rejects with a "TimeoutError" DOMException, while
 		// a manual AbortController.abort() (older-Chrome fallback) rejects with
@@ -337,14 +340,10 @@ export async function probeTray(
 			? { transport: "timeout" }
 			: { transport: "neterror" };
 	} finally {
+		// Keep the AbortController-fallback timer armed through res.json() so a
+		// tray that sends headers then stalls the body still aborts; clear it
+		// only once parsing (or an error return) is done.
 		window.clearTimeout(timer);
-	}
-	if (!res.ok) return { transport: "http-error", status: res.status };
-	try {
-		const body = await res.json();
-		return { transport: "ok", body };
-	} catch {
-		return { transport: "ok", body: undefined };
 	}
 }
 
@@ -381,6 +380,22 @@ export function classifyTray(probe: TrayProbe): TrayStatus {
 	}
 	const version = typeof r.version === "string" ? r.version : null;
 	const health = parseHealthPayload(r);
+	if (health === null) {
+		// A null health is only legitimate for the exact token-gated minimal
+		// shape ({ ok, version }). If the body carries any full-payload field
+		// but failed to parse, the tray is broken, not degraded-but-healthy —
+		// surface it as unreachable so the restart action shows.
+		const FULL_KEYS = [
+			"issues",
+			"repos",
+			"gh",
+			"transcription",
+			"originAllowed",
+		];
+		if (FULL_KEYS.some((k) => k in r)) {
+			return { kind: "unreachable", health: null, version: null };
+		}
+	}
 	if (version === null || !isVersionAtLeast(version, MIN_TRAY_VERSION)) {
 		return { kind: "outdated", health, version };
 	}
@@ -710,11 +725,14 @@ export async function initPopup(chromeApi: ChromeLike): Promise<void> {
 	if (trayActionEl instanceof HTMLElement) {
 		renderTrayAction(trayActionEl, trayAction(status));
 	}
-	// When the sidecar can't be reached for a bound non-localhost site, the most
-	// common cause is its origin allowlist — surface the exact env fix. Never
-	// clobber a newer toggle/injection error the user just triggered.
+	// Surface the CORS/allowlist fix ONLY when the tray returned a full health
+	// payload that explicitly says this origin is disallowed. A null health
+	// (token-gated minimal payload, or an unreachable/not-installed tray) must
+	// NOT trigger it — a reachable token-protected tray would otherwise wrongly
+	// tell permitted users to change their allowlist. Never clobber a newer
+	// toggle/injection error the user just triggered.
 	if (
-		!status.health?.originAllowed &&
+		status.health?.originAllowed === false &&
 		kind === "http" &&
 		(granted || active) &&
 		!errEl.textContent

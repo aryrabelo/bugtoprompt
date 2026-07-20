@@ -463,6 +463,15 @@ describe("parseVersion / isVersionAtLeast", () => {
 		expect(parseVersion("1.2.3.4")).toBeNull();
 	});
 
+	it("rejects non-decimal numeric notations Number() would otherwise accept", () => {
+		// 1e3 → 1000 under Number(); a version gate must not trust it as current.
+		expect(parseVersion("1e3")).toBeNull();
+		expect(parseVersion("1e3.0.0")).toBeNull();
+		expect(parseVersion("0x1f.0.0")).toBeNull();
+		expect(parseVersion(" 1 .0.0")).toBeNull();
+		expect(isVersionAtLeast("1e3", "0.1.0")).toBe(false);
+	});
+
 	it("compares candidate >= min tuple-wise", () => {
 		expect(isVersionAtLeast("0.1.0", "0.1.0")).toBe(true);
 		expect(isVersionAtLeast("0.2.0", "0.1.0")).toBe(true);
@@ -569,6 +578,20 @@ describe("classifyTray", () => {
 	it("treats a degraded body with no version as outdated", () => {
 		const status = classifyTray({ transport: "ok", body: { ok: true } });
 		expect(status).toEqual({ kind: "outdated", health: null, version: null });
+	});
+	it("treats a full-shaped body that fails to parse as unreachable, not ready", () => {
+		// A body that carries full-payload keys but is malformed (issues is not a
+		// boolean) must NOT be mistaken for the token-gated minimal payload and
+		// shown as ready — it's a broken tray, so the restart action should show.
+		const status = classifyTray({
+			transport: "ok",
+			body: { ...fullPayload, issues: "yes", version: "0.1.0" },
+		});
+		expect(status).toEqual({
+			kind: "unreachable",
+			health: null,
+			version: null,
+		});
 	});
 });
 
