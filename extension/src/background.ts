@@ -357,14 +357,17 @@ export async function injectProRelay(
 			const processedQueue: string[] = [];
 			const MAX_PROCESSED_IDS = 10_000;
 			// One courtesy fast-fail per saturation episode (issue #88): armed
-			// each time a request actually gets a claim (the pipe has room),
-			// spent when we emit an error while saturated. So a genuine request
-			// caught the instant inflight fills rejects fast instead of hanging
-			// on the client's 120s timeout — WITHOUT letting a secret-less
-			// flood turn every message into an AES-GCM encrypt + postMessage
-			// (that would re-introduce the per-garbage work #83 deliberately
-			// avoided). After the first, saturated requests are dropped
-			// silently until the flood drains (fail closed).
+			// only when a claim enters an EMPTY inflight set — i.e. the start of
+			// a fresh episode after the pipe fully drained — and spent when we
+			// emit an error while saturated. So a genuine request caught the
+			// instant inflight fills rejects fast instead of hanging on the
+			// client's 120s timeout, WITHOUT letting a secret-less flood turn
+			// every message into an AES-GCM encrypt + postMessage: re-arming on
+			// every admit would let sustained near-cap traffic retrigger an
+			// error each time a slot briefly opens (cubic PR #108). After the
+			// first, saturated requests are dropped silently until the flood
+			// fully drains (fail closed) — re-introducing the per-garbage work
+			// #83 deliberately avoided is exactly what this bound prevents.
 			let saturationErrorArmed = true;
 			const markProcessed = (id: string): void => {
 				inflightIds.delete(id);
@@ -507,9 +510,14 @@ export async function injectProRelay(
 						}
 						return;
 					}
-					// The pipe has room: re-arm the courtesy fast-fail so the
-					// next saturation episode gets one error too.
-					saturationErrorArmed = true;
+					// Re-arm the courtesy fast-fail only when this claim enters an
+					// EMPTY pipe — i.e. a fresh saturation episode after inflight
+					// has fully drained. Re-arming on every admit (incl. an
+					// unverified garbage claim) would let sustained near-cap
+					// traffic retrigger an encrypted error each time a slot
+					// briefly opens, defeating the one-per-flood crypto/postMessage
+					// bound (cubic PR #108 finding).
+					if (inflightIds.size === 0) saturationErrorArmed = true;
 					inflightIds.add(id); // tentative claim before the async decrypt
 					void handleEncryptedRequest(id, enc as { iv: string; data: string });
 					return;
