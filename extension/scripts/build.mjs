@@ -41,6 +41,7 @@ await build({
 		content: join(extDir, "src/content.ts"),
 		popup: join(extDir, "src/popup.ts"),
 		options: join(extDir, "src/options.ts"),
+		onboarding: join(extDir, "src/onboarding.ts"),
 	},
 	format: ["iife"],
 	globalName: "BugToPromptExt",
@@ -81,7 +82,14 @@ writeFileSync(
 	`${JSON.stringify(manifest, null, "\t")}\n`,
 );
 
-for (const file of ["popup.html", "popup.css", "options.html", "options.css"]) {
+for (const file of [
+	"popup.html",
+	"popup.css",
+	"options.html",
+	"options.css",
+	"onboarding.html",
+	"onboarding.css",
+]) {
 	copyFileSync(join(extDir, file), join(dist, file));
 }
 cpSync(join(extDir, "icons"), join(dist, "icons"), { recursive: true });

@@ -342,6 +342,10 @@ export interface ChromeLike {
 		sendMessage?(msg: unknown): Promise<unknown>;
 		getURL?(path: string): string;
 		openOptionsPage?(): Promise<void> | void;
+		/** Fired once when the extension is installed or updated — used to open first-run onboarding. */
+		onInstalled?: {
+			addListener(cb: (details: { reason: string }) => void): void;
+		};
 	};
 }
 
