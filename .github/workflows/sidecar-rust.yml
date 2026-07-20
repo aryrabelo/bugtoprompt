@@ -29,3 +29,27 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  rust-macos:
+    name: clippy · test (macOS)
+    # The LaunchAgent safety tests in launch.rs (unload, final-state, race —
+    # see the `#[cfg(target_os = "macos")] mod macos { ... }` block) only
+    # compile on macOS, so the ubuntu `rust` job above never runs — or even
+    # clippy-checks — them. This lane is the only place that cfg-gated code is
+    # exercised in CI (#89 P2). Production fail-safe behavior was already
+    # reviewed in #85; this closes the coverage gap. `fmt` is platform-
+    # independent and already checked above, so it is not repeated here.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: sidecar-rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sidecar-rust
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
