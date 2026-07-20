@@ -265,6 +265,7 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
                 ),
             }
         }
+
         _ => json_response(
             StatusCode::NOT_IMPLEMENTED,
             json!({ "error": "local transcription not configured (install uvx + parakeet-mlx), or use cloud mode (api.bugtoprompt.com)" }),

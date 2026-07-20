@@ -312,7 +312,7 @@ fn artifact_roundtrip_persists_files() {
 }
 
 #[test]
-fn stubs_return_501() {
+fn streaming_token_returns_clear_cloud_mode_error() {
     let server = ServerGuard::spawn(HashMap::from([
         ("BUGTOPROMPT_ENABLE_ISSUES", "1"),
         ("BUGTOPROMPT_REPOS", "acme/web"),
