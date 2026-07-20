@@ -60,6 +60,36 @@ export interface HealthPayload {
 	originAllowed: boolean;
 }
 
+/** Validate an already-parsed /health body against the exact contract. Shared
+ *  by fetchHealth (full probe) and classifyTray (tray-state probe) so both
+ *  paths reject the same malformed shapes. */
+export function parseHealthPayload(
+	r: Record<string, unknown>,
+): HealthPayload | null {
+	if (r.ok !== true) return null;
+	if (typeof r.issues !== "boolean") return null;
+	if (typeof r.repos !== "number") return null;
+	if (r.gh !== "ready" && r.gh !== "missing" && r.gh !== "unauthenticated") {
+		return null;
+	}
+	if (
+		r.transcription !== "ready" &&
+		r.transcription !== "local" &&
+		r.transcription !== "unconfigured"
+	) {
+		return null;
+	}
+	if (typeof r.originAllowed !== "boolean") return null;
+	return {
+		ok: true,
+		issues: r.issues,
+		repos: r.repos,
+		gh: r.gh,
+		transcription: r.transcription,
+		originAllowed: r.originAllowed,
+	};
+}
+
 /** Fetch and validate the sidecar /health contract. Returns null when down. */
 export async function fetchHealth(
 	baseUrl: string,
@@ -101,29 +131,7 @@ export async function fetchHealth(
 		return null;
 	}
 	if (typeof raw !== "object" || raw === null) return null;
-	const r = raw as Record<string, unknown>;
-	if (r.ok !== true) return null;
-	if (typeof r.issues !== "boolean") return null;
-	if (typeof r.repos !== "number") return null;
-	if (r.gh !== "ready" && r.gh !== "missing" && r.gh !== "unauthenticated") {
-		return null;
-	}
-	if (
-		r.transcription !== "ready" &&
-		r.transcription !== "local" &&
-		r.transcription !== "unconfigured"
-	) {
-		return null;
-	}
-	if (typeof r.originAllowed !== "boolean") return null;
-	return {
-		ok: true,
-		issues: r.issues,
-		repos: r.repos,
-		gh: r.gh,
-		transcription: r.transcription,
-		originAllowed: r.originAllowed,
-	};
+	return parseHealthPayload(raw as Record<string, unknown>);
 }
 
 /**
@@ -231,6 +239,223 @@ export function buildRows(
 }
 
 // ---------------------------------------------------------------------------
+// Tray state (issue #99) — distinguish "no tray installed" from "tray
+// installed but unreachable" from "tray installed but too old to trust", so
+// the popup can point the user at the right fix instead of one generic
+// "Sidecar offline" pill. See the shared contract in sidecar-rust's /health
+// handler: a version-less body predates this contract and counts as outdated.
+// ---------------------------------------------------------------------------
+
+/** GitHub release page offering the current tray build. */
+export const RELEASES_URL =
+	"https://github.com/aryrabelo/bugtoprompt/releases/latest";
+/** The tray release at which /health started reporting `version`. A body
+ *  missing `version` predates this contract and is therefore outdated. */
+export const MIN_TRAY_VERSION = "0.1.0";
+
+/** Parse a `vMAJOR.MINOR.PATCH` (or shorter `vMAJOR[.MINOR]`) string into a
+ *  comparable triple, mirroring sidecar-rust/src/updater.rs's parse_version:
+ *  a leading `v` and any pre-release/build suffix (`-rc.1`, `+meta`) are
+ *  dropped; a non-numeric or missing major segment, or a fourth component,
+ *  fails parsing. */
+export function parseVersion(s: string): [number, number, number] | null {
+	const core = s.trim().replace(/^v+/, "");
+	const withoutSuffix = core.split(/[-+]/)[0] ?? "";
+	const parts = withoutSuffix.split(".");
+	if (parts.length > 3) return null;
+	// Each present segment must be plain decimal digits — Number() would
+	// otherwise accept "1e3" (→ 1000), "0x1f", "  1 " etc. and silently trust a
+	// malformed version as current, suppressing the update CTA.
+	const out: [number, number, number] = [0, 0, 0];
+	for (let i = 0; i < 3; i++) {
+		const p = parts[i] ?? "0";
+		if (!/^\d+$/.test(p)) return null;
+		out[i] = Number(p);
+	}
+	return out;
+}
+
+/** True iff `candidate` parses to a version >= `min`. False if either side
+ *  fails to parse (never treat garbage as "up to date"). */
+export function isVersionAtLeast(candidate: string, min: string): boolean {
+	const c = parseVersion(candidate);
+	const m = parseVersion(min);
+	if (!c || !m) return false;
+	for (let i = 0; i < 3; i++) {
+		if (c[i] !== m[i]) return c[i] > m[i];
+	}
+	return true;
+}
+
+/** Raw outcome of a single GET {baseUrl}/health probe, before the tray
+ *  contract (version, ok, etc.) is interpreted. */
+export type TrayProbe =
+	| { transport: "neterror" }
+	| { transport: "timeout" }
+	| { transport: "http-error"; status: number }
+	| { transport: "ok"; body: unknown };
+
+/** Probe /health without decoding the health contract — classifyTray decides
+ *  whether the tray is missing, outdated, unreachable, or ready. Reuses
+ *  fetchHealth's bounded-signal pattern so a hung tray never hangs the popup. */
+export async function probeTray(
+	baseUrl: string,
+	fetchImpl: typeof fetch,
+	timeoutMs?: number,
+	origin?: string,
+): Promise<TrayProbe> {
+	let signal: AbortSignal | undefined;
+	let timer: number | undefined;
+	if (typeof timeoutMs === "number") {
+		if (
+			typeof AbortSignal !== "undefined" &&
+			typeof AbortSignal.timeout === "function"
+		) {
+			signal = AbortSignal.timeout(timeoutMs);
+		} else if (typeof AbortController !== "undefined") {
+			const ctrl = new AbortController();
+			timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
+			signal = ctrl.signal;
+		}
+	}
+	try {
+		const url = origin
+			? `${baseUrl}/health?origin=${encodeURIComponent(origin)}`
+			: `${baseUrl}/health`;
+		const res = await (signal ? fetchImpl(url, { signal }) : fetchImpl(url));
+		if (!res.ok) return { transport: "http-error", status: res.status };
+		try {
+			const body = await res.json();
+			return { transport: "ok", body };
+		} catch {
+			return { transport: "ok", body: undefined };
+		}
+	} catch (err) {
+		// AbortSignal.timeout() rejects with a "TimeoutError" DOMException, while
+		// a manual AbortController.abort() (older-Chrome fallback) rejects with
+		// "AbortError" — both mean the tray was listening-or-slow, not absent, so
+		// map either to "timeout". Any other throw is a connection failure.
+		const name = (err as Error)?.name;
+		return name === "AbortError" || name === "TimeoutError"
+			? { transport: "timeout" }
+			: { transport: "neterror" };
+	} finally {
+		// Keep the AbortController-fallback timer armed through res.json() so a
+		// tray that sends headers then stalls the body still aborts; clear it
+		// only once parsing (or an error return) is done.
+		window.clearTimeout(timer);
+	}
+}
+
+export type TrayStatusKind =
+	| "ready"
+	| "outdated"
+	| "unreachable"
+	| "not-installed";
+
+export interface TrayStatus {
+	kind: TrayStatusKind;
+	health: HealthPayload | null;
+	version: string | null;
+}
+
+/** Classify a probe into one of the four popup-visible tray states per the
+ *  shared contract: connection refused means no tray is running at all,
+ *  while a timeout or non-2xx means one IS listening but not answering
+ *  cleanly — those get different copy (install vs. restart). */
+export function classifyTray(probe: TrayProbe): TrayStatus {
+	if (probe.transport === "neterror") {
+		return { kind: "not-installed", health: null, version: null };
+	}
+	if (probe.transport === "timeout" || probe.transport === "http-error") {
+		return { kind: "unreachable", health: null, version: null };
+	}
+	const body = probe.body;
+	if (typeof body !== "object" || body === null) {
+		return { kind: "unreachable", health: null, version: null };
+	}
+	const r = body as Record<string, unknown>;
+	if (r.ok !== true) {
+		return { kind: "unreachable", health: null, version: null };
+	}
+	const version = typeof r.version === "string" ? r.version : null;
+	const health = parseHealthPayload(r);
+	if (health === null) {
+		// A null health is only legitimate for the exact token-gated minimal
+		// shape ({ ok, version }). If the body carries any full-payload field
+		// but failed to parse, the tray is broken, not degraded-but-healthy —
+		// surface it as unreachable so the restart action shows.
+		const FULL_KEYS = [
+			"issues",
+			"repos",
+			"gh",
+			"transcription",
+			"originAllowed",
+		];
+		if (FULL_KEYS.some((k) => k in r)) {
+			return { kind: "unreachable", health: null, version: null };
+		}
+	}
+	if (version === null || !isVersionAtLeast(version, MIN_TRAY_VERSION)) {
+		return { kind: "outdated", health, version };
+	}
+	return { kind: "ready", health, version };
+}
+
+export function trayPill(status: TrayStatus): StatusPill {
+	switch (status.kind) {
+		case "ready":
+			// A ready status with a null health is the token-gated minimal
+			// liveness response ({ ok, version }) — reachable and current, just
+			// without diagnostics. Show a plain "Sidecar ready" instead of
+			// delegating to healthPill(null), which would say "Sidecar offline".
+			return status.health
+				? healthPill(status.health)
+				: { label: "Sidecar ready", tone: "ok" };
+		case "outdated":
+			return { label: "Tray outdated", tone: "warn" };
+		case "unreachable":
+			return { label: "Tray unreachable", tone: "down" };
+		case "not-installed":
+			return { label: "Tray not installed", tone: "down" };
+	}
+}
+
+export interface TrayAction {
+	title: string;
+	hint: string;
+	url?: string;
+}
+
+/** Actionable call-out for a non-ready tray state, or null when ready (no
+ *  action needed). `url` is present only when there's something to download —
+ *  "unreachable" means a tray IS installed, so a restart is the fix, not a
+ *  download. */
+export function trayAction(status: TrayStatus): TrayAction | null {
+	switch (status.kind) {
+		case "not-installed":
+			return {
+				title: "Install BugToPrompt",
+				hint: "Install the BugToPrompt tray, then reopen this popup.",
+				url: RELEASES_URL,
+			};
+		case "outdated":
+			return {
+				title: "Update BugToPrompt",
+				hint: `Your tray${status.version ? ` (v${status.version})` : ""} is out of date. Update to keep capture working.`,
+				url: RELEASES_URL,
+			};
+		case "unreachable":
+			return {
+				title: "Restart the tray",
+				hint: "The tray is installed but not responding on 127.0.0.1:4127. Restart it, then reopen this popup.",
+			};
+		case "ready":
+			return null;
+	}
+}
+
+// ---------------------------------------------------------------------------
 // DOM wiring (skipped under jsdom/tests where there is no popup document)
 // ---------------------------------------------------------------------------
 
@@ -259,6 +484,39 @@ function renderRows(list: HTMLElement, rows: CapabilityRow[]): void {
 		item.append(title, status);
 		list.appendChild(item);
 	}
+}
+
+/** Render (or clear) the tray-state call-out. Exported for direct testing —
+ *  unlike renderPill/renderRows, its branching (CTA vs. no CTA) is worth
+ *  covering without going through the full initPopup DOM flow. */
+export function renderTrayAction(
+	el: HTMLElement,
+	action: TrayAction | null,
+): void {
+	if (!action) {
+		el.replaceChildren();
+		el.hidden = true;
+		return;
+	}
+	const title = document.createElement("span");
+	title.className = "tray-action-title";
+	title.textContent = action.title;
+	const hint = document.createElement("span");
+	hint.className = "tray-action-hint";
+	hint.textContent = action.hint;
+	const children: HTMLElement[] = [title, hint];
+	if (action.url) {
+		const cta = document.createElement("a");
+		cta.className = "tray-action-cta";
+		cta.href = action.url;
+		cta.target = "_blank";
+		cta.rel = "noopener noreferrer";
+		cta.textContent = action.title;
+		children.push(cta);
+	}
+	el.replaceChildren(...children);
+	el.dataset.kind = action.url ? "cta" : "info";
+	el.hidden = false;
 }
 
 export async function initPopup(chromeApi: ChromeLike): Promise<void> {
@@ -445,9 +703,10 @@ export async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		});
 	}
 
-	// Sidecar discovery + health decorate the pill/capability rows only; they run
-	// after the button is wired so a slow endpoint never blocks capture. Each
-	// probe is bounded so a stalled /health cannot freeze the popup either.
+	// Sidecar discovery + tray probe decorate the pill/capability rows/action
+	// call-out only; they run after the button is wired so a slow endpoint
+	// never blocks capture. probeTray is bounded so a stalled tray cannot
+	// freeze the popup either.
 	const HEALTH_TIMEOUT_MS = 4000;
 	const timedFetch: typeof fetch = (input, init) =>
 		fetch(input, {
@@ -459,19 +718,27 @@ export async function initPopup(chromeApi: ChromeLike): Promise<void> {
 		timedFetch,
 	);
 	targetEl.textContent = baseUrl;
-	const health = await fetchHealth(
+	const probe = await probeTray(
 		baseUrl,
 		timedFetch,
 		HEALTH_TIMEOUT_MS,
 		pageOrigin(tab?.url),
 	);
-	renderPill(pillEl, healthPill(health));
-	renderRows(rowsEl, buildRows(config, health));
-	// When the sidecar can't be reached for a bound non-localhost site, the most
-	// common cause is its origin allowlist — surface the exact env fix. Never
-	// clobber a newer toggle/injection error the user just triggered.
+	const status = classifyTray(probe);
+	renderPill(pillEl, trayPill(status));
+	renderRows(rowsEl, buildRows(config, status.health));
+	const trayActionEl = document.getElementById("tray-action");
+	if (trayActionEl instanceof HTMLElement) {
+		renderTrayAction(trayActionEl, trayAction(status));
+	}
+	// Surface the CORS/allowlist fix ONLY when the tray returned a full health
+	// payload that explicitly says this origin is disallowed. A null health
+	// (token-gated minimal payload, or an unreachable/not-installed tray) must
+	// NOT trigger it — a reachable token-protected tray would otherwise wrongly
+	// tell permitted users to change their allowlist. Never clobber a newer
+	// toggle/injection error the user just triggered.
 	if (
-		!health?.originAllowed &&
+		status.health?.originAllowed === false &&
 		kind === "http" &&
 		(granted || active) &&
 		!errEl.textContent
