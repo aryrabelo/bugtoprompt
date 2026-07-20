@@ -140,6 +140,13 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
 
     let dir = state.config.captures_root.join(session_id);
 
+    // Serialize the read-guard-through-write critical section (cubic #133 P1):
+    // without this, two concurrent same-session saves could both pass the
+    // downgrade guard below and then interleave writes, letting a stale
+    // `bytes:0` clobber a finalized `bytes>0`. Held to end of handler so all of
+    // this session's writes are serialized. The Node reference is already
+    // race-free — its guard+write critical section is fully synchronous.
+    let _save_guard = state.artifact_save_lock.lock().await;
     // #124 belt-and-suspenders: a re-save must never DOWNGRADE finalized audio
     // metadata (bytes>0 -> 0). #112 fixes the overlay so it reconstructs the
     // real metadata, but this endpoint still trusts the payload wholesale;
