@@ -167,6 +167,8 @@ fn health_returns_exact_shape_and_ok_true() {
         Some("local" | "unconfigured")
     ));
     assert!(body["originAllowed"].is_boolean());
+    assert!(body["version"].is_string());
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]
@@ -233,7 +235,10 @@ fn token_configured_degrades_health_and_blocks_other_routes() {
     let degraded = reqwest::blocking::get(format!("{}/health", server.base)).unwrap();
     assert_eq!(degraded.status(), 200);
     let body: Value = degraded.json().unwrap();
-    assert_eq!(body, json!({ "ok": true }));
+    assert_eq!(
+        body,
+        json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })
+    );
 
     let client = reqwest::blocking::Client::new();
     let config_no_auth = client
