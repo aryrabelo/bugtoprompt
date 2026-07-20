@@ -139,6 +139,41 @@ pub async fn post_artifact(State(state): State<AppState>, req: Request) -> Respo
     }
 
     let dir = state.config.captures_root.join(session_id);
+
+    // Serialize the read-guard-through-write critical section (cubic #133 P1):
+    // without this, two concurrent same-session saves could both pass the
+    // downgrade guard below and then interleave writes, letting a stale
+    // `bytes:0` clobber a finalized `bytes>0`. Held to end of handler so all of
+    // this session's writes are serialized. The Node reference is already
+    // race-free — its guard+write critical section is fully synchronous.
+    let _save_guard = state.artifact_save_lock.lock().await;
+    // #124 belt-and-suspenders: a re-save must never DOWNGRADE finalized audio
+    // metadata (bytes>0 -> 0). #112 fixes the overlay so it reconstructs the
+    // real metadata, but this endpoint still trusts the payload wholesale;
+    // guard here BEFORE any write so a stale/placeholder client cannot clobber
+    // a good server-side artifact.json. 409 Conflict is deliberately distinct
+    // from the 400s above: the payload is well-formed, it just conflicts with
+    // better server-side state. Mirrors the Node reference's handleArtifact.
+    if let Ok(raw) = tokio::fs::read_to_string(dir.join("artifact.json")).await {
+        if let Ok(prior) = serde_json::from_str::<Value>(&raw) {
+            let prior_bytes = prior
+                .get("audio")
+                .and_then(|a| a.get("bytes"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            let incoming_bytes = artifact
+                .and_then(|a| a.get("audio"))
+                .and_then(|a| a.get("bytes"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            if prior_bytes > 0.0 && incoming_bytes == 0.0 {
+                return json_response(
+                    StatusCode::CONFLICT,
+                    json!({ "error": "re-save would downgrade audio metadata (stored bytes>0 -> 0); refusing to clobber artifact.json" }),
+                );
+            }
+        }
+    }
     if let Err(err) = tokio::fs::create_dir_all(&dir).await {
         return json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -256,7 +291,8 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
             .await
             {
                 Ok(transcript) => {
-                    transcribe::persist_transcript(&dir, &transcript).await;
+                    transcribe::persist_transcript(&dir, &transcript, &state.artifact_save_lock)
+                        .await;
                     json_response(StatusCode::OK, json!({ "transcript": transcript }))
                 }
                 Err(err) => json_response(

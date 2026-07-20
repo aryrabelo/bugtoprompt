@@ -317,6 +317,142 @@ fn artifact_roundtrip_persists_files() {
 }
 
 #[test]
+fn artifact_resave_rejects_audio_metadata_downgrade() {
+    // #124 belt-and-suspenders: a re-save must not clobber a good server-side
+    // audio.bytes>0 with a bytes:0 placeholder. Reject with 409 and leave the
+    // prior artifact.json untouched.
+    let server = ServerGuard::spawn(HashMap::new());
+    let client = reqwest::blocking::Client::new();
+
+    let good = json!({
+        "artifact": {
+            "sessionId": "cap_downgrade-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+        }
+    });
+    let resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&good)
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().unwrap();
+    let dir = std::path::PathBuf::from(body["dir"].as_str().unwrap());
+    let artifact_file = dir.join("artifact.json");
+
+    let downgrade = json!({
+        "artifact": {
+            "sessionId": "cap_downgrade-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 0 }
+        }
+    });
+    let resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&downgrade)
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let err_body: Value = resp.json().unwrap();
+    assert!(
+        err_body["error"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("downgrade"),
+        "expected a downgrade error, got {err_body:?}"
+    );
+
+    // Prior audio.bytes is intact — nothing was clobbered.
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact_file).unwrap()).unwrap();
+    assert_eq!(saved["audio"]["bytes"], 4096);
+}
+
+#[test]
+fn artifact_resave_allows_preserved_audio_bytes() {
+    let server = ServerGuard::spawn(HashMap::new());
+    let client = reqwest::blocking::Client::new();
+
+    let good = json!({
+        "artifact": {
+            "sessionId": "cap_preserve-124",
+            "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+        }
+    });
+    for _ in 0..2 {
+        let resp = client
+            .post(format!("{}/artifact", server.base))
+            .json(&good)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+}
+
+#[test]
+fn artifact_concurrent_saves_never_downgrade() {
+    // cubic #133 P1: two concurrent same-session saves — a finalized bytes>0
+    // and a stale bytes:0 — must never leave artifact.json at bytes:0. The
+    // per-session save serialization makes the outcome deterministic: whichever
+    // runs first, the stale one is either rejected (prior>0 -> 409) or written
+    // as the first save and then legally overwritten by the good one (prior==0).
+    // Loop fresh sessions to give the scheduler room to interleave a regression
+    // (i.e. a missing lock) into a bytes:0 final state.
+    let server = ServerGuard::spawn(HashMap::new());
+    let base = server.base.clone();
+
+    for i in 0..10 {
+        let session = format!("cap_race-{i}");
+        let good = json!({
+            "artifact": {
+                "sessionId": session,
+                "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+            }
+        });
+        let stale = json!({
+            "artifact": {
+                "sessionId": session,
+                "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 0 }
+            }
+        });
+
+        let b1 = base.clone();
+        let b2 = base.clone();
+        let t_good = std::thread::spawn(move || {
+            let c = reqwest::blocking::Client::new();
+            let r = c.post(format!("{b1}/artifact")).json(&good).send().unwrap();
+            let status = r.status().as_u16();
+            let body: Value = r.json().unwrap();
+            (status, body["dir"].as_str().map(String::from))
+        });
+        let t_stale = std::thread::spawn(move || {
+            let c = reqwest::blocking::Client::new();
+            c.post(format!("{b2}/artifact"))
+                .json(&stale)
+                .send()
+                .unwrap()
+                .status()
+                .as_u16()
+        });
+
+        let (good_status, dir) = t_good.join().unwrap();
+        let stale_status = t_stale.join().unwrap();
+
+        assert_eq!(good_status, 200, "good save should succeed (iter {i})");
+        assert!(
+            stale_status == 200 || stale_status == 409,
+            "stale save unexpected status {stale_status} (iter {i})"
+        );
+
+        // Invariant: final metadata is never the downgraded 0.
+        let dir = dir.expect("good save returned a dir");
+        let file = std::path::Path::new(&dir).join("artifact.json");
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(saved["audio"]["bytes"], 4096, "downgraded on iter {i}");
+    }
+}
+
+#[test]
 fn streaming_token_returns_clear_cloud_mode_error() {
     let server = ServerGuard::spawn(HashMap::from([
         ("BUGTOPROMPT_ENABLE_ISSUES", "1"),

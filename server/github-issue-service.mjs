@@ -335,6 +335,37 @@ async function handleArtifact(req, res) {
 		}
 	}
 
+	// #124 belt-and-suspenders: a re-save must never DOWNGRADE finalized audio
+	// metadata (bytes>0 -> 0). #112 fixes the overlay so it reconstructs the
+	// real metadata, but the endpoint still trusts the payload wholesale; guard
+	// here BEFORE any write so a stale/placeholder client cannot clobber a good
+	// server-side artifact.json. Runs after payload validation, so a rejection
+	// leaves the prior capture untouched (like the screenshot guard above).
+	// Status is 409 Conflict — deliberately distinct from the 400s above: the
+	// payload is well-formed, it just conflicts with better server-side state.
+	const existingFile = join(CAPTURES_ROOT, sessionId, "artifact.json");
+	if (existsSync(existingFile)) {
+		try {
+			const prior = JSON.parse(readFileSync(existingFile, "utf8"));
+			const priorBytes = prior?.audio?.bytes;
+			const incomingBytes = artifact?.audio?.bytes;
+			if (
+				typeof priorBytes === "number" &&
+				priorBytes > 0 &&
+				(typeof incomingBytes !== "number" || incomingBytes === 0)
+			) {
+				sendJson(res, 409, {
+					error:
+						"re-save would downgrade audio metadata (stored bytes>0 -> 0); refusing to clobber artifact.json",
+				});
+				return;
+			}
+		} catch {
+			// Unreadable/corrupt prior artifact: nothing good to protect, fall
+			// through and let the incoming payload overwrite it.
+		}
+	}
+
 	const dir = join(CAPTURES_ROOT, sessionId);
 	mkdirSync(dir, { recursive: true });
 

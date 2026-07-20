@@ -15,6 +15,14 @@ pub struct AppState {
     pub gh_state: Arc<RwLock<GhState>>,
     pub transcription_provider: Arc<RwLock<&'static str>>,
     pub transcription_state: Arc<RwLock<TranscriptionState>>,
+    /// Serializes the `/artifact` read-guard-through-write critical section so
+    /// two concurrent saves for the same session cannot both pass the
+    /// no-downgrade guard and then interleave their writes (cubic #133 P1).
+    /// `tokio::sync::Mutex` (not parking_lot) because this section crosses
+    /// `.await`. ponytail: one global lock — a localhost single-user sidecar
+    /// has ~no concurrent same-session saves; go per-session only if throughput
+    /// ever matters.
+    pub artifact_save_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -24,6 +32,7 @@ impl AppState {
             gh_state: Arc::new(RwLock::new(GhState::Pending)),
             transcription_provider: Arc::new(RwLock::new("unconfigured")),
             transcription_state: Arc::new(RwLock::new(TranscriptionState::Unconfigured)),
+            artifact_save_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
