@@ -53,6 +53,13 @@ export interface PersistedSession {
 	snapshots: CaptureSnapshot[];
 	transcript: TranscriptSegment[];
 	durationMs: number;
+	/** Real audio metadata frozen at finalize (bytes/mimeType), so a reviewing
+	 *  session rehydrated after a reload reconstructs the artifact faithfully
+	 *  instead of a `bytes: 0` placeholder. Absent while still recording and on
+	 *  pre-#112 persisted sessions. */
+	audio?: { ref: string; mimeType: string; bytes: number };
+	/** Transcript source frozen at finalize. Absent while recording / pre-#112. */
+	transcriptionMode?: "streaming" | "batch-fallback";
 }
 
 // ---------------------------------------------------------------------------

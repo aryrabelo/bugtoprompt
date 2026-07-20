@@ -268,20 +268,26 @@ function restoreReviewing(
 		| "setPhase"
 	>,
 ): void {
-	// Reconstruct a minimal artifact for clipboard / download export.
-	// Audio was already saved server-side; use a placeholder so the schema
-	// validates while renderPrompt (which uses transcript + events) works.
+	// Reconstruct the artifact for clipboard / download / re-save export. Prefer
+	// the real audio metadata + transcript mode frozen at finalize (persisted
+	// since #112) so a re-save after reload no longer clobbers artifact.json with
+	// a `bytes: 0` / "streaming" placeholder. Pre-#112 sessions lack these fields
+	// and fall back to the historical placeholder.
 	const assembled = assembleArtifact({
 		sessionId: session.sessionId,
 		...session.binding,
 		pageUrl: typeof window !== "undefined" ? window.location.href : "",
 		startedAt: session.startedAt,
 		durationMs: session.durationMs,
-		audio: { ref: "audio.webm", mimeType: "audio/webm", bytes: 0 },
+		audio: session.audio ?? {
+			ref: "audio.webm",
+			mimeType: "audio/webm",
+			bytes: 0,
+		},
 		transcript: session.transcript,
 		events: session.events,
 		snapshots: session.snapshots,
-		transcriptionMode: "streaming",
+		transcriptionMode: session.transcriptionMode ?? "streaming",
 	});
 	bag.artifactRef.current = assembled;
 	bag.setArtifact(assembled);
@@ -1012,6 +1018,13 @@ export function useSession(
 			snapshots: snapshotsRef.current,
 			transcript: finalsRef.current,
 			durationMs: elapsed(),
+			// Freeze the real audio metadata + transcript mode so restoreReviewing
+			// reconstructs the artifact faithfully after a reload (issue #112).
+			// artifactRef.current is the finalized artifact (a batch fallback may
+			// have superseded `assembled`); fall back to `assembled` defensively.
+			audio: artifactRef.current?.audio ?? assembled.audio,
+			transcriptionMode:
+				artifactRef.current?.transcriptionMode ?? assembled.transcriptionMode,
 		});
 
 		setPhase("reviewing");
