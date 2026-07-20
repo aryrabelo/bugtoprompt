@@ -793,6 +793,19 @@ async function activeTab(
 	return found?.[0];
 }
 
+/** Only a fresh install triggers first-run onboarding — never an update or a browser update. */
+export function shouldOpenOnboarding(reason: string): boolean {
+	return reason === "install";
+}
+
+/** Open the guided first-run onboarding page in a new tab. Optional-chained so it
+ *  is a safe no-op if getURL/tabs.create are unavailable (e.g. under test). */
+export async function openOnboarding(chromeApi: ChromeLike): Promise<void> {
+	const url = chromeApi.runtime?.getURL?.("onboarding.html");
+	if (!url) return;
+	await chromeApi.tabs?.create?.({ url });
+}
+
 /** Wire the service worker to the real `chrome` global. No-op under test/jsdom. */
 export function init(chromeApi: ChromeLike): void {
 	chromeApi.runtime?.onMessage?.addListener((msg, sender, sendResponse) => {
@@ -869,6 +882,11 @@ export function init(chromeApi: ChromeLike): void {
 		// not run two readiness handlers and mount duplicate overlays.
 		if (classifyPage(tab.url) === "loopback") return;
 		void handleDocumentReady(chromeApi, tabId, tab.url);
+	});
+	// First-run: open the guided onboarding page on a fresh install so the user
+	// is walked through Lite tray detection / Pro sign-in and the first capture.
+	chromeApi.runtime?.onInstalled?.addListener((details) => {
+		if (shouldOpenOnboarding(details.reason)) void openOnboarding(chromeApi);
 	});
 }
 

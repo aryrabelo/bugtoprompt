@@ -7,6 +7,8 @@ import {
 	handleDocumentReady,
 	init,
 	isTabActive,
+	openOnboarding,
+	shouldOpenOnboarding,
 	toggleTab,
 } from "./background";
 import { type ChromeLike, DEFAULT_CONFIG } from "./config";
@@ -40,6 +42,10 @@ interface Harness {
 	updatedListeners: UpdatedListener[];
 	/** runtime.onMessage listeners registered via init(). */
 	messageListeners: MessageListener[];
+	/** runtime.onInstalled listeners registered via init(). */
+	installedListeners: Array<(d: { reason: string }) => void>;
+	/** tabs.create({ url }) calls made by openOnboarding. */
+	createdTabs: Array<{ url: string }>;
 	/** Controls whether the next ISOLATED-world relay injection reports as
 	 *  freshly initialized (result: true) — flip to false to simulate an
 	 *  already-resident relay on the document (injectProRelay then skips the
@@ -64,6 +70,8 @@ function makeHarness(): Harness {
 	const updatedListeners: UpdatedListener[] = [];
 	const messageListeners: MessageListener[] = [];
 	const relayState = { fresh: true };
+	const installedListeners: Array<(d: { reason: string }) => void> = [];
+	const createdTabs: Array<{ url: string }> = [];
 
 	const chromeApi: ChromeLike = {
 		storage: {
@@ -168,6 +176,10 @@ function makeHarness(): Harness {
 		},
 		tabs: {
 			query: vi.fn(async () => []),
+			create: vi.fn(async (props: { url: string }) => {
+				createdTabs.push(props);
+				return {};
+			}),
 			onUpdated: {
 				addListener: vi.fn((cb: UpdatedListener) => {
 					updatedListeners.push(cb);
@@ -180,6 +192,12 @@ function makeHarness(): Harness {
 					messageListeners.push(cb);
 				}),
 			},
+			getURL: (path: string) => `chrome-extension://test/${path}`,
+			onInstalled: {
+				addListener: vi.fn((cb: (d: { reason: string }) => void) => {
+					installedListeners.push(cb);
+				}),
+			},
 		},
 	};
 
@@ -190,6 +208,8 @@ function makeHarness(): Harness {
 		granted,
 		updatedListeners,
 		messageListeners,
+		installedListeners,
+		createdTabs,
 		relayState,
 	};
 }
@@ -1094,5 +1114,49 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+});
+
+describe("first-run onboarding", () => {
+	it("shouldOpenOnboarding is true only for a fresh install", () => {
+		expect(shouldOpenOnboarding("install")).toBe(true);
+		expect(shouldOpenOnboarding("update")).toBe(false);
+		expect(shouldOpenOnboarding("chrome_update")).toBe(false);
+		expect(shouldOpenOnboarding("browser_update")).toBe(false);
+	});
+
+	it("init() registers onInstalled, and a fresh install opens exactly one onboarding tab", async () => {
+		const h = makeHarness();
+		init(h.chromeApi);
+		expect(h.installedListeners).toHaveLength(1);
+
+		h.installedListeners[0]({ reason: "install" });
+		// openOnboarding is async (fired via `void`) — flush pending microtasks.
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(h.createdTabs).toHaveLength(1);
+		expect(h.createdTabs[0].url.endsWith("onboarding.html")).toBe(true);
+	});
+
+	it("an update never opens the onboarding tab", async () => {
+		const h = makeHarness();
+		init(h.chromeApi);
+
+		h.installedListeners[0]({ reason: "update" });
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(h.createdTabs).toHaveLength(0);
+	});
+
+	it("openOnboarding pushes a tab pointing at onboarding.html", async () => {
+		const h = makeHarness();
+		await openOnboarding(h.chromeApi);
+		expect(h.createdTabs).toEqual([
+			{ url: "chrome-extension://test/onboarding.html" },
+		]);
 	});
 });
