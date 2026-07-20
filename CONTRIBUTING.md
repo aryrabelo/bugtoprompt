@@ -4,7 +4,7 @@ Thanks for helping improve bugtoprompt.
 
 ## Prerequisites
 
-- **Node** >= 18
+- **Node** >= 22
 - **pnpm**
 
 ## Setup
