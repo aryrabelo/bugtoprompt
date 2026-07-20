@@ -129,6 +129,7 @@ fn main() {
     let (worker_tx, worker_rx) = mpsc::channel::<Worker>();
     let mut settings: Option<SettingsWindow> = None;
     let mut uvx_status = String::from("checking");
+    let mut gh_status = String::from("checking");
 
     // Kick off a background GitHub-release check at startup. Its result arrives
     // over `worker_*` and refreshes the "Check for updates" menu item.
@@ -207,29 +208,35 @@ fn main() {
                             &running_host,
                             running_port,
                             &uvx_status,
+                            &gh_status,
                         ));
                     }
                     settings_window::spawn_uvx_probe(worker_tx.clone());
+                    settings_window::spawn_gh_probe(worker_tx.clone());
                 }
                 Ipc::ProbeUvx => settings_window::spawn_uvx_probe(worker_tx.clone()),
                 Ipc::InstallUvx => settings_window::spawn_uvx_install(worker_tx.clone()),
                 Ipc::Save { config: payload } => {
-                    let saved = save_and_restart(
+                    let result = save_and_restart(
                         payload,
                         &mut supervisor,
                         &mut running_host,
                         &mut running_port,
                     );
                     if let Some(win) = &settings {
-                        win.push_saved(saved);
-                        if saved {
+                        win.push_saved(result.is_ok(), result.as_ref().err().copied());
+                        if result.is_ok() {
                             win.push_state(&settings_ui::state_json(
                                 &config::load_persisted(),
                                 supervisor.is_some(),
                                 &running_host,
                                 running_port,
                                 &uvx_status,
+                                &gh_status,
                             ));
+                            // Re-probe: a Save is the documented way to
+                            // re-check `gh` after `gh auth login`/install (#95).
+                            settings_window::spawn_gh_probe(worker_tx.clone());
                         }
                     }
                 }
@@ -254,6 +261,12 @@ fn main() {
                         win.push_uvx(&uvx_status);
                     }
                 }
+                Worker::Gh(status) => {
+                    gh_status = status;
+                    if let Some(win) = &settings {
+                        win.push_gh(&gh_status);
+                    }
+                }
                 Worker::InstallLine(line) => {
                     if let Some(win) = &settings {
                         win.push_install_line(&line);
@@ -270,7 +283,9 @@ fn main() {
 /// Validate, persist, then restart the server so it picks up the new CORS
 /// allowlist / host / port / transcription preference. Restart-on-save is
 /// acceptable for v1 per the #58 acceptance criteria; hot-reload is a
-/// nice-to-have. Returns whether the config was written.
+/// nice-to-have. `Err` carries a short reason to surface in the Settings UI
+/// (finding #95: a silent "Save failed" left a first-run user ticking "Enable
+/// issue filing" with no clue why the checkbox seemingly did nothing).
 ///
 /// The effective config is validated BEFORE anything is written or the
 /// supervisor is replaced (finding #10): saving issue mode with zero repos
@@ -280,10 +295,10 @@ fn save_and_restart(
     supervisor: &mut Option<Supervisor>,
     running_host: &mut String,
     running_port: &mut u16,
-) -> bool {
+) -> Result<(), &'static str> {
     let Some(path) = config::config_path() else {
         tracing::warn!("no config path (HOME unset); cannot save settings");
-        return false;
+        return Err("no config location (HOME is unset)");
     };
     let next = settings_ui::apply_save(config::load_persisted(), payload);
 
@@ -291,12 +306,14 @@ fn save_and_restart(
     let effective = Config::from_persisted(next.clone());
     if effective.issue_mode && effective.targets.is_empty() {
         tracing::warn!("refusing to save: issue mode enabled but no repository configured");
-        return false;
+        return Err(
+            "issue filing is enabled but no repository is configured — add one under GitHub",
+        );
     }
 
     if let Err(err) = next.save(&path) {
         tracing::error!("failed to write {}: {err}", path.display());
-        return false;
+        return Err("could not write the settings file");
     }
     if let Some(mut sup) = supervisor.take() {
         sup.shutdown();
@@ -308,7 +325,7 @@ fn save_and_restart(
         "settings saved; server restarted on {}:{}",
         running_host, running_port
     );
-    true
+    Ok(())
 }
 
 /// Minimal 16x16 monochrome bug-shaped glyph, generated at build time so the

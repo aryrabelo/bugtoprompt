@@ -25,6 +25,9 @@ const SETTINGS_HTML: &str = include_str!("../settings.html");
 pub enum Worker {
     /// uvx probe finished: `true` = the local engine is available.
     Uvx(bool),
+    /// `gh` CLI probe finished: the published state string ("ready" |
+    /// "missing" | "unauthenticated", mirrors `preflight::GhState::published`).
+    Gh(String),
     /// A line of `uv` installer output.
     InstallLine(String),
     /// Update check finished: `Some` = a newer GitHub release is available.
@@ -79,6 +82,11 @@ impl SettingsWindow {
         self.eval(&format!("window.__btp&&window.__btp.onUvxStatus({arg})"));
     }
 
+    pub fn push_gh(&self, status: &str) {
+        let arg = serde_json::to_string(status).unwrap_or_else(|_| "\"checking\"".into());
+        self.eval(&format!("window.__btp&&window.__btp.onGhStatus({arg})"));
+    }
+
     pub fn push_install_line(&self, line: &str) {
         let arg = serde_json::to_string(line).unwrap_or_else(|_| "\"\"".into());
         self.eval(&format!(
@@ -86,8 +94,17 @@ impl SettingsWindow {
         ));
     }
 
-    pub fn push_saved(&self, ok: bool) {
-        self.eval(&format!("window.__btp&&window.__btp.onSaved({ok})"));
+    /// `ok`: whether the save was written. `error`: a short human-readable
+    /// reason when it was not (e.g. issue filing enabled with no repos
+    /// configured, #95) — `None` on success.
+    pub fn push_saved(&self, ok: bool, error: Option<&str>) {
+        let err_arg = match error {
+            Some(msg) => serde_json::to_string(msg).unwrap_or_else(|_| "null".into()),
+            None => "null".to_string(),
+        };
+        self.eval(&format!(
+            "window.__btp&&window.__btp.onSaved({ok},{err_arg})"
+        ));
     }
 }
 
@@ -106,6 +123,27 @@ pub fn spawn_uvx_probe(tx: Sender<Worker>) {
             }
         };
         let _ = tx.send(Worker::Uvx(ready));
+    });
+}
+
+/// Probe `gh` CLI availability + auth off the main thread, mirroring
+/// `spawn_uvx_probe`. Never surfaces a token — only the published
+/// ready/missing/unauthenticated state (#95).
+pub fn spawn_gh_probe(tx: Sender<Worker>) {
+    thread::spawn(move || {
+        let published = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt
+                .block_on(sidecar_rust::preflight::detect_gh_state())
+                .published(),
+            Err(err) => {
+                tracing::warn!("gh probe runtime failed: {err}");
+                "unauthenticated"
+            }
+        };
+        let _ = tx.send(Worker::Gh(published.to_string()));
     });
 }
 
