@@ -580,7 +580,18 @@ pub async fn local_transcribe(
 /// mirroring `persistTranscript`. Best-effort: any read/parse/write failure
 /// is logged and swallowed — a persistence miss must never fail a request
 /// that already has a good transcript to return.
-pub async fn persist_transcript(session_dir: &Path, transcript: &[TranscriptSegment]) {
+///
+/// Takes `save_lock` (the shared `AppState.artifact_save_lock`) and holds it
+/// across the read-modify-write so this update cannot race a concurrent
+/// `post_artifact` save and clobber finalized audio metadata (cubic #133 P1):
+/// serialized, it always reads the latest committed artifact and preserves its
+/// audio/other fields while replacing only transcript + mode.
+pub async fn persist_transcript(
+    session_dir: &Path,
+    transcript: &[TranscriptSegment],
+    save_lock: &tokio::sync::Mutex<()>,
+) {
+    let _save_guard = save_lock.lock().await;
     let file = session_dir.join("artifact.json");
     let raw = match tokio::fs::read_to_string(&file).await {
         Ok(raw) => raw,
@@ -896,7 +907,7 @@ mod tests {
             text: "hi".to_string(),
         }];
 
-        persist_transcript(dir.path(), &transcript).await;
+        persist_transcript(dir.path(), &transcript, &tokio::sync::Mutex::new(())).await;
 
         let raw = tokio::fs::read_to_string(dir.path().join("artifact.json"))
             .await
@@ -920,8 +931,65 @@ mod tests {
                 t_end_ms: 1,
                 text: "x".to_string(),
             }],
+            &tokio::sync::Mutex::new(()),
         )
         .await;
         assert!(!dir.path().join("artifact.json").exists());
+    }
+
+    #[tokio::test]
+    async fn persist_transcript_waits_for_the_shared_save_lock() {
+        // cubic #133 P1 (follow-up): persist_transcript must honor the shared
+        // artifact_save_lock so it cannot race a concurrent post_artifact save
+        // and clobber finalized audio metadata. Deterministic proof: hold the
+        // lock, confirm persist_transcript is blocked (no write yet), release,
+        // then confirm it completes preserving audio.bytes>0.
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("artifact.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                "sessionId": "cap_lock",
+                "audio": { "ref": "audio.webm", "mimeType": "audio/webm", "bytes": 4096 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let held = lock.lock().await;
+
+        let dir2 = dir.path().to_path_buf();
+        let lock2 = lock.clone();
+        let handle = tokio::spawn(async move {
+            let transcript = vec![TranscriptSegment {
+                t_start_ms: 0,
+                t_end_ms: 100,
+                text: "hi".to_string(),
+            }];
+            persist_transcript(&dir2, &transcript, &lock2).await;
+        });
+
+        // While the lock is held, persist_transcript is blocked: no transcript
+        // written yet, audio untouched.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mid: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(
+            mid.get("transcript").is_none(),
+            "persist_transcript wrote while the save lock was held"
+        );
+        assert_eq!(mid["audio"]["bytes"], 4096);
+
+        drop(held);
+        handle.await.unwrap();
+
+        let done: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(
+            done["audio"]["bytes"], 4096,
+            "finalized audio was clobbered"
+        );
+        assert_eq!(done["transcriptionMode"], "batch-fallback");
+        assert!(done.get("transcript").is_some());
     }
 }

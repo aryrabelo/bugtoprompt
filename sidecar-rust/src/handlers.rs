@@ -291,7 +291,8 @@ pub async fn post_transcribe(State(state): State<AppState>, req: Request) -> Res
             .await
             {
                 Ok(transcript) => {
-                    transcribe::persist_transcript(&dir, &transcript).await;
+                    transcribe::persist_transcript(&dir, &transcript, &state.artifact_save_lock)
+                        .await;
                     json_response(StatusCode::OK, json!({ "transcript": transcript }))
                 }
                 Err(err) => json_response(
