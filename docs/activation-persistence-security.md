@@ -1,149 +1,196 @@
 # bugtoprompt — Activation, Persistence & Key Safety
 
-**Date:** 2026-06-15
-**Status:** Proposed design (supersedes the spec §2 non-goal "no `<script>` bundle")
+**Date:** 2026-07-20
+**Status:** Current — extension-first v2 model.
+**Supersedes:** the 2026-06-15 multi-path design (React import as a general
+install path / `<script>` tag / DevTools console) described in an earlier
+revision of this doc. That design is dead — see the README
+[sunset notice](../README.md#L11-L28) and `docs/console.md` (retired). This
+revision documents what actually ships today; the old text is preserved in
+git history for reference.
 
-The product principle: **drop it in and it just works.** A host should either
-`import { BugToPrompt }` (React) or paste a `<script>` / console snippet, and the
-widget runs — pulling config from the server when one is present, degrading to a
-pure client-side capture when none is. It must survive full-page navigations and
-never leak secret keys in production.
+The product principle is unchanged: **drop it in and it just works.** What
+changed is the *how*: there is exactly one activation path now — the
+**BugToPrompt Chrome extension** — and exactly one key model: AssemblyAI is
+**our** server-side vendor, never a customer-facing key surface.
 
-## 1. Four activation paths (all converge on the same overlay)
+## 1. Activation — the Chrome extension is the only path
 
-| Path | How | When |
-|---|---|---|
-| **React import** | `import { BugToPrompt } from "bugtoprompt"` → `<BugToPrompt />` (no required props) | SPA hosts you control |
-| **Script tag** | `<script src="…/bugtoprompt.global.js" defer></script>` (self-mounts) | Any site, incl. server-rendered / "old" multi-page apps |
-| **Console** | Paste a one-liner in DevTools → injects the script + boots | Pages you can't edit, or to unlock prod (see §3) |
-| **Chrome extension** *(planned)* | Install the extension; its content script injects the overlay on the configured origins | When you want the config + key to live in the extension, not in the page/console — see §7 |
+| Path | Status |
+|---|---|
+| **Chrome extension** | **Current.** MV3 extension injects the overlay; see §1.1. |
+| React import (`import { BugToPrompt } from "bugtoprompt"`) | Design-history. Sunset for direct integration (README §sunset); the package stays published only as the internal build source for the extension and the bugtoprompt.com landing-page demo — not an install recommendation. |
+| Script tag (`<script src="…/bugtoprompt.global.js">`) | Design-history. Same sunset. |
+| Console snippet (paste in DevTools) | **Retired**, see [`docs/console.md`](console.md). |
 
-All four resolve the **same config** (§2) and mount the **same** overlay. The
-script + console builds bundle React/ReactDOM and ship their **own compiled CSS**
-(self-contained tokens) so they render styled on any page without the host's
-Tailwind. The React import path uses the host's Tailwind (`@source`).
+### 1.1 How the extension activates the overlay
 
-## 2. Zero-config resolution (no props needed)
+- `extension/manifest.json` + the MV3 service worker
+  (`extension/src/background.ts`) own per-tab activation state and inject the
+  same packaged bundle the old script-tag path used
+  (`bugtoprompt.global.js` + its self-contained CSS) — this is packaging over
+  the existing global build, not a fork.
+- **Loopback is zero-config:** `localhost` / `127.0.0.1` are always
+  activatable, no permission prompt (`extension/src/config.ts` —
+  `isSupportedUrl`, `classifyPage`).
+- **Any other origin needs a one-time, per-origin runtime grant:** the popup
+  shows **Enable on this site**; clicking it calls
+  `chrome.permissions.request({ origins: [...] })` scoped to exactly that
+  origin (`extension/src/config.ts` — `originPattern`; see
+  `extension/README.md` §"Site permissions" for the full Chrome Web Store
+  rationale, issue #97). `host_permissions` at install time stays narrow
+  (loopback + the hosted API only); the broad-origin ability is
+  `optional_host_permissions`, granted per-site at runtime, never as a
+  standing install-time grant.
+- **Re-injection on navigation:** a lightweight ISOLATED-world content script
+  (`extension/src/content.ts`, localhost only) pings the service worker on
+  every fresh document; the service worker reinjects the bundle and remounts
+  the overlay for a tab that was active (`background.ts` —
+  `handleDocumentReady`). A full-page reload is invisible to the user — see
+  §3 for how the in-progress capture itself survives it.
 
-On boot the widget resolves, in order:
+## 2. Zero-config resolution (unchanged mechanism, new source)
 
-1. **Explicit** — props (`client`, `baseUrl`, `modes`, …) or `data-*` on the script tag.
-2. **Global** — `window.__BUGTOPROMPT__ = { baseUrl?, modes?, projectId?, streamingToken? }` (this is what a console snippet sets — §3).
-3. **Meta** — `<meta name="bugtoprompt-base" content="/api">`.
-4. **Server config** — `GET {base}/bugtoprompt/config` → `{ modes, defaultMode, projectId }`. The server decides what's enabled.
-5. **Safe fallback** — if no backend answers: `modes = ["clipboard","download"]`, a local no-backend client (no secrets, always works).
+The overlay's config resolver is the same one that used to read `data-*` /
+`window.__BUGTOPROMPT__` from a script tag or console snippet. What changed
+is *who sets it*:
 
-Result: `<BugToPrompt />` with nothing set still works (capture → copy/download the
-AI prompt). A configured backend upgrades it (issue mode, live transcription).
+1. The extension reads its own config from `chrome.storage.sync`
+   (`extension/src/config.ts` — `loadConfig`, `SyncConfig`: base URL, site→repo
+   bindings, `screenshotMode`, …).
+2. Before injecting the bundle, it seeds `window.__BUGTOPROMPT__` with that
+   config (`background.ts` — `seedConfig`, `injectBundle`).
+3. The bundle boots and resolves config exactly as before: explicit
+   `window.__BUGTOPROMPT__` first, then server config
+   (`GET {base}/bugtoprompt/config`), then a safe fallback
+   (`modes = ["clipboard","download"]`, no backend, no secrets).
 
-## 3. Key safety — Dev vs Production (the load-bearing rule)
+**Backend discovery (Lite):** the extension probes local-sidecar candidates
+in order and uses the first one whose `GET /health` answers `ok:true`
+(`extension/src/config.ts` — `candidateBaseUrls`, `discoverBaseUrl`).
 
-**Secret keys (AssemblyAI, GitHub) never reach the browser from a public server.**
+**Backend discovery (Pro):** Pro does **not** go through the local sidecar.
+See §3.2 — the extension talks directly to the hosted backend.
 
-- **Dev Mode** (`{base}/bugtoprompt/config` advertises `env:"dev"`, server holds
-  keys): the server mints **short-lived AssemblyAI streaming tokens** and files
-  issues. Full features; keys stay server-side. This is the normal path locally.
-- **Production** (no key endpoint exposed — by design, to avoid leakage): the
-  config endpoint returns `env:"prod"` and does **not** mint tokens. The widget
-  defaults to **client-side only** (clipboard/download, no live transcription).
-  - **Unlock on demand, via the console:** a developer pastes a snippet that
-    supplies a pre-minted **`streamingToken`** for *their own session only*:
-    ```js
-    // fetches a short-lived token from our backend, then boots
-    window.__BUGTOPROMPT__ = { streamingToken: await fetchToken() };
-    import("https://…/bugtoprompt.global.js");
-    ```
-    The widget then opens the AssemblyAI realtime connection using that
-    **minted token**. It is the dev's explicit, manual choice — no raw vendor
-    key is ever in page source, in a public endpoint, or committed; the
-    token is short-lived and lives only in that tab's memory (optionally
-    `sessionStorage`, never synced).
+## 3. Key safety — the load-bearing rule
 
-Net: prod ships with zero secret exposure; live transcription in prod is an
-opt-in, per-developer, console-gated action.
+**AssemblyAI is our server-side vendor. It is never a customer-facing key
+surface — no client-side key, no console `prompt()`, no `data-assemblyai-key`
+attribute, no `window.__BUGTOPROMPT__.assemblyAiKey`.** That entire
+bring-your-own-key path existed in an earlier design and was **removed**
+(issue #125, PR #127) — do not re-introduce it in code or in docs.
+
+### 3.1 Lite (free) — local only, no AssemblyAI at all
+
+- Transcription: **local Parakeet-MLX only**, run by the Rust tray sidecar
+  via `uvx`. The sidecar's cloud-transcription and `/streaming-token`
+  handlers are permanently stubbed to `501`, pointing the caller at cloud
+  mode instead (`sidecar-rust/src/handlers.rs`) — AssemblyAI does not exist
+  anywhere in the Lite sidecar (issue #119, PR #126).
+- Issue filing: the sidecar shells out to the user's own authenticated `gh`
+  CLI (`sidecar-rust/src/handlers.rs` — `POST /issue`).
+- No hosted-backend dependency, no key of any kind leaves the user's machine.
+
+### 3.2 Pro (paid) — cloud transcription via a backend-minted token
+
+- The customer never holds, pastes, or stores an AssemblyAI key. Ever.
+- Live transcription authenticates via a **short-lived streaming token
+  minted by our backend** (`mintStreamingToken` / `streamingToken`) —
+  resolution order in the overlay: a pre-minted token → a host-provided
+  minter → `client.mintStreamingToken()` (`src/overlay/streaming-auth.ts`).
+  No raw vendor key is ever in page source, a public endpoint, or a console
+  snippet.
+- The extension resolves this **directly against the hosted backend**
+  (`https://api.bugtoprompt.com`), not through the local sidecar: all Pro
+  operations — `mintStreamingToken`, `saveArtifact`, `transcribeBatch`,
+  `createIssue`, `listTargets` — are relayed by the service worker with a
+  `Bearer <proToken>` header built from `PRO_BASE_URL` + a fixed path
+  (`extension/src/background.ts` — `PRO_OPS`, `executeProOp`). `proToken`
+  lives in `chrome.storage.local` only, never synced.
+- Issue filing on Pro goes through the same direct relay (hosted GitHub
+  proxy) — no local `gh` needed.
+
+### 3.3 What was removed (do not re-introduce)
+
+- Client-side AssemblyAI key storage / `key-store.ts` (deleted).
+- The in-overlay "paste your AssemblyAI key" prompt / `KeyPrompt` component
+  (deleted).
+- `data-assemblyai-key` on a script tag; `window.__BUGTOPROMPT__.assemblyAiKey`.
+- Any framing of AssemblyAI access as "user choice" between raw-key and
+  token — there is no raw-key option anymore, only the minted token.
+
+Net: Lite ships with zero AssemblyAI exposure of any kind; Pro's live
+transcription is a paid, backend-brokered feature with zero secret exposure
+to the customer.
 
 ## 4. Persistence across navigation (survive full-page reloads)
 
-Goal: on "old" multi-page sites (each click = full reload) the capture must not
-die or break — it keeps recording across pages, then is cleared on finish.
+This mechanism is unchanged from the original design and is still real —
+only the trigger for "boot" changed (extension reinjection instead of a
+script tag re-executing, see §1.1).
 
-- A **`SessionStore`** persists the in-progress capture: `sessionId`, `startedAt`,
-  `binding`, `status:"recording"`, the **event timeline**, **DOM snapshots**, and
-  **transcript** → `localStorage` (key `bugtoprompt:session`). Screenshot **blobs**
-  go to **IndexedDB** (localStorage's ~5MB cap can't hold images), keyed by
-  session+index; localStorage keeps the lightweight index.
-- **Rehydrate on every boot:** if an active recording session exists, the widget
-  resumes it — re-attaches click/route/mark listeners, restores elapsed from
-  `startedAt`, keeps appending. A full-page navigation is invisible to the capture.
-- **On finish** (stop → export issue/clipboard/download) the assembled artifact
-  spans all pages; then `SessionStore.clear()` wipes localStorage + IndexedDB.
+- A **`SessionStore`** persists the in-progress capture: `sessionId`,
+  `startedAt`, `binding`, `status:"recording"`, the **event timeline**,
+  **DOM snapshots**, and **transcript** → `localStorage` (key
+  `bugtoprompt:session`). Screenshot **blobs** go to **IndexedDB**
+  (`localStorage`'s ~5MB cap can't hold images), keyed by session+index;
+  `localStorage` keeps the lightweight index
+  (`src/overlay/session-store.ts`).
+- **Rehydrate on every reinjection:** if an active recording session exists,
+  the widget resumes it — re-attaches click/route/mark listeners, restores
+  elapsed from `startedAt`, keeps appending
+  (`src/overlay/useSession.ts` — `rehydrateSession`). A full-page navigation
+  is invisible to the capture.
+- **On finish** (stop → export issue/clipboard/download) the assembled
+  artifact spans all pages; then the store is cleared (`localStorage` +
+  IndexedDB).
 
-### Hard constraints (browser-imposed, stated honestly)
+### Hard constraints (browser-imposed, stated honestly — unchanged)
 
-- **Audio / live transcription cannot span a hard reload** — a `MediaStream` dies
-  on unload. If mic permission is already granted for the origin, each page
-  re-opens its own mic + AssemblyAI session seamlessly (no re-prompt) and appends
-  to the running transcript; otherwise audio is per-page. The event/snapshot/
-  transcript timeline still accumulates regardless.
+- **Audio / live transcription cannot span a hard reload** — a `MediaStream`
+  dies on unload. If mic permission is already granted for the origin, each
+  page re-opens its own mic + transcription session seamlessly (no
+  re-prompt) and appends to the running transcript; otherwise audio is
+  per-page. The event/snapshot/transcript timeline still accumulates
+  regardless.
 - **Screen capture re-prompts per page** — browsers never persist a
-  `getDisplayMedia` grant. So in cross-page (MPA) mode the default snapshot is
-  **DOM-only** (interactive snapshot, no screenshot); a screenshot is taken only
-  on an explicit Mark (which re-prompts). Within a single SPA page, screenshots
-  are automatic as today.
+  `getDisplayMedia` grant. Screenshot behavior is config-driven via
+  `screenshotMode`:
+  - `"onClick"` — automatic screenshot on every click, within a single page
+    (today's SPA default).
+  - `"perPage"` — re-prompts for screen share on each page for continuous
+    screenshots (the intrusive-but-complete option).
+  - `"onMark"` — screenshots only on an explicit Mark (which re-prompts).
+  - `"off"` — DOM-only interactive snapshots, no screenshot at all.
+
+  (`extension/src/config.ts` — `ScreenshotMode`.)
 
 ## 5. Build outputs
 
-- `dist/index.js` (+ `/schema`,`/render`,`/client`) — ESM, React-import path (unchanged).
-- `dist/bugtoprompt.global.js` — IIFE, bundles React+ReactDOM, self-mounts from
-  `data-*` / `window.__BUGTOPROMPT__` / server config.
-- `dist/bugtoprompt.css` — compiled, self-contained overlay styles (own tokens),
-  auto-injected by the global/console builds.
+- `dist/index.js` (+ `/schema`, `/render`, `/client`) — ESM, React-import
+  path. Still built and published, but **design-history for installation** —
+  it's the extension's and the landing-page demo's internal build source, per
+  the README sunset notice. Not an install recommendation.
+- `dist/bugtoprompt.global.js` — IIFE, bundles React+ReactDOM, self-mounts
+  from `window.__BUGTOPROMPT__`. This is what the extension injects.
+- `dist/bugtoprompt.css` — compiled, self-contained overlay styles (own
+  design tokens), auto-injected alongside the global bundle.
 
-## 6. Decisions (resolved 2026-06-15)
+## 6. Decisions (resolved)
 
-1. **Prod live-transcription key:** support **both** — ship the raw-key console
-   `prompt()` path as the **documented default** (quick, zero-backend, key lives
-   only in that tab) and a pre-minted **temporary token** path as the hardened
-   option for teams that run a token issuer.
-2. **Capture across navigation is config-driven.** Once activated, the session
-   lives in `localStorage` and **must keep capturing after a page change** — that
-   is the invariant, not a toggle. Where a capability has a UX cost (e.g. the
-   screen-share re-prompt), it becomes a **setting**, not a hard-coded choice:
-   - `screenshotMode: "perPage" | "onMark" | "off"` — `"perPage"` re-prompts for
-     screen share on each page for continuous screenshots (the user's choice; the
-     intrusive-but-complete option); `"onMark"` screenshots only on explicit Mark;
-     `"off"` keeps DOM-only snapshots (today's "add the local" behavior). Default
-     surfaced in config; the host/extension picks.
-   - General rule: **when a feature's behavior is in doubt, expose it as config**
-     rather than hard-coding (see §7.1).
-3. **Persisted blob store:** **IndexedDB** for screenshot blobs + `localStorage`
-   for the lightweight session state/index.
+| # | Decision | Date | Ref |
+|---|---|---|---|
+| 1 | Distribution collapses to the Chrome extension only; React import / script tag / `npx` server sunset for direct integration, package kept published as internal build source. | 2026-06-15 → shipped | README sunset notice, `docs/console.md` (#101/PR #118) |
+| 2 | Customer bring-your-own AssemblyAI key surface removed entirely (client-side key store, `data-assemblyai-key`, `window.__BUGTOPROMPT__.assemblyAiKey`, in-overlay key prompt). | 2026-07-20 | #125 / PR #127 |
+| 3 | Lite sidecar drops AssemblyAI entirely — local Parakeet-MLX only; cloud-transcribe/`streaming-token` handlers permanently stub `501`. | 2026-07-20 | #119 / PR #126 |
+| 4 | Pro live transcription authenticates solely via a backend-minted short-lived token; the extension relays Pro ops directly to `api.bugtoprompt.com`, bypassing the local sidecar. | 2026-07-20 | #125 / PR #127 |
+| 5 | Capture across navigation stays config-driven (unchanged from the original design): once activated, the session lives in `localStorage`/IndexedDB and keeps capturing after a page change — an invariant, not a toggle. `screenshotMode` is the escape hatch for the screen-share UX cost. | 2026-06-15 | original design, still in force |
+| 6 | Persisted blob store: IndexedDB for screenshot blobs + `localStorage` for the lightweight session state/index. | 2026-06-15 | original design, still in force |
 
-## 7. Chrome extension (planned — config + key home)
+## 7. Configurability principle
 
-A first-class activation path where the **config and the key live in the
-extension**, not in the page or a pasted console snippet. The extension is the
-"always-on, safe-in-prod" form of the console unlock (§3): the developer
-configures it once (base URL, modes, `screenshotMode`, and — for prod live
-transcription — the AssemblyAI key or a token), and its **content script injects
-the overlay** on the origins they allow.
-
-- **Config home:** extension storage (`chrome.storage.local`/`sync`) holds the
-  resolved config; it is injected as `window.__BUGTOPROMPT__` before boot, so the
-  same zero-config resolver (§2) applies unchanged. No page edits, no console.
-- **Key safety:** the key never touches page source or a public server endpoint —
-  it lives in the extension and is used client-side only on the dev's machine.
-  Strictly better than the console-prompt path for repeated use.
-- **Persistence:** the same `localStorage`/IndexedDB session store (§4) lets the
-  capture survive navigation; the extension can additionally use its background
-  service worker to coordinate across tabs (future).
-- **Reuse:** the extension wraps the **same** `bugtoprompt.global.js` + CSS — it
-  is packaging, not a fork. Build target added later.
-
-### 7.1 Configurability principle
-
-Features whose right behavior depends on the host (screenshot strategy, which
-output modes, whether live transcription is on, allowed origins, redaction
-aggressiveness) are **configuration**, resolved by §2 and settable from any
-activation path — props, `data-*`, `window.__BUGTOPROMPT__`, server config, or
-the extension. The widget hard-codes only safe defaults.
+Features whose right behavior depends on the host (screenshot strategy,
+which output modes, allowed origins, redaction) are **configuration**,
+resolved by §2 and settable from the extension's own storage (options page,
+popup, `chrome.storage.sync`) — never from page source, a pasted snippet, or
+a hard-coded default. The widget itself hard-codes only safe fallbacks.
