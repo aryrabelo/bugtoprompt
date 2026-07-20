@@ -47,16 +47,18 @@ HOW IT WORKS
    - Live voice narration, transcribed as you talk
    - A click-centered screenshot (or a downscaled full frame) plus
      interactive element metadata — role, name, selector, position — at
-     each step
+     each step, when screen capture is enabled and permission is granted
 4. Stop capture. BugToPrompt renders everything into a single,
    structured prompt — paste it straight into Claude, Cursor, or Codex,
    or file it as a GitHub issue with one click.
 
 WHY IT'S DIFFERENT
 
-- Built for local dev. Activates automatically only on http://localhost
-  and 127.0.0.1 — capturing on any other site requires you to first
-  grant it access to that specific origin ("Enable on this site").
+- Built for local dev. Available automatically only on http://localhost
+  and 127.0.0.1 — capture itself only starts when you hit Start capture
+  or the shortcut. Capturing on any other site additionally requires
+  you to first grant it access to that specific origin ("Enable on
+  this site").
 - No copy-pasting screenshots into a doc, no rewriting your verbal
   explanation into a bug report — the transcript and timeline are
   captured directly out of your own words.
@@ -69,15 +71,18 @@ WHY IT'S DIFFERENT
 
 PRIVACY
 
-BugToPrompt activates automatically only on localhost/127.0.0.1 pages;
-capturing on any other site requires you to first grant it access to
+BugToPrompt is only available on localhost/127.0.0.1 pages by default,
+and capture only starts when you explicitly trigger it. Capturing on
+any other site additionally requires you to first grant it access to
 that origin. Screen and audio capture require your explicit browser
 permission grant every time. See the privacy policy at
 https://bugtoprompt.com/privacy for full details on what is collected
 and where it is sent (Lite: stays on-device, except voice transcription
 falls back to AssemblyAI's cloud API when the local parakeet-mlx engine
-is unavailable and an AssemblyAI key is configured; Pro: sent to your
-account on api.bugtoprompt.com).
+is unavailable and an AssemblyAI key is configured, and — if you choose
+the GitHub issue mode — the rendered prompt is sent to your configured
+GitHub repository via your own gh CLI; Pro: sent to your account on
+api.bugtoprompt.com).
 
 OPEN SOURCE
 

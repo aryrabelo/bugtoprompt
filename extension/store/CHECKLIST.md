@@ -54,13 +54,17 @@ item blocks submission unless explicitly marked optional.
         microphone audio (via `getUserMedia`), interactive DOM snapshots
         (element role/name/selector/bounding-box — see
         `src/schema/index.ts` `interactiveElementSchema`), page URLs
-        (`pageUrl` plus route-change events), and — for Pro users only —
-        account/session data sent to `api.bugtoprompt.com`.
+        (`pageUrl` plus route-change events), user-selected page text
+        (`select` events, capped at 500 chars — see
+        `src/overlay/timeline/eventTrack.ts` `MAX_SELECTED`), and — for
+        Pro users only — account/session data sent to
+        `api.bugtoprompt.com`.
 - [ ] Confirm the extension does not collect data beyond what's disclosed
-      (Lite stays on-device except the AssemblyAI cloud transcription
-      fallback disclosed in `listing.md`'s PRIVACY section; verify no
-      other telemetry call was added since `SECURITY.md` was last
-      reviewed).
+      (Lite stays on-device except: the AssemblyAI cloud transcription
+      fallback, and — when GitHub issue mode is chosen — the rendered
+      prompt sent to the configured GitHub repo via `gh issue create`,
+      both disclosed in `listing.md`'s PRIVACY section; verify no other
+      telemetry call was added since `SECURITY.md` was last reviewed).
 
 ## 4. Developer account & payments
 
