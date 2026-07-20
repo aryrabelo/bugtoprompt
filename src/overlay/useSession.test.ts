@@ -681,6 +681,7 @@ describe("useSession — onClick capture", () => {
 describe("useSession — rehydration", () => {
 	afterEach(() => {
 		localStorage.clear();
+		vi.restoreAllMocks();
 	});
 
 	it("(k) clean store → starts idle (no rehydration)", async () => {
@@ -816,6 +817,96 @@ describe("useSession — rehydration", () => {
 		]);
 		expect(result.current.clickPreviews[0].screenshotRef).toBe("snap-0000.jpg");
 		expect(result.current.clickPreviews[0].url).toMatch(/^blob:/);
+	});
+
+	it("(m3) live onClick capture → stop → reload rehydrates the review strip", async () => {
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
+		const client = makeFakeClient();
+
+		// Record a real onClick session with two clicks, then stop into review.
+		const first = renderHook(() => useSession(client, "onClick"));
+		await act(async () => {
+			await first.result.current.start({});
+		});
+		await act(async () => {
+			pointerClick(btn);
+			pointerClick(btn);
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		await act(async () => {
+			await first.result.current.stop();
+		});
+		expect(first.result.current.phase).toBe("reviewing");
+		expect(first.result.current.clickPreviews).toHaveLength(2);
+
+		// Simulate a mid-review page reload: unmount, then mount a fresh hook that
+		// rehydrates from the persisted session + IndexedDB blobs.
+		first.unmount();
+		const second = renderHook(() => useSession(client, "onClick"));
+		// Rehydration runs in a mount effect that awaits an IndexedDB read, so let
+		// the microtask + IDB tick settle (same pattern as the (m)/(m2) tests).
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+
+		expect(second.result.current.phase).toBe("reviewing");
+		expect(
+			second.result.current.clickPreviews.map((p) => p.clickNumber),
+		).toEqual([1, 2]);
+		expect(second.result.current.clickPreviews[0].url).toMatch(/^blob:/);
+		second.unmount();
+	});
+
+	it("(m4) a stale debounced persist at stop() must not clobber the reviewing session", async () => {
+		// Repro for #91: stop() persists status:"reviewing", but a click's ~400ms
+		// debounced recording-persist can still be pending. If it fires after stop()
+		// it rewrites the session as status:"recording", so a reload lands on the
+		// recorder instead of the review screen (the thumbnail strip never returns).
+		// This deliberately exercises the real debounce timer: fake timers deadlock
+		// the hook's async IndexedDB/grab promises, so a genuine delay is required.
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "",
+		} as Selection);
+		mockGrabber.grab.mockResolvedValue({
+			blob: new Blob(["img"], { type: "image/jpeg" }),
+			method: "getDisplayMedia",
+		});
+		const btn = document.createElement("button");
+		document.body.appendChild(btn);
+		const client = makeFakeClient();
+		const { result, unmount } = renderHook(() => useSession(client, "onClick"));
+
+		await act(async () => {
+			await result.current.start({});
+		});
+		await act(async () => {
+			pointerClick(btn); // schedules a ~400ms debounced recording persist
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		// Stop BEFORE the debounce fires: stop() writes the reviewing session.
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.phase).toBe("reviewing");
+		expect(loadSession()?.status).toBe("reviewing");
+
+		// Wait past the 400ms debounce so any stale recording-persist fires. It
+		// must NOT overwrite the reviewing state written by stop().
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 450));
+		});
+		expect(loadSession()?.status).toBe("reviewing");
+		unmount();
 	});
 });
 
