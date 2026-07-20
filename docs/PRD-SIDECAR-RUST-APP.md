@@ -45,7 +45,9 @@ kills adoption.
 ### Pro mixing model
 
 A Pro user can **mix and match**:
-- **Transcription:** local engine (sidecar) OR AssemblyAI cloud — user choice
+- **Transcription:** local engine (sidecar) OR AssemblyAI cloud — a paid
+  feature served via a backend-minted token; there is no customer AssemblyAI
+  key entry
 - **Issue filing:** ALWAYS via hosted backend (no local `gh` CLI needed)
 
 This means a Pro user gets value from the sidecar (fast local transcription)
@@ -91,7 +93,7 @@ A Lite user runs **everything locally**:
 │  │    OR AssemblyAI HTTP (Pro only)                   │      │
 │  │                                                    │      │
 │  │  Settings Window (Tauri webview)                    │      │
-│  │    - API keys (AssemblyAI, GitHub token)           │      │
+│  │    - GitHub token                                  │      │
 │  │    - Allowed origins                               │      │
 │  │    - Project/repo config                           │      │
 │  │    - Tier: Lite / Pro (login to activate Pro)      │      │
@@ -206,7 +208,7 @@ Tauri webview window (opens from tray icon click):
 │  ┌─ Transcription ───────────────────────────┐  │
 │  │  Engine: [Local Parakeet ▼] / [Cloud (Pro)] │  │
 │  │  uvx status: ✓ ready                       │  │
-│  │  Cloud key: [____________] (Pro only)     │  │
+│  │  Cloud: auto (backend-minted token, Pro)  │  │
 │  └───────────────────────────────────────────┘  │
 │                                                 │
 │  ┌─ GitHub ──────────────────────────────────┐  │

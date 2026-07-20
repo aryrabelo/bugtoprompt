@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+- **Customer bring-your-own AssemblyAI key surface.** Client-side key
+  storage, the `data-assemblyai-key` attribute, and
+  `window.__BUGTOPROMPT__.assemblyAiKey` are gone, along with the in-overlay
+  key prompt. Live cloud transcription now authenticates solely via a
+  short-lived streaming token minted by our backend
+  (`mintStreamingToken` / `streamingToken`) — the customer never holds or
+  stores a vendor key.
+
 ### Changed
 - **npx entrypoint + bundled Node sidecar removed from the published
   package.** `bin`/`npx bugtoprompt` and the `server/*.mjs` files are no

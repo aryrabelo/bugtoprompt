@@ -16,12 +16,10 @@ declare global {
 			defaultMode?: "issue" | "clipboard" | "download";
 			/** Default project to scope issue filing. */
 			projectId?: string;
-			/** AssemblyAI API key for client-side streaming transcription. */
-			assemblyAiKey?: string;
 			/** Pre-minted streaming token (avoids a round-trip on first record). */
 			streamingToken?: string;
 			/** Host-provided async token minter (e.g. an extension background
-			 *  worker). Tried before the in-browser key mint; bypasses page CORS. */
+			 *  worker); bypasses page CORS. */
 			mintStreamingToken?: () => Promise<string>;
 			/** Screenshot strategy. "onClick" captures every eligible page click
 			 *  (local-development default); "perPage" re-prompts per navigation;

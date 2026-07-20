@@ -44,16 +44,13 @@ The renderer redacts credential-**shaped** strings — tokens, `KEY=value`,
 the tab. It does **not** redact arbitrary PII, and it does **not** redact
 pixels inside screenshots. Review every capture before sharing it.
 
-### The AssemblyAI key
+### The AssemblyAI streaming token
 
-At rest, the AssemblyAI key is **AES-GCM-encrypted** in `localStorage` (the
-wrapping key is a non-extractable `CryptoKey` held in IndexedDB). The library
-never writes the decrypted key to `window` — a host application MAY
-optionally set `window.__BUGTOPROMPT__.assemblyAiKey` as a read-only hint to
-seed the key, and that hint is deleted (not re-written) when the key is
-cleared. Treat any host-injected window hint as a tab-scoped secret readable
-by any same-origin script. Prefer a host-minted `streamingToken` /
-`mintStreamingToken` over shipping a raw browser key.
+Live transcription authenticates via a short-lived (**≤600s**) streaming
+token minted server-side by our backend (`mintStreamingToken`) — the
+customer never stores or holds a raw AssemblyAI key. Treat a host-injected
+`window.__BUGTOPROMPT__.streamingToken` as a tab-scoped secret readable by
+any same-origin script.
 
 ### The reference backend
 

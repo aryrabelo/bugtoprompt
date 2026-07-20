@@ -99,7 +99,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	// Prevent a persisted session from a previous test from triggering rehydration.
 	localStorage.clear();
-	// Clear any window config hint leaked by a prior test (e.g. provideKey).
+	// Clear any window config hint leaked by a prior test.
 	delete window.__BUGTOPROMPT__;
 
 	// Default audio mock: streaming=true only when onPcmFrame is provided (live path)
@@ -364,7 +364,7 @@ describe("useSession", () => {
 		expect(result.current.artifact).toBeDefined();
 	});
 
-	it("(f) failing token resolution sets needsKey after enableVoice, phase stays recording", async () => {
+	it("(f) failing token resolution degrades to batch after enableVoice, phase stays recording", async () => {
 		const client = makeFakeClient({
 			mintStreamingToken: vi.fn().mockRejectedValue(new Error("no token")),
 		});
@@ -374,55 +374,13 @@ describe("useSession", () => {
 			await result.current.start({});
 		});
 		expect(result.current.phase).toBe("recording");
-		expect(result.current.needsKey).toBe(false);
 
 		await act(async () => {
 			await result.current.enableVoice();
 		});
 
 		expect(result.current.phase).toBe("recording");
-		expect(result.current.needsKey).toBe(true);
 		expect(result.current.streaming).toBe(false);
-	});
-
-	it("(g) provideKey goes live mid-recording after enableVoice: streaming true, needsKey false", async () => {
-		const client = makeFakeClient({
-			// First call (enableVoice) rejects → needsKey; second call (provideKey's
-			// resolveStreamingToken fall-through) resolves → live transcription.
-			mintStreamingToken: vi
-				.fn()
-				.mockRejectedValueOnce(new Error("no token"))
-				.mockResolvedValue({ token: "tok", expiresAt: 0 }),
-		});
-		// provideKey persists the key onto window; force the v3 mint to fail so
-		// resolveStreamingToken falls through to client.mintStreamingToken.
-		vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("no fetch")));
-		const { result } = renderHook(() => useSession(client));
-
-		await act(async () => {
-			await result.current.start({});
-		});
-		// needsKey is false after start (no mic requested yet)
-		expect(result.current.needsKey).toBe(false);
-
-		// Enable voice → fails token → needsKey
-		await act(async () => {
-			await result.current.enableVoice();
-		});
-		expect(result.current.needsKey).toBe(true);
-
-		let ok = false;
-		await act(async () => {
-			ok = await result.current.provideKey("k");
-		});
-
-		expect(ok).toBe(true);
-		expect(result.current.streaming).toBe(true);
-		expect(result.current.needsKey).toBe(false);
-		expect(mockTranscriberInstance.start).toHaveBeenCalled();
-		expect(mockAudioInstance.attachLiveTranscription).toHaveBeenCalledOnce();
-
-		vi.unstubAllGlobals();
 	});
 
 	it("(h) commits a trailing partial transcript on stop (no end-of-turn)", async () => {
