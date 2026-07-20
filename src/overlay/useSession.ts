@@ -565,6 +565,11 @@ export function useSession(
 	const schedulePersist = useCallback((): void => {
 		clearTimeout(persistTimerRef.current);
 		persistTimerRef.current = setTimeout(() => {
+			// A persist scheduled during recording must not fire after stop() has
+			// written the reviewing session: that would clobber it back to
+			// "recording" and a reload would restore the recorder instead of the
+			// review screen (thumbnail strip never returns) — issue #91.
+			if (!recordingRef.current) return;
 			const snap = buildRecordingSnapshot();
 			if (snap) saveSession(snap);
 		}, 400);
