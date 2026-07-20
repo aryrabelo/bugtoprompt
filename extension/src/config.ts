@@ -115,11 +115,18 @@ export function classifyPage(url: string | undefined | null): PageKind {
 	return "http";
 }
 
-/** The chrome.permissions origin pattern for a URL's origin (e.g. "https://x.com/*"). */
+/** The chrome.permissions origin pattern for a URL's origin
+ *  (e.g. "https://x.com/*"). Chrome match patterns are `<scheme>://<host>/<path>`
+ *  with NO port component, so the port is dropped: a per-site grant like
+ *  `https://x.com/*` covers every port on that host, which is the narrowest unit
+ *  Chrome can grant. Keeping the port (URL.origin does) yields an invalid match
+ *  pattern and permissions.request() rejects it — breaking capture on any
+ *  non-localhost dev host served on a custom port (e.g. staging on :8443). */
 export function originPattern(url: string | undefined | null): string | null {
 	if (!url) return null;
 	try {
-		return `${new URL(url).origin}/*`;
+		const { protocol, hostname } = new URL(url);
+		return `${protocol}//${hostname}/*`;
 	} catch {
 		return null;
 	}
