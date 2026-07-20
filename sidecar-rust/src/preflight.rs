@@ -91,15 +91,13 @@ impl TranscriptionState {
     }
 }
 
-/// Which backend serves `POST /transcribe`. Only local Parakeet exists in the
-/// Lite sidecar — cloud transcription is a Pro feature served server-side by
-/// api.bugtoprompt.com, never here.
+/// Which backend serves `POST /transcribe` — the wire form of the health
+/// transcription state. Only local Parakeet exists in the Lite sidecar; cloud
+/// transcription is a Pro feature served server-side by api.bugtoprompt.com,
+/// never here. Derived from [`detect_transcription_state`] so the two can't
+/// drift apart.
 pub fn resolve_transcription_provider(local_ready: bool) -> &'static str {
-    if local_ready {
-        "local"
-    } else {
-        "unconfigured"
-    }
+    detect_transcription_state(local_ready).wire()
 }
 
 /// Resolve `GET /health`'s `transcription` field: `Local` when the local

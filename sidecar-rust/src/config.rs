@@ -332,10 +332,6 @@ pub struct Config {
     pub default_mode: String,
     pub allowed_origins: HashSet<String>,
     pub token: Option<String>,
-    /// User's transcription engine preference (only "local" is supported;
-    /// legacy "cloud"/"assemblyai" values degrade to `None`), honored by
-    /// `preflight::resolve_transcription_provider`. `None` = auto.
-    pub transcription_engine: Option<String>,
     pub captures_root: PathBuf,
 }
 
@@ -420,19 +416,6 @@ impl Config {
             .or(raw.port)
             .unwrap_or(DEFAULT_PORT);
 
-        // Transcription engine preference. Only local Parakeet is supported;
-        // any legacy "assemblyai"/"cloud" value (from env or a migrated
-        // config.toml) degrades gracefully to no explicit preference rather
-        // than erroring on load.
-        let normalize_engine = |t: String| match t.as_str() {
-            "local" | "parakeet" => Some("local".to_string()),
-            _ => None,
-        };
-        let transcription_engine = env
-            .get("BUGTOPROMPT_TRANSCRIBE")
-            .and_then(&normalize_engine)
-            .or_else(|| raw.transcription_engine.and_then(&normalize_engine));
-
         // ponytail: testability-only override, not part of the frozen wire
         // contract. Node has no equivalent — it always writes under
         // `process.cwd()/.bugtoprompt/captures`; production keeps that
@@ -459,7 +442,6 @@ impl Config {
             default_mode,
             allowed_origins,
             token,
-            transcription_engine,
             captures_root,
         }
     }
@@ -597,34 +579,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cloud_engine_degrades_to_no_preference() {
+    fn legacy_cloud_engine_loads_and_resolves_local_only() {
         // A migrated config.toml (or plist) may still carry the removed cloud
-        // engine; it must load without error and resolve to no explicit
-        // preference (local precedence), never panic or surface "assemblyai".
+        // engine; it must load without error/panic, and provider resolution
+        // is local-only — never "assemblyai"/"cloud".
         for legacy in ["cloud", "assemblyai"] {
             let raw = PersistedConfig {
                 transcription_engine: Some(legacy.to_string()),
                 ..Default::default()
             };
-            let cfg = Config::from_env_and_raw(raw, &MapEnv(HashMap::new()));
-            assert_eq!(cfg.transcription_engine, None, "engine={legacy}");
-            assert_eq!(
-                crate::preflight::resolve_transcription_provider(true),
-                "local"
-            );
-            assert_eq!(
-                crate::preflight::resolve_transcription_provider(false),
-                "unconfigured"
-            );
+            let _ = Config::from_env_and_raw(raw, &MapEnv(HashMap::new()));
         }
-    }
-
-    #[test]
-    fn env_cloud_engine_degrades_to_no_preference() {
+        // Same for an env-provided legacy value.
         let mut env = HashMap::new();
         env.insert("BUGTOPROMPT_TRANSCRIBE", "assemblyai");
-        let cfg = Config::from_env_and_raw(PersistedConfig::default(), &MapEnv(env));
-        assert_eq!(cfg.transcription_engine, None);
+        let _ = Config::from_env_and_raw(PersistedConfig::default(), &MapEnv(env));
+        // ...and the sidecar only ever resolves local / unconfigured.
+        assert_eq!(
+            crate::preflight::resolve_transcription_provider(true),
+            "local"
+        );
+        assert_eq!(
+            crate::preflight::resolve_transcription_provider(false),
+            "unconfigured"
+        );
     }
 
     #[test]
