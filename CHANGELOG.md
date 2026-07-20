@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **npx entrypoint + bundled Node sidecar removed from the published
+  package.** `bin`/`npx bugtoprompt` and the `server/*.mjs` files are no
+  longer listed in `package.json`'s `files`/`bin` fields, so they no longer
+  ship in the npm tarball. Product distribution is now the **Chrome
+  extension**: Lite (free) pairs the extension with a local Rust tray
+  sidecar; Pro (paid) is cloud-based at api.bugtoprompt.com with a hosted
+  inbox. The npm package is sunset for direct integration (React import /
+  script tag / `npx` server) but stays published — it remains the internal
+  bundle source for the extension and the landing-page demo. The `bin/` and
+  `server/*.mjs` sources stay in-tree (with deprecation headers) until the
+  Rust tray reaches feature parity.
 
 - **Node.js floor raised to `>=22`; CI lanes now run Node 22 + 24.** Node 20
   went EOL in 2026-04 (Node 18 long before), so `engines` in both
