@@ -24,12 +24,17 @@ function assertSemver(version) {
 }
 
 // Rewrite a `version = "..."` / `version = '...'` assignment to the new value,
-// normalising to a double-quoted string. Returns the new line, or null when
-// nothing matched — TOML allows single-quoted literal strings, and a caller
-// must NEVER report a silent no-op stamp as success (cubic #109 P2).
+// normalising to a double-quoted string. Returns the rewritten line when the
+// assignment MATCHED (even if the value was already identical, so re-running a
+// stamp stays idempotent — cubic #109 P2 round 2), or null when nothing matched
+// so a caller never reports a silent no-op stamp as success (cubic #109 P2).
+// TOML allows single-quoted literal strings, hence both quote styles.
 function replaceVersionAssignment(line, version) {
-	const next = line.replace(/(version\s*=\s*)(["'])[^"']*\2/, `$1"${version}"`);
-	return next === line ? null : next;
+	const re = /(version\s*=\s*)(["'])[^"']*\2/;
+	if (!re.test(line)) {
+		return null;
+	}
+	return line.replace(re, `$1"${version}"`);
 }
 
 /**

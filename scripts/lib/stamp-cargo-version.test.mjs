@@ -63,6 +63,12 @@ describe("stampPackageVersion", () => {
 		expect(out).not.toContain("0.1.0");
 	});
 
+	it("is idempotent when the version is already the target (P2 round 2)", () => {
+		const once = stampPackageVersion(CARGO_TOML, "0.14.1");
+		const twice = stampPackageVersion(once, "0.14.1");
+		expect(twice).toBe(once);
+	});
+
 	it("rejects leading-zero numeric identifiers (P3)", () => {
 		expect(() => stampPackageVersion(CARGO_TOML, "01.2.3")).toThrow(
 			/Invalid semver/,
