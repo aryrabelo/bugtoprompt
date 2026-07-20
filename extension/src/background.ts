@@ -332,9 +332,13 @@ export async function injectProRelay(
 			//    starts — so a duplicate arriving in the same message burst
 			//    is dropped too. Released on decrypt/parse failure (garbage
 			//    must not poison a genuine id). Capped: under a flood of
-			//    secret-less envelopes, NEW requests are dropped while the
-			//    flood drains (fail closed — a transient DoS at worst)
-			//    instead of the set growing without bound.
+			//    secret-less envelopes, NEW requests get no claim. The FIRST
+			//    such request per saturation episode is fast-failed with an
+			//    encrypted error (issue #88 residual 1 — a genuine same-tick
+			//    request rejects at once instead of hanging on the client's
+			//    120s timeout); the rest are dropped silently so a flood can't
+			//    force per-message crypto (fail closed — a transient DoS at
+			//    worst) rather than the set growing without bound.
 			//  - `processedIds`: ids whose decrypt SUCCEEDED. Enqueued into
 			//    the evictable FIFO only at that point, so only
 			//    authenticated envelopes — which require the secret — can
@@ -352,6 +356,16 @@ export async function injectProRelay(
 			const processedIds = new Set<string>();
 			const processedQueue: string[] = [];
 			const MAX_PROCESSED_IDS = 10_000;
+			// One courtesy fast-fail per saturation episode (issue #88): armed
+			// each time a request actually gets a claim (the pipe has room),
+			// spent when we emit an error while saturated. So a genuine request
+			// caught the instant inflight fills rejects fast instead of hanging
+			// on the client's 120s timeout — WITHOUT letting a secret-less
+			// flood turn every message into an AES-GCM encrypt + postMessage
+			// (that would re-introduce the per-garbage work #83 deliberately
+			// avoided). After the first, saturated requests are dropped
+			// silently until the flood drains (fail closed).
+			let saturationErrorArmed = true;
 			const markProcessed = (id: string): void => {
 				inflightIds.delete(id);
 				processedIds.add(id);
@@ -450,9 +464,52 @@ export async function injectProRelay(
 					// permanent (authenticated-only FIFO); in-flight ids are
 					// tentative. Either way, drop without a second decrypt.
 					if (processedIds.has(id) || inflightIds.has(id)) return;
-					// Flood guard: bounded tentative claims — under a burst of
-					// secret-less garbage, fail closed instead of growing.
-					if (inflightIds.size >= MAX_INFLIGHT_IDS) return;
+					// Flood guard: bounded tentative claims. Rather than drop
+					// the first saturated request silently — it would surface
+					// to a genuine same-tick caller only via the client's 120s
+					// timeout (issue #88 residual 1) — fast-fail it once with an
+					// encrypted error so a genuine client rejects immediately.
+					// The envelope is sealed under this document's secret, so
+					// only a genuine client can read it (a secret-less flood
+					// sees opaque noise, no leak). The one-shot arming caps this
+					// at a single encrypt+post per saturation episode, so a
+					// flood can't turn every message into crypto/postMessage
+					// spam. Honest scope: this reliably helps benign/first-arrival
+					// saturation. Under an adversarial flood the attacker's own
+					// overflow can spend the one courtesy error before a genuine
+					// same-tick victim arrives, so that victim still falls back to
+					// the 120s timeout — inherent, since genuine and garbage are
+					// indistinguishable pre-decrypt and decrypt-to-target would
+					// reintroduce per-garbage crypto. No forward happens either
+					// way: the id never gets a claim, so a later retry is still
+					// served once the pipe drains.
+					if (inflightIds.size >= MAX_INFLIGHT_IDS) {
+						if (saturationErrorArmed) {
+							saturationErrorArmed = false;
+							void (async () => {
+								try {
+									const responseEnc = await encryptEnvelope(
+										{
+											ok: false,
+											error: "bridge busy: too many in-flight requests",
+										},
+										`btp:res:${id}`,
+									);
+									window.postMessage(
+										{ type: "btp:pro-response", id, enc: responseEnc },
+										"/",
+									);
+								} catch {
+									// Re-encrypt failed — nothing safe to send; the
+									// client falls back to its timeout, as before.
+								}
+							})();
+						}
+						return;
+					}
+					// The pipe has room: re-arm the courtesy fast-fail so the
+					// next saturation episode gets one error too.
+					saturationErrorArmed = true;
 					inflightIds.add(id); // tentative claim before the async decrypt
 					void handleEncryptedRequest(id, enc as { iv: string; data: string });
 					return;

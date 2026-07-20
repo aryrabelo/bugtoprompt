@@ -1068,7 +1068,11 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 			listener(genuine);
 			await tick();
 			expect(sendMessage).toHaveBeenCalledTimes(1); // exactly once, ever
-			expect(posted).toHaveLength(1);
+			// The genuine op forwarded exactly once (the P0 invariant). The
+			// flood adds at most one bounded courtesy fast-fail (issue #88),
+			// never a second forward or per-message response spam.
+			expect(posted.filter((m) => m.id === "req-victim")).toHaveLength(1);
+			expect(posted.length).toBeLessThanOrEqual(2);
 
 			// 4. The in-flight flood guard is transient: once the garbage
 			// decrypt failures settle, a fresh genuine op still forwards.
@@ -1091,6 +1095,75 @@ describe("injectProRelay ISOLATED relay wire behavior (contract v2.1)", () => {
 				op: "mintStreamingToken",
 				payload: {},
 			});
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it("issue #88: a genuine request dropped by inflight saturation gets a fast-fail encrypted error, not a silent hang", async () => {
+		const {
+			stubWindow,
+			listener,
+			posted,
+			sendMessage,
+			encryptWithAad,
+			decryptWithAad,
+		} = await setupRelay();
+		try {
+			// Encrypt the genuine envelope BEFORE the burst: no await may sit
+			// between saturating inflight and posting the victim, or the
+			// scheduled garbage decrypts would release their claims and drain
+			// the set below the cap.
+			const enc = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-saturated",
+			);
+			const enc2 = await encryptWithAad(
+				{ op: "mintStreamingToken", payload: {} },
+				"btp:req:req-saturated-2",
+			);
+			// Fill inflight to its cap (1000) in one synchronous burst — the
+			// async decrypts (which release claims) have not run yet.
+			const garbage = { iv: "AAAAAAAAAAAAAAAA", data: "Z2FyYmFnZQ==" };
+			for (let i = 0; i < 1000; i++) {
+				listener({
+					source: stubWindow,
+					data: { type: "btp:pro-request", id: `sat-${i}`, enc: garbage },
+				} as unknown as MessageEvent);
+			}
+			// Genuine request in the same tick: inflight is full, so it gets no
+			// claim. It must be fast-failed with an error the client can read.
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-saturated", enc },
+			} as unknown as MessageEvent);
+			// A SECOND genuine request in the same saturation episode: the one
+			// courtesy fast-fail is already spent, so it is silently dropped —
+			// the honest limit of the one-shot bound (under an adversarial
+			// flood the attacker's overflow could spend it instead, issue #88).
+			listener({
+				source: stubWindow,
+				data: { type: "btp:pro-request", id: "req-saturated-2", enc: enc2 },
+			} as unknown as MessageEvent);
+
+			await vi.waitFor(() =>
+				expect(posted.some((m) => m.id === "req-saturated")).toBe(true),
+			);
+			// Saturation dropped every request: nothing was ever forwarded.
+			expect(sendMessage).not.toHaveBeenCalled();
+			const errResp = posted.find((m) => m.id === "req-saturated");
+			expect(errResp?.type).toBe("btp:pro-response");
+			// The response is a real AES-GCM envelope under this document's
+			// secret (a garbage flood without the secret could not read it),
+			// carrying an actionable error rather than an opaque 120s timeout.
+			const decrypted = (await decryptWithAad(
+				errResp?.enc as { iv: string; data: string },
+				"btp:res:req-saturated",
+			)) as { ok: boolean; error: string };
+			expect(decrypted.ok).toBe(false);
+			expect(decrypted.error).toMatch(/in-flight|busy/i);
+			// The second same-episode victim got no response: the courtesy
+			// error is one-shot, so a flood cannot induce per-message crypto.
+			expect(posted.some((m) => m.id === "req-saturated-2")).toBe(false);
 		} finally {
 			vi.unstubAllGlobals();
 		}
