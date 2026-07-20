@@ -17,6 +17,10 @@ pub struct UiState {
     pub host: String,
     pub port: u16,
     pub uvx_status: String,
+    /// `gh` CLI availability/auth: "ready" | "missing" | "unauthenticated" |
+    /// "checking" (mirrors `preflight::GhState::published`, plus the
+    /// tray-local transient sentinel before the first probe resolves).
+    pub gh_status: String,
     pub tier: String,
     pub email: String,
     pub transcription_engine: String,
@@ -37,6 +41,11 @@ pub struct SavePayload {
     pub email: String,
     pub transcription_engine: String,
     pub github_mode: String,
+    /// "Enable issue filing" checkbox. Unlike every other field here this is
+    /// NOT merged/cleared via `opt()` — it maps straight onto
+    /// `PersistedConfig.issue_mode` in `apply_save` so the Settings UI is the
+    /// only way a clean-machine user can ever turn issue filing on (#95).
+    pub enable_issues: bool,
     pub repos: Vec<String>,
     pub allowed_origins: Vec<String>,
 }
@@ -79,12 +88,14 @@ pub fn build_ui_state(
     host: &str,
     port: u16,
     uvx_status: &str,
+    gh_status: &str,
 ) -> UiState {
     UiState {
         running,
         host: host.to_string(),
         port,
         uvx_status: uvx_status.to_string(),
+        gh_status: gh_status.to_string(),
         tier: cfg.tier.clone().unwrap_or_else(|| "lite".to_string()),
         email: cfg.email.clone().unwrap_or_default(),
         transcription_engine: cfg
@@ -114,9 +125,12 @@ pub fn state_json(
     host: &str,
     port: u16,
     uvx_status: &str,
+    gh_status: &str,
 ) -> String {
-    serde_json::to_string(&build_ui_state(cfg, running, host, port, uvx_status))
-        .unwrap_or_else(|_| "{}".to_string())
+    serde_json::to_string(&build_ui_state(
+        cfg, running, host, port, uvx_status, gh_status,
+    ))
+    .unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Split `owner/repo#branch` into `(repo, Option<branch>)`.
@@ -167,8 +181,10 @@ fn homogenize_repos(entries: Vec<RawRepoEntry>) -> Vec<RawRepoEntry> {
 }
 
 /// Merge a webview save payload into the current persisted config. Empty
-/// strings/lists clear a field (become `None`); `issue_mode`, `project_id`,
-/// `token`, `host`, `port` and other non-UI fields are preserved as-is.
+/// strings/lists clear a field (become `None`); `project_id`, `token`, `host`,
+/// `port` and other non-UI fields are preserved as-is. `issue_mode` maps
+/// directly onto the "Enable issue filing" checkbox (#95) rather than being
+/// preserved — the Settings UI is the only way to flip it on a clean machine.
 /// Repo rows that match an existing structured entry keep their `id`/`name`
 /// (finding #6); repo/origin rows are de-duplicated preserving first-seen order
 /// (finding #13).
@@ -181,6 +197,7 @@ pub fn apply_save(mut cfg: PersistedConfig, payload: SavePayload) -> PersistedCo
     cfg.email = opt(payload.email);
     cfg.transcription_engine = opt(payload.transcription_engine);
     cfg.github_mode = opt(payload.github_mode);
+    cfg.issue_mode = Some(payload.enable_issues);
 
     let current = cfg.repos.take().unwrap_or_default();
     let mut merged: Vec<RawRepoEntry> = Vec::new();
@@ -243,7 +260,7 @@ mod tests {
         let msg = parse_ipc(
             r#"{"type":"save","config":{
                 "tier":"pro","email":"a@b.com","transcriptionEngine":"local",
-                "githubMode":"local",
+                "githubMode":"local","enableIssues":true,
                 "repos":["acme/web","acme/api#dev"],
                 "allowedOrigins":["https://x.example"]
             }}"#,
@@ -253,6 +270,7 @@ mod tests {
             Ipc::Save { config } => {
                 assert_eq!(config.tier, "pro");
                 assert_eq!(config.transcription_engine, "local");
+                assert!(config.enable_issues);
                 assert_eq!(config.repos, vec!["acme/web", "acme/api#dev"]);
                 assert_eq!(config.allowed_origins, vec!["https://x.example"]);
             }
@@ -273,12 +291,14 @@ mod tests {
             email: "  ".to_string(), // whitespace → cleared
             transcription_engine: "local".to_string(),
             github_mode: "local".to_string(),
+            enable_issues: true,
             repos: vec!["acme/web".to_string(), "  ".to_string()],
             allowed_origins: vec!["https://gerarposts.com.br".to_string()],
         };
         let next = apply_save(cur, payload);
 
-        // preserved non-UI fields
+        // issue_mode now driven by the "Enable issue filing" checkbox (#95);
+        // token/port are the only non-UI fields still preserved as-is.
         assert_eq!(next.issue_mode, Some(true));
         assert_eq!(next.token.as_deref(), Some("keep-me"));
         assert_eq!(next.port, Some(4127));
@@ -293,6 +313,41 @@ mod tests {
             next.allowed_origins,
             Some(vec!["https://gerarposts.com.br".to_string()])
         );
+    }
+
+    /// Regression for #95: a first-run user on a clean machine (no
+    /// LaunchAgent to migrate from) has no other way to ever set
+    /// `issue_mode = true` than this checkbox. Before this fix
+    /// `apply_save` left `issue_mode` untouched, so ticking "Enable issue
+    /// filing" in the Settings UI had no effect at all.
+    #[test]
+    fn apply_save_toggles_issue_mode_via_enable_issues_checkbox() {
+        let clean_machine = PersistedConfig::default();
+        assert_eq!(clean_machine.issue_mode, None, "clean machine starts unset");
+
+        let turn_on = SavePayload {
+            tier: "lite".to_string(),
+            email: String::new(),
+            transcription_engine: "local".to_string(),
+            github_mode: "local".to_string(),
+            enable_issues: true,
+            repos: vec!["acme/web".to_string()],
+            allowed_origins: vec![],
+        };
+        let enabled = apply_save(clean_machine, turn_on);
+        assert_eq!(enabled.issue_mode, Some(true));
+
+        let turn_off = SavePayload {
+            tier: "lite".to_string(),
+            email: String::new(),
+            transcription_engine: "local".to_string(),
+            github_mode: "local".to_string(),
+            enable_issues: false,
+            repos: vec!["acme/web".to_string()],
+            allowed_origins: vec![],
+        };
+        let disabled = apply_save(enabled, turn_off);
+        assert_eq!(disabled.issue_mode, Some(false));
     }
 
     #[test]
@@ -310,9 +365,10 @@ mod tests {
             allowed_origins: Some(vec!["https://x.example".to_string()]),
             ..Default::default()
         };
-        let json = state_json(&cfg, true, "127.0.0.1", 4127, "ready");
+        let json = state_json(&cfg, true, "127.0.0.1", 4127, "ready", "unauthenticated");
         assert!(json.contains("\"running\":true"));
         assert!(json.contains("\"uvx_status\":\"ready\""));
+        assert!(json.contains("\"gh_status\":\"unauthenticated\""));
         assert!(json.contains("\"tier\":\"lite\"")); // default when unset
         assert!(json.contains("\"transcription_engine\":\"local\""));
         assert!(json.contains("acme/api#dev"), "json:{json}");
@@ -346,6 +402,7 @@ mod tests {
             email: String::new(),
             transcription_engine: "local".to_string(),
             github_mode: "local".to_string(),
+            enable_issues: false,
             repos: vec![
                 "acme/web#dev".to_string(),
                 "acme/new".to_string(),

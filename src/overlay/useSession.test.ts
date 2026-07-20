@@ -2,6 +2,7 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { Mock } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BugToPromptClient, Target } from "../client";
+import type { CaptureArtifact } from "../schema";
 import { loadSession, putShot, saveSession } from "./session-store";
 import { startScreenGrabber } from "./snapshot/screenshot";
 import { useSession } from "./useSession";
@@ -759,6 +760,132 @@ describe("useSession — rehydration", () => {
 		expect(result.current.transcript).toEqual([
 			{ tStartMs: 0, tEndMs: 500, text: "reviewed" },
 		]);
+	});
+
+	it("(m6) reviewing rehydrate reconstructs the persisted audio metadata + mode (issue #112)", async () => {
+		// Repro for #112: a reviewing session persisted with REAL audio metadata
+		// must rehydrate faithfully — never the bytes:0 / "streaming" placeholder
+		// that a subsequent re-save would then clobber artifact.json with.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-audio",
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-audio" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+			audio: { ref: "audio.webm", mimeType: "audio/ogg", bytes: 4096 },
+			transcriptionMode: "batch-fallback",
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		expect(result.current.artifact?.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/ogg",
+			bytes: 4096,
+		});
+		expect(result.current.artifact?.transcriptionMode).toBe("batch-fallback");
+	});
+
+	it("(m6b) reviewing rehydrate falls back to the placeholder for pre-#112 sessions", async () => {
+		// A session persisted before #112 carries no audio/transcriptionMode; the
+		// reconstruction must still validate via the historical placeholder.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-legacy",
+			startedAt: Date.now() - 10_000,
+			binding: { projectId: "proj-legacy" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [],
+			durationMs: 10_000,
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		expect(result.current.artifact?.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/webm",
+			bytes: 0,
+		});
+		expect(result.current.artifact?.transcriptionMode).toBe("streaming");
+	});
+
+	it("(m6c) finalize persists the assembled audio metadata + mode into the store (issue #112)", async () => {
+		// Producer half: stop() must freeze audio + transcriptionMode in the
+		// session store so the reviewing rehydrate above has real data to restore.
+		// Deterministic without the mic path — default audio yields the empty
+		// placeholder, but the fields MUST be present (pre-#112 omitted them).
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await act(async () => {
+			await result.current.start({ projectId: "proj-finalize" });
+		});
+		await act(async () => {
+			await result.current.stop();
+		});
+		expect(result.current.phase).toBe("reviewing");
+
+		const persisted = loadSession();
+		expect(persisted?.status).toBe("reviewing");
+		// Persistence must mirror the actual finalized artifact — not a hardcoded
+		// placeholder — so restoreReviewing reconstructs exactly what was captured.
+		// (These fields were undefined before the fix.)
+		expect(persisted?.audio).toEqual(result.current.artifact?.audio);
+		expect(persisted?.transcriptionMode).toBe(
+			result.current.artifact?.transcriptionMode,
+		);
+		expect(persisted?.transcriptionMode).toBeDefined();
+	});
+
+	it("(m6d) submitIssue after reload re-saves with the faithful audio metadata, not a placeholder (issue #112)", async () => {
+		// End-to-end clobber guard: with #111's empty-pending rehydrate the re-save
+		// now fires after a reload; #112 ensures the artifact it re-uploads carries
+		// the REAL audio metadata + mode, so artifact.json is not clobbered with a
+		// bytes:0 / "streaming" placeholder. Closes cubic PR #123 P1.
+		saveSession({
+			v: 1,
+			sessionId: "cap_review-resave",
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-resave" },
+			status: "reviewing",
+			events: [],
+			snapshots: [],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+			audio: { ref: "audio.webm", mimeType: "audio/ogg", bytes: 4096 },
+			transcriptionMode: "batch-fallback",
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		await act(async () => {
+			await result.current.submitIssue();
+		});
+		expect(client.createIssue).toHaveBeenCalledOnce();
+
+		// The re-save (last saveArtifact) must carry the faithful metadata the
+		// session persisted — never the reconstructed placeholder.
+		const saveCalls = (client.saveArtifact as Mock).mock.calls;
+		const reSaved = saveCalls[saveCalls.length - 1][0] as {
+			artifact: CaptureArtifact;
+		};
+		expect(reSaved.artifact.audio).toEqual({
+			ref: "audio.webm",
+			mimeType: "audio/ogg",
+			bytes: 4096,
+		});
+		expect(reSaved.artifact.transcriptionMode).toBe("batch-fallback");
 	});
 
 	it("(m2) rehydrates click screenshot previews from persisted clicks + blobs", async () => {

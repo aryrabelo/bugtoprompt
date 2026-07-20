@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="onboarding.css" />
+		<title>BugToPrompt — Get started</title>
+	</head>
+	<body>
+		<main class="page">
+			<header class="head">
+				<h1>Welcome to BugToPrompt</h1>
+				<p class="lead">
+					Three quick steps and you're ready to capture your first bug.
+				</p>
+			</header>
+
+			<section class="step">
+				<h2>1. Lite — local tray</h2>
+				<p>
+					BugToPrompt Lite runs a small tray app on this machine and needs no
+					account.
+				</p>
+				<span id="lite-status" class="status" data-tone="down">Checking…</span>
+				<p id="lite-hint" class="hint"></p>
+				<button id="lite-retry" type="button" class="secondary">
+					Check again
+				</button>
+			</section>
+
+			<section class="step">
+				<h2>2. Pro — cloud</h2>
+				<p>
+					BugToPrompt Pro files issues and transcribes voice notes from our
+					cloud service. Sign in, or paste an API key if you already have one.
+				</p>
+				<span id="pro-status" class="status" data-tone="warn">Not signed in</span>
+				<div class="row">
+					<button id="pro-signin" type="button" class="primary">
+						Sign in
+					</button>
+					<button id="pro-check" type="button" class="secondary">
+						I have signed in — check
+					</button>
+				</div>
+				<div class="row">
+					<input
+						id="pro-key"
+						type="password"
+						placeholder="Paste your Pro key"
+						aria-label="Pro key"
+						autocomplete="off"
+					/>
+					<button id="pro-save" type="button" class="secondary">
+						Save key
+					</button>
+				</div>
+				<p id="pro-hint" class="hint"></p>
+			</section>
+
+			<section class="step">
+				<h2>3. First capture</h2>
+				<p>
+					Open any page served from a localhost dev server, click the
+					BugToPrompt icon in your toolbar, then choose Start capture.
+				</p>
+				<button id="finish" type="button" class="primary">
+					Finish setup
+				</button>
+				<p id="done-note" class="hint"></p>
+			</section>
+		</main>
+		<script src="onboarding.js"></script>
+	</body>
+</html>
