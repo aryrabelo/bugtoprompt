@@ -98,9 +98,17 @@ console.log(
 	`\nStamped sidecar-tray Cargo.toml + Cargo.lock → ${releaseVersion}`,
 );
 
-// 3. Publish npm and move `latest`. Idempotent: a retry after a partial
-//    failure (or a version already cut as beta) skips the duplicate publish
-//    but STILL moves `latest` to the released version.
+// 3. Build artifacts BEFORE the irreversible registry steps. npm versions and
+//    dist-tags cannot be rolled back safely, so a failed extension/DMG build
+//    must abort here — never after `@latest` has already moved (cubic #109 P1).
+// 3a. Extension zip (manifest stamped from package.json).
+run("npm", ["run", "pack:extension"], root);
+// 3b. Tray DMG (reads the now-synced version from Cargo.toml).
+run("bash", [join(trayDir, "scripts", "package-dmg.sh")], root);
+
+// 4. Publish npm and move `latest` — LAST, once both artifacts exist.
+//    Idempotent: a retry after a partial failure (or a version already cut as
+//    beta) skips the duplicate publish but STILL moves `latest`.
 const alreadyPublished = () => {
 	const { name } = pkg(root);
 	try {
@@ -142,12 +150,6 @@ run(
 	["dist-tag", "add", `${name}@${releaseVersion}`, "latest", ...otpFlags],
 	root,
 );
-
-// 4. Build + pack the extension zip (manifest stamped from package.json).
-run("npm", ["run", "pack:extension"], root);
-
-// 5. Build the tray DMG (reads the now-synced version from Cargo.toml).
-run("bash", [join(trayDir, "scripts", "package-dmg.sh")], root);
 
 console.log("\n----------------------------------------");
 console.log(`Stable release complete: bugtoprompt ${releaseVersion}`);

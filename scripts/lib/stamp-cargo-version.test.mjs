@@ -56,6 +56,31 @@ describe("stampPackageVersion", () => {
 		);
 	});
 
+	it("stamps a single-quoted version instead of silently no-op'ing (P2)", () => {
+		const toml = "[package]\nname = \"x\"\nversion = '0.1.0'\n";
+		const out = stampPackageVersion(toml, "0.14.1");
+		expect(out).toContain('version = "0.14.1"');
+		expect(out).not.toContain("0.1.0");
+	});
+
+	it("rejects leading-zero numeric identifiers (P3)", () => {
+		expect(() => stampPackageVersion(CARGO_TOML, "01.2.3")).toThrow(
+			/Invalid semver/,
+		);
+		expect(() => stampPackageVersion(CARGO_TOML, "1.2.3-01")).toThrow(
+			/Invalid semver/,
+		);
+	});
+
+	it("rejects empty prerelease/build components (P3)", () => {
+		expect(() => stampPackageVersion(CARGO_TOML, "1.2.3-")).toThrow(
+			/Invalid semver/,
+		);
+		expect(() => stampPackageVersion(CARGO_TOML, "1.2.3-a..b")).toThrow(
+			/Invalid semver/,
+		);
+	});
+
 	it("throws when there is no [package] version", () => {
 		expect(() =>
 			stampPackageVersion('[dependencies]\nfoo = "1"\n', "1.0.0"),

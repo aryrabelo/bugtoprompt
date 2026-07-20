@@ -10,12 +10,26 @@
  * would silently corrupt.
  */
 
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// Canonical SemVer 2.0.0 (semver.org): rejects leading-zero numeric
+// identifiers (major/minor/patch and numeric prerelease parts) and empty
+// prerelease/build components — a malformed version must never reach a Cargo
+// file (cubic #109 P3).
+const SEMVER =
+	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
 function assertSemver(version) {
 	if (!SEMVER.test(version)) {
 		throw new Error(`Invalid semver version "${version}".`);
 	}
+}
+
+// Rewrite a `version = "..."` / `version = '...'` assignment to the new value,
+// normalising to a double-quoted string. Returns the new line, or null when
+// nothing matched — TOML allows single-quoted literal strings, and a caller
+// must NEVER report a silent no-op stamp as success (cubic #109 P2).
+function replaceVersionAssignment(line, version) {
+	const next = line.replace(/(version\s*=\s*)(["'])[^"']*\2/, `$1"${version}"`);
+	return next === line ? null : next;
 }
 
 /**
@@ -35,10 +49,11 @@ export function stampPackageVersion(content, version) {
 			continue;
 		}
 		if (inPackage && !replaced && /^\s*version\s*=/.test(lines[i])) {
-			lines[i] = lines[i].replace(
-				/version\s*=\s*"[^"]*"/,
-				`version = "${version}"`,
-			);
+			const next = replaceVersionAssignment(lines[i], version);
+			if (next === null) {
+				throw new Error(`Malformed [package] version line: ${lines[i].trim()}`);
+			}
+			lines[i] = next;
 			replaced = true;
 		}
 	}
@@ -64,10 +79,13 @@ export function stampLockVersion(content, crateName, version) {
 		// Walk the rest of this [[package]] block until the next table header.
 		for (let j = i + 1; j < lines.length && !/^\s*\[\[/.test(lines[j]); j++) {
 			if (/^\s*version\s*=/.test(lines[j])) {
-				lines[j] = lines[j].replace(
-					/version\s*=\s*"[^"]*"/,
-					`version = "${version}"`,
-				);
+				const next = replaceVersionAssignment(lines[j], version);
+				if (next === null) {
+					throw new Error(
+						`Malformed version line for crate "${crateName}" in Cargo.lock: ${lines[j].trim()}`,
+					);
+				}
+				lines[j] = next;
 				return lines.join("\n");
 			}
 		}
