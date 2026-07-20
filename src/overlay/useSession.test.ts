@@ -992,6 +992,61 @@ describe("useSession — rehydration", () => {
 		expect(loadSession()?.status).toBe("reviewing");
 		unmount();
 	});
+
+	it("(m5) submitIssue after a reviewing rehydrate files the issue (empty pending rehydrated, not a silent no-op)", async () => {
+		const sessionId = "cap_review-submit";
+		saveSession({
+			v: 1,
+			sessionId,
+			startedAt: Date.now() - 20_000,
+			binding: { projectId: "proj-9" },
+			status: "reviewing",
+			events: [],
+			snapshots: [
+				{
+					tMs: 100,
+					screenshotRef: "snap-0000.jpg",
+					viewport: { width: 1280, height: 800, scrollX: 0, scrollY: 0 },
+					interactiveElements: [],
+				},
+			],
+			transcript: [{ tStartMs: 0, tEndMs: 500, text: "reviewed" }],
+			durationMs: 20_000,
+		});
+
+		const client = makeFakeClient();
+		const { result } = renderHook(() => useSession(client));
+		await waitFor(() => expect(result.current.phase).toBe("reviewing"));
+
+		// Before the fix, restoreReviewing never repopulated pendingRef, so this
+		// submit hit `if (!base || !pending) return` and silently no-opped:
+		// phase stayed "reviewing" and createIssue was never called.
+		await act(async () => {
+			await result.current.submitIssue();
+		});
+
+		expect(client.createIssue).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("done");
+		expect(result.current.issueUrl).toBe("https://gh/1");
+
+		// The rehydrated pending is empty: audio + screenshots were already staged
+		// server-side at finalize, so the re-upload only rewrites artifact.json and
+		// must not resend media bytes.
+		const saveCalls = (client.saveArtifact as Mock).mock.calls;
+		const lastSave = saveCalls[saveCalls.length - 1][0] as {
+			audioBase64: string;
+			screenshotsBase64: string[];
+		};
+		expect(lastSave.audioBase64).toBe("");
+		expect(lastSave.screenshotsBase64).toEqual([]);
+
+		// The artifact-link (saved.dir → artifactRef) still reaches createIssue,
+		// so a reload-filed issue stays linked to its stored capture.
+		const issueArg = (client.createIssue as Mock).mock.calls[0][0] as {
+			artifactRef?: string;
+		};
+		expect(issueArg.artifactRef).toBe("/tmp/cap");
+	});
 });
 
 // ---------------------------------------------------------------------------

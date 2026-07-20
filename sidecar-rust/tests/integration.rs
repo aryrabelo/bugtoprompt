@@ -312,25 +312,84 @@ fn artifact_roundtrip_persists_files() {
 }
 
 #[test]
-fn stubs_return_501() {
+fn streaming_token_returns_clear_cloud_mode_error() {
     let server = ServerGuard::spawn(HashMap::from([
         ("BUGTOPROMPT_ENABLE_ISSUES", "1"),
         ("BUGTOPROMPT_REPOS", "acme/web"),
     ]));
     let client = reqwest::blocking::Client::new();
 
-    // /transcribe (#55) and /issue (#56) are real now; only the Pro cloud
-    // relay stays a 501 stub until #60.
+    // The sidecar is Lite-only/local-only (owner decision 2026-07-20,
+    // closing #60/#61): PRO cloud relays never route through it, so
+    // /streaming-token always returns a clear 501 pointing at cloud mode.
     let payload = json!({ "sessionId": "cap_abc-123" });
     let resp = client
         .post(format!("{}/streaming-token", server.base))
         .json(&payload)
         .send()
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        501,
-        "/streaming-token should return 501 (Pro cloud relay stub, #60)"
+    assert_eq!(resp.status(), 501);
+    let body: Value = resp.json().unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("cloud mode"), "error was: {error}");
+    assert!(
+        !error.contains('#'),
+        "must not reference a closed issue: {error}"
+    );
+}
+
+#[test]
+fn transcribe_assemblyai_provider_returns_clear_cloud_mode_error() {
+    // Forcing the "cloud" preference with a key resolves the provider to
+    // "assemblyai" (preflight::resolve_transcription_provider), but the
+    // sidecar is Lite-only/local-only, so it must degrade to a clear 501
+    // instead of ever attempting a relay.
+    let server = ServerGuard::spawn(HashMap::from([
+        ("BUGTOPROMPT_TRANSCRIBE", "cloud"),
+        ("ASSEMBLYAI_API_KEY", "test-key"),
+    ]));
+    let client = reqwest::blocking::Client::new();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let body: Value = client
+            .get(format!("{}/health", server.base))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        if body["transcription"] == "ready" {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "transcription state never became \"ready\""
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let artifact_resp = client
+        .post(format!("{}/artifact", server.base))
+        .json(&json!({
+            "artifact": { "sessionId": "cap_assemblyai-1" },
+            "audioBase64": "ZmFrZS13ZWJtLWJ5dGVz",
+        }))
+        .send()
+        .unwrap();
+    assert_eq!(artifact_resp.status(), 200);
+
+    let resp = client
+        .post(format!("{}/transcribe", server.base))
+        .json(&json!({ "sessionId": "cap_assemblyai-1" }))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 501);
+    let body: Value = resp.json().unwrap();
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("cloud mode"), "error was: {error}");
+    assert!(
+        !error.contains('#'),
+        "must not reference a closed issue: {error}"
     );
 }
 
