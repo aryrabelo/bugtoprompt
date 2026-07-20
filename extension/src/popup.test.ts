@@ -672,8 +672,11 @@ describe("trayPill", () => {
 		expect(
 			trayPill({ kind: "ready", health: ghNotReady, version: "0.1.0" }),
 		).toEqual({ label: "Sidecar up · gh not ready", tone: "warn" });
+		// A ready status with no health payload is the token-gated minimal
+		// liveness response — reachable and current, so an OK "Sidecar ready"
+		// pill, NOT the misleading "Sidecar offline" from healthPill(null).
 		expect(trayPill({ kind: "ready", health: null, version: "0.1.0" })).toEqual(
-			{ label: "Sidecar offline", tone: "down" },
+			{ label: "Sidecar ready", tone: "ok" },
 		);
 	});
 

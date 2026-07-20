@@ -405,7 +405,13 @@ export function classifyTray(probe: TrayProbe): TrayStatus {
 export function trayPill(status: TrayStatus): StatusPill {
 	switch (status.kind) {
 		case "ready":
-			return healthPill(status.health);
+			// A ready status with a null health is the token-gated minimal
+			// liveness response ({ ok, version }) — reachable and current, just
+			// without diagnostics. Show a plain "Sidecar ready" instead of
+			// delegating to healthPill(null), which would say "Sidecar offline".
+			return status.health
+				? healthPill(status.health)
+				: { label: "Sidecar ready", tone: "ok" };
 		case "outdated":
 			return { label: "Tray outdated", tone: "warn" };
 		case "unreachable":
