@@ -110,11 +110,13 @@ const PER_PAGE: usize = 100;
 
 /// Safety bound only. The real terminator is the first short (not-full) page —
 /// see [`is_last_page`] — so every page of a normal repo is scanned. Raised
-/// well past any real repo's release count (#89 P3): 100 pages (10k releases)
-/// was tight enough to be a real, if unlikely, functional cutoff rather than a
-/// true safety net. `scan_pages` also logs a warning if this cap is ever
-/// exhausted while the list is still full, so silent truncation is visible
-/// instead of a quietly incomplete answer.
+/// past the tight 100-page/10k-release cutoff of the original bound
+/// (#89 P3). NOTE: for a repo that actually needs many pages, GitHub's
+/// unauthenticated REST rate limit (60 requests/hour) will end an
+/// unauthenticated scan long before this cap does — see the mid-scan
+/// fetch-failure warning in [`scan_pages`] (PR #107 review). This constant
+/// only guards against a runaway loop if the API kept returning full pages
+/// forever; it is not a promise that every scan reaches it.
 const MAX_PAGES: u32 = 1_000;
 
 /// A page with fewer than [`PER_PAGE`] releases is the last one.
@@ -188,6 +190,19 @@ fn scan_was_truncated(reached_cap: bool, last_page_was_full: bool) -> bool {
     reached_cap && last_page_was_full
 }
 
+/// Whether a fetch failure at `failed_page` is worth surfacing as a warning.
+/// Page 1 failing is the ordinary "offline"/no-network case and stays quiet
+/// (`fetch_releases_body` already logs it at debug level). Failing on a
+/// LATER page — after earlier pages already succeeded — means the scan had
+/// committed to a multi-page repo and got cut off mid-way; the most common
+/// real cause is GitHub's unauthenticated REST rate limit (60 requests/hour)
+/// tripping partway through a long scan (PR #107 cubic review), and the
+/// caller should know results may be missing a newer release. Kept separate
+/// from the scan loop so it is unit-testable without a real fetch.
+fn fetch_failure_is_worth_a_warning(failed_page: u32) -> bool {
+    failed_page > 1
+}
+
 /// Scan up to `max_pages` successive `/releases` pages via `fetch` (injected
 /// so this is hermetically testable — mirrors the dependency-injection
 /// pattern in `launch::macos::disable_with`) and return the highest-semver
@@ -196,9 +211,11 @@ fn scan_was_truncated(reached_cap: bool, last_page_was_full: bool) -> bool {
 /// (finding #5). The real terminator is the first short (not-full) page —
 /// see [`is_last_page`] — `max_pages` is only a safety net; if it is
 /// exhausted while the last page was still full the scan was genuinely
-/// truncated and a warning is logged (#89 P3) rather than silently returning
-/// an incomplete answer. Best effort otherwise: any fetch/parse failure ends
-/// the scan early and yields the best found so far (or `None`).
+/// truncated and a warning is logged (#89 P3). A fetch failure past page 1
+/// (e.g. an unauthenticated rate limit — PR #107) is ALSO warned about, for
+/// the same reason: an incomplete answer should never be silent. Otherwise
+/// best effort: any fetch/parse failure ends the scan early and yields the
+/// best found so far (or `None`).
 fn scan_pages(
     current: (u64, u64, u64),
     max_pages: u32,
@@ -209,6 +226,13 @@ fn scan_pages(
     let mut last_page_was_full = false;
     for page in 1..=max_pages {
         let Some(body) = fetch(page) else {
+            if fetch_failure_is_worth_a_warning(page) {
+                tracing::warn!(
+                    "update check: release scan stopped at page {page} after a fetch \
+                     failure (commonly GitHub's unauthenticated rate limit) — results may \
+                     be missing a newer release beyond this point"
+                );
+            }
             last_page_was_full = false;
             break;
         };
@@ -497,5 +521,38 @@ mod tests {
             Some(releases_json((0..100).map(|_| stable("v0.0.5")).collect()))
         });
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn fetch_failure_is_worth_a_warning_only_past_page_1() {
+        // Regression (PR #107 cubic finding): a page-1 failure is the
+        // ordinary offline/no-network case and stays quiet; failing after
+        // earlier pages already succeeded — e.g. GitHub's unauthenticated
+        // 60-req/hour rate limit tripping mid-scan — means results may be
+        // silently incomplete and is worth surfacing.
+        assert!(!fetch_failure_is_worth_a_warning(1));
+        assert!(fetch_failure_is_worth_a_warning(2));
+        assert!(fetch_failure_is_worth_a_warning(61));
+    }
+
+    #[test]
+    fn scan_pages_returns_best_effort_result_when_a_later_page_fetch_fails() {
+        // Regression (PR #107 cubic finding): simulates GitHub's
+        // unauthenticated rate limit tripping after several successful FULL
+        // pages. Pages 1-2 must be FULL (100 releases each) so the scan
+        // treats them as "keep going", not as a natural short-page end —
+        // page 3 then fails (as `--fail` on a 403 would), and the scan
+        // stops but keeps what it already found rather than discarding it.
+        let full_page_with = |extra: serde_json::Value| {
+            let mut items: Vec<serde_json::Value> = (0..99).map(|_| stable("v0.0.5")).collect();
+            items.push(extra);
+            releases_json(items)
+        };
+        let result = scan_pages((0, 1, 0), 10, |page| match page {
+            1 => Some(full_page_with(stable("v0.0.6"))),
+            2 => Some(full_page_with(stable("v0.2.0"))),
+            _ => None,
+        });
+        assert_eq!(result.unwrap().tag, "v0.2.0");
     }
 }
