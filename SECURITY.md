@@ -47,10 +47,12 @@ pixels inside screenshots. Review every capture before sharing it.
 ### The AssemblyAI key
 
 At rest, the AssemblyAI key is **AES-GCM-encrypted** in `localStorage` (the
-wrapping key is a non-extractable `CryptoKey` held in IndexedDB). While in use,
-however, the decrypted key is mirrored to `window.__BUGTOPROMPT__.assemblyAiKey`
-in plaintext, so it is readable by **any same-origin script**. Treat it as a
-tab-scoped secret. Prefer a host-minted `streamingToken` /
+wrapping key is a non-extractable `CryptoKey` held in IndexedDB). The library
+never writes the decrypted key to `window` — a host application MAY
+optionally set `window.__BUGTOPROMPT__.assemblyAiKey` as a read-only hint to
+seed the key, and that hint is deleted (not re-written) when the key is
+cleared. Treat any host-injected window hint as a tab-scoped secret readable
+by any same-origin script. Prefer a host-minted `streamingToken` /
 `mintStreamingToken` over shipping a raw browser key.
 
 ### The reference backend
