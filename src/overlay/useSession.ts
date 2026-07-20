@@ -294,10 +294,12 @@ function restoreReviewing(
 	bag.artifactRef.current = assembled;
 	// Rehydrate an empty pending payload so submitIssue (which guards on
 	// pendingRef) can still file after a mid-review reload: without this it stays
-	// undefined and filing silently no-ops. The media was already staged
-	// server-side at finalize; an empty re-upload only rewrites artifact.json
-	// (with any review-time caption/target edits) and leaves the staged
-	// audio/screenshots untouched (issue #105).
+	// undefined and filing silently no-ops (issue #105). The media was already
+	// staged server-side at finalize; an empty re-upload rewrites artifact.json
+	// (with any review-time caption/target edits) but — since `assembled` now
+	// carries the real audio metadata + transcript mode persisted at finalize
+	// (issue #112) — it no longer clobbers them with a bytes:0/"streaming"
+	// placeholder, and leaves the staged audio/screenshots untouched.
 	bag.pendingRef.current = { audioBase64: "", screenshotsBase64: [] };
 	bag.setArtifact(assembled);
 	bag.setTranscript([...session.transcript]);
